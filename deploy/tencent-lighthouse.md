@@ -113,6 +113,14 @@ echo "LEAN_DB_PASSWORD=$(openssl rand -hex 24)"
 echo "LEAN_REDIS_PASSWORD=$(openssl rand -hex 24)"
 ```
 
+> 以上命令在服务器（Linux）上执行，`openssl` 已预装。若想在 Windows 本地先生成再粘贴，用 PowerShell：
+>
+> ```powershell
+> $b=New-Object byte[] 32;[System.Security.Cryptography.RandomNumberGenerator]::Create().GetBytes($b);($b|ForEach-Object{$_.ToString('x2')}) -join ''
+> ```
+>
+> （把 `32` 改成 `24` 即可生成 24 字节的数据库/Redis 密码。）
+
 编辑 `deploy/.env`：
 
 ```bash

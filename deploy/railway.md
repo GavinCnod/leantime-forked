@@ -22,8 +22,16 @@ Railway 公网域名 ──> app 服务（用 deploy/Dockerfile.prod 构建）
 - 已注册 Railway 账号（Hobby $5/月 或 Pro $20/月）
 - 本地生成 session 密钥，记下输出，步骤 4 要用：
 
+  Linux / macOS / Git Bash：
+
   ```bash
   openssl rand -hex 32
+  ```
+
+  Windows PowerShell（系统自带，无需 openssl）：
+
+  ```powershell
+  $b=New-Object byte[] 32;[System.Security.Cryptography.RandomNumberGenerator]::Create().GetBytes($b);($b|ForEach-Object{$_.ToString('x2')}) -join ''
   ```
 
 ---
