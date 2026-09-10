@@ -1,0 +1,8 @@
+# Caddy 反向代理 + 自动 HTTPS
+# 把下面的域名替换成你自己的域名（DNS 需已解析到本服务器公网 IP）。
+# Caddy 会自动申请并续期 Let's Encrypt 证书。
+
+leantime.example.com {
+	encode gzip
+	reverse_proxy app:8080
+}

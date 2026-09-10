@@ -1,0 +1,84 @@
+# syntax=docker/dockerfile:1
+#
+# 从源码构建 Leantime 生产镜像（适用于 fork 部署）。
+# 构建上下文必须是仓库根目录：
+#   docker build -f deploy/Dockerfile.prod -t leantime-local .
+#
+# 说明：本镜像以 root 启动 supervisord，由 supervisord / php-fpm / nginx
+# 负责把工作进程降权到 www-data。这样挂载卷（Compose named volume 或
+# Railway volume）的属主才能在启动时被修正。
+
+########## Stage 1: 构建前端资源 ##########
+FROM node:20-alpine AS assets
+WORKDIR /app
+COPY package.json package-lock.json ./
+RUN npm ci
+COPY . .
+RUN npx mix --production
+
+########## Stage 2: 运行时 ##########
+FROM php:8.3-fpm-alpine
+
+# 运行时依赖
+RUN apk add --no-cache \
+      nginx supervisor tini curl bash git \
+      mysql-client postgresql-client \
+      freetype libpng libjpeg-turbo libzip openldap libpq zstd-libs icu-libs
+
+# 编译并安装 PHP 扩展
+RUN apk add --no-cache --virtual .build-deps \
+      $PHPIZE_DEPS gcc g++ make openssl-dev libxml2-dev oniguruma-dev \
+      openldap-dev zstd-dev libzip-dev freetype-dev libpng-dev \
+      libjpeg-turbo-dev postgresql-dev \
+ && docker-php-ext-configure gd --with-freetype --with-jpeg \
+ && docker-php-ext-install -j"$(nproc)" \
+      mysqli pdo_mysql pdo_pgsql bcmath mbstring exif pcntl opcache ldap zip gd \
+ && pecl install redis && docker-php-ext-enable redis \
+ && apk del .build-deps && rm -rf /tmp/*
+
+# Composer
+COPY --from=composer:2 /usr/bin/composer /usr/bin/composer
+ENV COMPOSER_ALLOW_SUPERUSER=1
+
+WORKDIR /var/www/html
+
+# 应用源码
+COPY . .
+
+# PHP 依赖（跳过 dev 依赖与脚本，减小体积）
+RUN composer install --no-dev --no-interaction --prefer-dist --optimize-autoloader \
+ && rm -rf /root/.composer/cache
+
+# 使用 Stage 1 构建好的前端产物覆盖
+COPY --from=assets /app/public/dist ./public/dist
+COPY --from=assets /app/blocklist.json ./blocklist.json
+
+# 运行时配置（复用仓库已有的 .docker/config）
+COPY .docker/config/custom.ini       /usr/local/etc/php/conf.d/
+COPY .docker/config/nginx.conf       /etc/nginx/nginx.conf
+COPY .docker/config/php-fpm.conf     /usr/local/etc/php-fpm.d/www.conf
+COPY .docker/config/supervisord.conf /etc/supervisor/conf.d/supervisord.conf
+COPY .docker/start.sh                /start.sh
+COPY deploy/entrypoint.sh            /entrypoint.sh
+RUN chmod +x /start.sh /entrypoint.sh
+
+# 目录与权限
+RUN mkdir -p \
+      userfiles \
+      public/userfiles \
+      bootstrap/cache \
+      storage/logs \
+      storage/framework/cache \
+      storage/framework/sessions \
+      storage/framework/views \
+      storage/app \
+      app/Plugins \
+      /run /var/log/nginx /var/lib/nginx \
+ && chown -R www-data:www-data /var/www/html /run /var/log/nginx /var/lib/nginx \
+ && chmod -R 775 userfiles public/userfiles bootstrap/cache storage app/Plugins
+
+EXPOSE 8080
+HEALTHCHECK --interval=30s --timeout=10s --retries=3 \
+    CMD curl -f http://localhost:8080 || exit 1
+
+ENTRYPOINT ["/sbin/tini", "--", "/entrypoint.sh"]
