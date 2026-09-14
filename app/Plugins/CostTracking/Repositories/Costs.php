@@ -137,8 +137,11 @@ class Costs
         $query = $this->connection->table(CostTracking::TABLE.' as c')
             ->join('zp_tickets as t', 't.id', '=', 'c.ticketId')
             ->selectRaw('COALESCE(SUM(c.cost), 0) AS cost')
-            ->selectRaw('COALESCE(SUM(c.actualCost), 0) AS actualCost')
-            ->selectRaw('COUNT(c.ticketId) AS ticketCount');
+            // Column names are camelCase in the schema (Laravel quotes them at
+            // creation). PostgreSQL folds unquoted identifiers to lowercase, so
+            // reference them with explicit double quotes to match the real case.
+            ->selectRaw('COALESCE(SUM(c."actualCost"), 0) AS actualCost')
+            ->selectRaw('COUNT(c."ticketId") AS ticketCount');
 
         // type is '' / NULL for regular tasks; milestones and (optionally)
         // subtasks are excluded so money is never double-counted.
