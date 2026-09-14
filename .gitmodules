@@ -1,0 +1,3 @@
+[submodule "app/Plugins/CostTracking"]
+	path = app/Plugins/CostTracking
+	url = https://github.com/GavinCnod/mr-leantime-costtracking.git

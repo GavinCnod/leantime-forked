@@ -11,8 +11,8 @@
  *   包名幂等处理：未注册才 install，未启用才 enable，重复执行无副作用。
  *
  * 用法：
- *   php plugin_ensure.php leantime/costtracking,leantime/other
- *   php plugin_ensure.php leantime/costtracking leantime/other
+ *   php plugin_ensure.php mindrose/costtracking,leantime/other
+ *   php plugin_ensure.php mindrose/costtracking leantime/other
  *
  * 退出码：全部成功 0；任一失败 1（供 entrypoint 重试与日志判定）。
  */

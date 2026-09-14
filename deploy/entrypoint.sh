@@ -15,7 +15,7 @@
 #   只新增/覆盖同名内置插件，不删除市场安装的其他插件。
 #
 # 自动启用插件（Railway 等无法 docker exec 的平台）：
-#   设置 LEAN_PLUGINS_ENABLE=leantime/costtracking,leantime/xxx，
+#   设置 LEAN_PLUGINS_ENABLE=mindrose/costtracking,leantime/xxx，
 #   启动 web 前幂等安装并启用（未注册才装、未启用才启），带数据库等待重试。
 #
 set -e
