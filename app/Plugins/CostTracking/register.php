@@ -231,8 +231,7 @@ EventDispatcher::add_event_listener(TicketDeleted::class, function (TicketDelete
 |--------------------------------------------------------------------------
 */
 
-EventDispatcher::add_event_listener('leantime.*.beforeEndRightColumn', function ($event, $wrap): void {
-    $payload = $wrap[0] ?? [];
+EventDispatcher::add_event_listener('leantime.*.beforeEndRightColumn', function ($payload): void {
 
     costtracking_probe('BEFORERIGHT', $payload);
 
@@ -290,8 +289,7 @@ EventDispatcher::add_filter_listener(TicketListFilter::class, function (array $t
 });
 
 // showAll: prepend the 16-cell header row (14 spacers + cost labels at end).
-EventDispatcher::add_event_listener('leantime.*.allTicketsTable.beforeHeadRow', function ($event, $wrap): void {
-    $payload = $wrap[0] ?? [];
+EventDispatcher::add_event_listener('leantime.*.allTicketsTable.beforeHeadRow', function ($payload): void {
 
     $event = costtracking_event($payload);
 
@@ -307,8 +305,7 @@ EventDispatcher::add_event_listener('leantime.*.allTicketsTable.beforeHeadRow', 
 });
 
 // showAll: two trailing <td>; showList: inline badges inside the title <td>.
-EventDispatcher::add_event_listener('leantime.*.allTicketsTable.beforeRowEnd', function ($event, $wrap): void {
-    $payload = $wrap[0] ?? [];
+EventDispatcher::add_event_listener('leantime.*.allTicketsTable.beforeRowEnd', function ($payload): void {
 
     $event = costtracking_event($payload);
 
@@ -342,8 +339,7 @@ EventDispatcher::add_event_listener('leantime.*.allTicketsTable.beforeRowEnd', f
 });
 
 // Per-group totals rendered OUTSIDE the table (keeps DataTables intact).
-EventDispatcher::add_event_listener('leantime.*.allTicketsTable.afterClose', function ($event, $wrap): void {
-    $payload = $wrap[0] ?? [];
+EventDispatcher::add_event_listener('leantime.*.allTicketsTable.afterClose', function ($payload): void {
 
     $event = costtracking_event($payload);
 
@@ -379,8 +375,7 @@ EventDispatcher::add_event_listener('leantime.*.allTicketsTable.afterClose', fun
 |--------------------------------------------------------------------------
 */
 
-EventDispatcher::add_event_listener('leantime.*.ticketCard.meta', function ($event, $wrap): void {
-    $payload = $wrap[0] ?? [];
+EventDispatcher::add_event_listener('leantime.*.ticketCard.meta', function ($payload): void {
 
     costtracking_probe('CARDMETA', $payload);
 
@@ -444,8 +439,7 @@ EventDispatcher::add_event_listener('leantime.*.projectTabsContent', function ()
 |--------------------------------------------------------------------------
 */
 
-EventDispatcher::add_event_listener('leantime.*.projectCard.afterProgress', function ($event, $wrap): void {
-    $payload = $wrap[0] ?? [];
+EventDispatcher::add_event_listener('leantime.*.projectCard.afterProgress', function ($payload): void {
 
     $project = costtracking_context($payload, 'project');
 
