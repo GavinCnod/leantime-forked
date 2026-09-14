@@ -109,6 +109,7 @@
                         <th class="remaining-hours-col">{!! __('label.estimated_hours_remaining') !!}</th>
                         <th class="booked-hours-col">{!! __('label.booked_hours') !!}</th>
                         <th class="no-sort"></th>
+                        @dispatchEvent('allTicketsTable.afterHeadCell', ['tickets' => $allTickets])
                     </tr>
                     @dispatchEvent('allTicketsTable.afterHeadRow', ['tickets' => $allTickets])
                 </thead>

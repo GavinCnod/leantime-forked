@@ -140,13 +140,10 @@ EventDispatcher::add_event_listener('leantime.*.afterLinkTags', function (): voi
 <style>
     .ct-col-cost { width: 100px; white-space: nowrap; text-align: right; }
     .ct-over { color: var(--danger, #d9534f); font-weight: 600; }
-    .ct-head-extra .ct-head-spacer {
-        padding: 0; border: 0; height: 0; line-height: 0;
-        background: transparent; max-height: 0; font-size: 0;
-    }
-    .ct-head-extra .ct-col-cost {
-        padding: 6px 8px; font-size: 12px; text-align: right;
-        border-bottom: 1px solid var(--grey, #ddd);
+    th.ct-col-cost { padding: 8px; font-size: 12px; text-align: right; }
+    .ct-inline-badges {
+        display: inline-flex; gap: 4px; margin-left: 6px;
+        vertical-align: middle; font-size: 11px;
     }
     .ct-table-totals {
         display: flex; align-items: center; gap: 8px;
@@ -233,10 +230,11 @@ EventDispatcher::add_event_listener('leantime.*.beforeEndRightColumn', function 
 | TicketListFilter enriches row data once for the whole table; the template
 | hooks only render. The full table (.ticketTable on showAll) is a DataTables
 | instance with core JS relying on FIXED column indices, so cost cells are
-| appended at row END and a matching 16-cell header row is prepended (DT 1.13
-| picks the bottom header cell per column, so core labels/sorting survive).
-| The simple list (showList) only has status+title cells, so badges render
-| INSIDE the title cell. Milestone tables share the hook names but never pass
+| appended at row END and the matching header cells are appended INSIDE the
+| core header row (afterHeadCell) — keeping header and body at 16 columns and
+| core labels/sorting intact. The simple list (showList) only has status+title
+| cells, so badges render INSIDE the title cell (afterTitleCell), on the same
+| line as the headline. Milestone tables share the row hooks but never pass
 | through TicketListFilter — they are skipped entirely.
 */
 
@@ -265,8 +263,9 @@ EventDispatcher::add_filter_listener(TicketListFilter::class, function (array $t
     return $ticketGroups;
 });
 
-// showAll: prepend the 16-cell header row (14 spacers + cost labels at end).
-EventDispatcher::add_event_listener('leantime.*.allTicketsTable.beforeHeadRow', function ($payload): void {
+// showAll: append the two cost <th> inside the core header row so the header
+// stays a single row aligned 1:1 with the body's trailing cost <td>.
+EventDispatcher::add_event_listener('leantime.*.allTicketsTable.afterHeadCell', function ($payload): void {
 
     $event = costtracking_event($payload);
 
@@ -281,14 +280,27 @@ EventDispatcher::add_event_listener('leantime.*.allTicketsTable.beforeHeadRow', 
     costtracking_render('tableHeaderExtra');
 });
 
-// showAll: two trailing <td>; showList: inline badges inside the title <td>.
+// showAll: two trailing <td> per data row.
 EventDispatcher::add_event_listener('leantime.*.allTicketsTable.beforeRowEnd', function ($payload): void {
 
     $event = costtracking_event($payload);
 
-    if (str_contains($event, 'milestone')) {
+    if (! str_contains($event, 'templates.showall.') || str_contains($event, 'milestone')) {
         return;
     }
+
+    $tickets = costtracking_context($payload, 'tickets');
+    $rowNum = costtracking_context($payload, 'rowNum');
+
+    if (! is_array($tickets) || ! isset($tickets[$rowNum]) || ! costtracking_enriched($tickets)) {
+        return;
+    }
+
+    costtracking_render('tableCells', costtracking_row_costs($tickets[$rowNum]));
+});
+
+// showList: inline badges inside the title <td> so they stay with the task name.
+EventDispatcher::add_event_listener('leantime.*.allTicketsTable.afterTitleCell', function ($payload): void {
 
     $tickets = costtracking_context($payload, 'tickets');
     $rowNum = costtracking_context($payload, 'rowNum');
@@ -299,20 +311,11 @@ EventDispatcher::add_event_listener('leantime.*.allTicketsTable.beforeRowEnd', f
 
     $costs = costtracking_row_costs($tickets[$rowNum]);
 
-    if (str_contains($event, 'templates.showall.')) {
-        if (! costtracking_enriched($tickets)) {
-            return;
-        }
-
-        costtracking_render('tableCells', $costs);
-
+    if ($costs['cost'] === null && $costs['actualCost'] === null) {
         return;
     }
 
-    if (str_contains($event, 'templates.showlist.')
-        && ($costs['cost'] !== null || $costs['actualCost'] !== null)) {
-        costtracking_render('inlineBadge', $costs);
-    }
+    costtracking_render('inlineBadge', $costs);
 });
 
 // Per-group totals rendered OUTSIDE the table (keeps DataTables intact).

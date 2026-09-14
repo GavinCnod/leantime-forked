@@ -20,9 +20,9 @@
 - **做什么**：给任务增加「预算成本 / 实际成本」两个金额字段，在项目层实时汇总并与项目已有预算 `zp_projects.dollarBudget` 对比。
 - **怎么做**：100% 走 Leantime 官方插件机制（`PluginInterface` 生命周期 + `register.php` 事件/过滤器挂载 + Blade 事件钩子），**不修改任何核心表结构、不新增核心迁移、不改 `dbVersion`**。
 - **数据在哪**：插件自有表 `zp_ticket_costs`，以 `ticketId` 为主键 1:1 挂接 `zp_tickets`，插件卸载即删表。
-- **核心改动多少**：仅 3 个核心 Blade 模板各加 1 行 `@dispatchEvent`；另为让插件能随 fork 提交，删除了 `.gitmodules` 中 `app/Plugins` 的官方子模块绑定。
-- **展示位置**：任务新建/编辑表单、任务全表（两列+合计）、简易任务列表（标题内角标）、看板卡片角标、项目卡片总成本、项目设置页「成本」Tab（含顶层任务/子任务口径切换、预算使用率）。
-- **关键技术点**：任务全表是 DataTables 且核心 JS 写死列索引，插件列采用「行尾追加 `<td>` + 表头前置 16 格补充行」方案，避免破坏核心排序/隐藏/工时合计。
+- **核心改动多少**：5 个核心 Blade 模板各加 1 行 `@dispatchEvent`（看板/Htmx 卡片、项目卡片、任务全表表头、简易列表标题格）；另为让插件能随 fork 提交，删除了 `.gitmodules` 中 `app/Plugins` 的官方子模块绑定。
+- **展示位置**：任务新建/编辑表单、任务全表（两列+合计）、简易任务列表（任务名后的行内角标）、看板卡片角标、项目卡片总成本、项目设置页「成本」Tab（含顶层任务/子任务口径切换、预算使用率）。
+- **关键技术点**：任务全表是 DataTables 且核心 JS 写死列索引，插件采用「表头行内追加 `<th>` + 行尾追加 `<td>`」方案，保持表头/正文各 16 格一一对齐，避免破坏核心排序/隐藏/工时合计。
 
 ## 交付物地图
 
@@ -35,14 +35,14 @@ app/Plugins/CostTracking/
 ├── Repositories/
 │   └── Costs.php                 # 数据访问：upsert/删除/批量取数/项目汇总
 ├── Language/
-│   ├── en-US.ini                 # 英文（[costtracking] 段）
+│   ├── en-US.ini                 # 英文（平铺键，无段落头）
 │   └── zh-CN.ini                 # 中文
 └── Templates/                    # Blade 视图命名空间 costtracking::
     ├── formFields.blade.php      # 任务表单两个输入框
-    ├── tableHeaderExtra.blade.php   # 全表：16 格补充表头行
+    ├── tableHeaderExtra.blade.php   # 全表：追加在核心表头行末尾的两个成本 <th>
     ├── tableCells.blade.php      # 全表：行尾两个金额 <td>
     ├── tableTotals.blade.php     # 全表/列表：表格下方分组合计
-    ├── inlineBadge.blade.php     # 简易列表：标题内角标
+    ├── inlineBadge.blade.php     # 简易列表：任务名后的行内角标
     ├── kanbanBadge.blade.php     # 看板卡片角标
     ├── projectTabLink.blade.php  # 项目设置页 Tab 标题
     ├── projectTab.blade.php      # 项目设置页成本分析面板

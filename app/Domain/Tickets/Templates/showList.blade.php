@@ -107,7 +107,9 @@
                                     </td>
 
                                     <td data-search="{{ isset($rowStatusLabels[$row['status']]) ? $rowStatusLabels[$row['status']]['name'] : '' }}" data-order="{{ $row['headline'] }}" >
-                                        <a href="javascript:void(0);"><strong>{{ $row['headline'] }}</strong></a></td>
+                                        <a href="javascript:void(0);"><strong>{{ $row['headline'] }}</strong></a>
+                                        @dispatchEvent('allTicketsTable.afterTitleCell', ['tickets' => $allTickets, 'rowNum' => $rowNum])
+                                    </td>
 
                                     @dispatchEvent('allTicketsTable.beforeRowEnd', ['tickets' => $allTickets, 'rowNum' => $rowNum])
                                 </tr>

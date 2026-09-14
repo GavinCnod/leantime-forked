@@ -1,28 +1,8 @@
 {{--
-    Extra thead row for the full ticket table on showAll
-    (allTicketsTable.beforeHeadRow).
-
-    The core row keeps its 14 <th> and renders AFTER this one. DataTables 1.13
-    builds its column model from the FIRST thead row (16 columns here, matching
-    the 16 body cells) but takes the bottom cell per column for labels/sorting,
-    so core columns are untouched and only the last two belong to the plugin.
-    The 14 spacer cells collapse visually.
+    Two cost <th> appended INSIDE the core header row on showAll
+    (allTicketsTable.afterHeadCell), so the header stays a single row and
+    lines up 1:1 with the two trailing <td> that beforeRowEnd adds to each
+    data row. Injected after the core's last <th> (the no-sort actions cell).
 --}}
-<tr class="ct-head-extra">
-    <th class="ct-head-spacer"></th>
-    <th class="ct-head-spacer"></th>
-    <th class="ct-head-spacer"></th>
-    <th class="ct-head-spacer"></th>
-    <th class="ct-head-spacer"></th>
-    <th class="ct-head-spacer"></th>
-    <th class="ct-head-spacer"></th>
-    <th class="ct-head-spacer"></th>
-    <th class="ct-head-spacer"></th>
-    <th class="ct-head-spacer"></th>
-    <th class="ct-head-spacer"></th>
-    <th class="ct-head-spacer"></th>
-    <th class="ct-head-spacer"></th>
-    <th class="ct-head-spacer"></th>
-    <th class="ct-col-cost">{!! __('costtracking.planned_cost') !!}</th>
-    <th class="ct-col-cost">{!! __('costtracking.actual_cost') !!}</th>
-</tr>
+<th class="ct-col-cost">{!! __('costtracking.planned_cost') !!}</th>
+<th class="ct-col-cost">{!! __('costtracking.actual_cost') !!}</th>
