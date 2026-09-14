@@ -11,7 +11,7 @@
 
 // [DEBUG-PROBE] Temporary: file-based probe that bypasses the log framework so
 // we can tell definitively whether this file is ever included at web request time.
-$probeFile = dirname(__DIR__, 3) . '/storage/logs/ct_probe.txt';
+$probeFile = (defined('APP_ROOT') ? APP_ROOT : dirname(__DIR__, 3)) . DIRECTORY_SEPARATOR . 'storage' . DIRECTORY_SEPARATOR . 'logs' . DIRECTORY_SEPARATOR . 'ct_probe.txt';
 @file_put_contents(
     $probeFile,
     gmdate('c') . ' sapi=' . PHP_SAPI
