@@ -9,6 +9,15 @@
  * core class overrides.
  */
 
+// [DEBUG-PROBE] Temporary: report whenever this file is actually included.
+if (! defined('CT_PROBE_SHOWN')) {
+    define('CT_PROBE_SHOWN', 1);
+    \Illuminate\Support\Facades\Log::error(
+        '[CT-PROBE] register.php included',
+        ['uri' => $_SERVER['HTTP_HOST'] ?? ($_SERVER['argv'][0] ?? 'unknown'), 'sapi' => PHP_SAPI]
+    );
+}
+
 use Leantime\Core\Events\EventDispatcher;
 use Leantime\Domain\Plugins\Services\Registration;
 use Leantime\Domain\Projects\Services\Projects as ProjectService;
