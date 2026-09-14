@@ -23,7 +23,7 @@ use Leantime\Plugins\CostTracking\Repositories\Costs;
 if (! function_exists('costtracking_probe')) {
     function costtracking_probe(string $label, mixed $payload, ?string $file = null): void
     {
-        $file = $file ?? dirname(__DIR__, 1).'/../storage/logs/web_probe.txt';
+        $file = $file ?? dirname(__DIR__, 1).'/../storage/logs/cost_probe.txt';
         if (is_array($payload)) {
             $keys = array_keys($payload);
         } else {
