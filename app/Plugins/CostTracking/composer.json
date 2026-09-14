@@ -1,0 +1,14 @@
+{
+    "name": "leantime/costtracking",
+    "description": "Adds planned/actual cost fields to tickets and project-level cost rollups against the project budget.",
+    "version": "1.0.0",
+    "type": "leantime-plugin",
+    "homepage": "https://github.com/leantime/leantime",
+    "authors": [
+        {
+            "name": "Internal",
+            "email": "noreply@example.com"
+        }
+    ],
+    "require": {}
+}
