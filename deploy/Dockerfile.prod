@@ -45,6 +45,21 @@ WORKDIR /var/www/html
 # 应用源码
 COPY . .
 
+# 本仓库通过 git submodule 引入 CostTracking 插件（app/Plugins/CostTracking）。
+# 若构建平台的 checkout 未初始化子模块，该目录会是空的——而 .dockerignore 已排除
+# .git，构建阶段无法执行 git submodule update。这里做「兜底克隆 + fail-fast 断言」：
+# 缺失时直接从 GitHub 克隆（默认 main；可用 --build-arg COSTTRACKING_REF=<tag|branch> 固定版本）。
+ARG COSTTRACKING_REF=main
+RUN if [ ! -f app/Plugins/CostTracking/composer.json ]; then \
+      echo "==> app/Plugins/CostTracking empty (submodule not checked out); cloning ${COSTTRACKING_REF}"; \
+      git clone --depth 1 --branch "${COSTTRACKING_REF}" \
+        https://github.com/GavinCnod/mr-leantime-costtracking.git \
+        app/Plugins/CostTracking; \
+    fi \
+ && rm -rf app/Plugins/CostTracking/.git \
+ && test -f app/Plugins/CostTracking/composer.json \
+ && echo "==> CostTracking plugin present"
+
 # 内置（随镜像发布的）插件快照。
 # 运行时 app/Plugins 会被命名卷（Compose）或 /data 软链（Railway 单卷模式）
 # 遮蔽，首次部署时卷为空会导致镜像内置插件不可见。entrypoint.sh 启动时
