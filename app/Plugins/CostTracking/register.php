@@ -18,26 +18,6 @@ use Leantime\Domain\Tickets\Events\TicketListFilter;
 use Leantime\Domain\Tickets\Events\TicketUpdated;
 use Leantime\Plugins\CostTracking\Repositories\Costs;
 
-// [WEB-PROBE] Temporary diagnostic: writes a line when certain callbacks run,
-// revealing whether the listener fired and what payload_keys it received.
-if (! function_exists('costtracking_probe')) {
-    function costtracking_probe(string $label, mixed $payload, ?string $file = null): void
-    {
-        $file = $file ?? dirname(__DIR__, 1).'/../storage/logs/cost_probe.txt';
-        if (is_array($payload)) {
-            $keys = array_keys($payload);
-        } else {
-            $keys = gettype($payload);
-        }
-        @file_put_contents(
-            $file,
-            date('H:i:s').' '.$label.' event='.costtracking_event($payload)
-            .' keys='.implode(',', $keys).PHP_EOL,
-            FILE_APPEND
-        );
-    }
-}
-
 /**
  * Echoes a plugin blade partial.
  */
@@ -232,9 +212,6 @@ EventDispatcher::add_event_listener(TicketDeleted::class, function (TicketDelete
 */
 
 EventDispatcher::add_event_listener('leantime.*.beforeEndRightColumn', function ($payload): void {
-
-    costtracking_probe('BEFORERIGHT', $payload);
-
     $ticket = costtracking_context($payload, 'ticket');
 
     if ($ticket === null) {
@@ -376,9 +353,6 @@ EventDispatcher::add_event_listener('leantime.*.allTicketsTable.afterClose', fun
 */
 
 EventDispatcher::add_event_listener('leantime.*.ticketCard.meta', function ($payload): void {
-
-    costtracking_probe('CARDMETA', $payload);
-
     $ticket = costtracking_context($payload, 'ticket');
 
     if ($ticket === null) {
@@ -402,14 +376,11 @@ EventDispatcher::add_event_listener('leantime.*.ticketCard.meta', function ($pay
 */
 
 EventDispatcher::add_event_listener('leantime.*.projectTabsList', function (): void {
-    costtracking_probe('TABLIST', ['local_scope' => 'projectTabsList']);
     costtracking_render('projectTabLink');
 });
 
 EventDispatcher::add_event_listener('leantime.*.projectTabsContent', function (): void {
     $projectId = (int) session('currentProject');
-
-    costtracking_probe('TABCONTENT', ['project_id' => $projectId]);
 
     if ($projectId <= 0) {
         return;
