@@ -52,6 +52,8 @@
                 </div>
             @endif
 
+            @dispatchEvent('projectCard.afterProgress', ['project' => $project])
+
         </div>
     </div>
 </div>

@@ -136,4 +136,6 @@
             @endif
         </div>
     </div>
+
+    @dispatchEvent('ticketCard.meta', ['ticket' => $row])
 </div>
