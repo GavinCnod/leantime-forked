@@ -1,6 +1,6 @@
 # Leantime Fork（leantime-forked）项目分析文档
 
-> 生成日期：2026-09-10 ｜ 基于 git commit `056835f1c`（upstream 3.10.0，2026-09-07）
+> 生成日期：2026-09-10 ｜ 基于 git commit `056835f1c`（upstream 发布标记 3.10.0，但代码内 `AppSettings::$appVersion` = 3.9.8，2026-09-07）
 > 用途：二开前的代码理解基线文档。本目录已被 `.gitignore` 忽略，不会进入版本库。
 >
 > 修订 2026-09-14：以下内容为上述提交时的**基线快照**，历史描述保留。但有两处已变化——① `app/Plugins` 已不再是官方 git submodule，现为普通目录，其中 `app/Plugins/CostTracking` 是指向独立仓库 `mindrose/costtracking` 的 submodule（clone 需 `--recurse-submodules`）；② 本目录实际已被纳入版本库跟踪（原"已被 .gitignore 忽略"的描述已过期）。

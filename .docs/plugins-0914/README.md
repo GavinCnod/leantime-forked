@@ -1,7 +1,7 @@
 # CostTracking 插件技术文档
 
 > 生成日期：2026-09-14
-> 插件版本：1.0.0 ｜ 适用基线：leantime-forked（upstream 3.10.0，commit `056835f1c` 之后）
+> 插件版本：1.0.0 ｜ 适用基线：leantime-forked（代码 `AppSettings::$appVersion` = 3.9.8；基于 upstream commit `056835f1c`）
 > 插件目录：[app/Plugins/CostTracking/](../../app/Plugins/CostTracking)
 > 前置阅读：[.docs/initial-0910/07-事件与插件.md](../initial-0910/07-事件与插件.md)（事件/过滤器/插件机制基线）
 >
