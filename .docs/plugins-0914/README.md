@@ -1,7 +1,7 @@
 # CostTracking 插件技术文档
 
 > 生成日期：2026-09-14
-> 插件版本：1.0.0 ｜ 适用基线：leantime-forked（代码 `AppSettings::$appVersion` = 3.9.8；基于 upstream commit `056835f1c`）
+> 插件版本：1.0.1 ｜ 适用基线：leantime-forked（代码 `AppSettings::$appVersion` = 3.9.8；基于 upstream commit `056835f1c`）
 > 插件目录：[app/Plugins/CostTracking/](../../app/Plugins/CostTracking)
 > 前置阅读：[.docs/initial-0910/07-事件与插件.md](../initial-0910/07-事件与插件.md)（事件/过滤器/插件机制基线）
 >
@@ -64,7 +64,7 @@ app/Plugins/CostTracking/
 |---|---|---|
 | `name` | `leantime/costtracking` | `mindrose/costtracking` |
 | `description` | 英文单语 | 中英双语（英文 + 中文，同一字符串） |
-| `version` | `1.0.0` | `1.0.0`（不变） |
+| `version` | `1.0.0` | `1.0.1`（v1.0.1 发布时提升） |
 | `license` | 无 | `AGPL-3.0-only`（新增） |
 | `homepage` | `https://github.com/leantime/leantime` | `https://github.com/GavinCnod/mr-leantime-costtracking` |
 | `authors[0].name` | `Internal` | `Gavin Chen` |
@@ -76,7 +76,7 @@ app/Plugins/CostTracking/
 {
     "name": "mindrose/costtracking",
     "description": "Adds planned/actual cost fields to tickets and project-level cost rollups against the project budget. 为任务增加计划成本与实际成本字段，并按项目预算汇总项目级成本。",
-    "version": "1.0.0",
+    "version": "1.0.1",
     "type": "leantime-plugin",
     "license": "AGPL-3.0-only",
     "homepage": "https://github.com/GavinCnod/mr-leantime-costtracking",
@@ -124,7 +124,7 @@ php bin/leantime plugin:costtracking:sync-metadata
 UPDATE zp_plugins
 SET name        = 'mindrose/costtracking',
     description = 'Adds planned/actual cost fields to tickets and project-level cost rollups against the project budget. 为任务增加计划成本与实际成本字段，并按项目预算汇总项目级成本。',
-    version     = '1.0.0',
+    version     = '1.0.1',
     homepage    = 'https://github.com/GavinCnod/mr-leantime-costtracking',
     authors     = '[{"name":"Gavin Chen","email":"gavinchen@mindrose.xyz"}]'
 WHERE foldername = 'CostTracking';
