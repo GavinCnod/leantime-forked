@@ -1,13 +1,14 @@
 {
-    "name": "leantime/costtracking",
-    "description": "Adds planned/actual cost fields to tickets and project-level cost rollups against the project budget.",
+    "name": "mindrose/costtracking",
+    "description": "Adds planned/actual cost fields to tickets and project-level cost rollups against the project budget. 为任务增加计划成本与实际成本字段，并按项目预算汇总项目级成本。",
     "version": "1.0.0",
     "type": "leantime-plugin",
-    "homepage": "https://github.com/leantime/leantime",
+    "license": "AGPL-3.0-only",
+    "homepage": "https://github.com/GavinCnod/mr-leantime-costtracking",
     "authors": [
         {
-            "name": "Internal",
-            "email": "noreply@example.com"
+            "name": "Gavin Chen",
+            "email": "gavinchen@mindrose.xyz"
         }
     ],
     "require": {}

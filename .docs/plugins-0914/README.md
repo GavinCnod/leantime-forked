@@ -29,7 +29,10 @@
 ```text
 app/Plugins/CostTracking/
 ├── composer.json                 # 插件元数据（安装器直接读取）
+├── LICENSE                       # AGPL-3.0-only 许可证正文 + 版权声明
 ├── register.php                  # 事件/过滤器装配（插件业务入口）
+├── Command/
+│   └── SyncMetadataCommand.php   # plugin:costtracking:sync-metadata 元数据同步命令
 ├── Services/
 │   └── CostTracking.php          # 生命周期：install 建表 / uninstall 删表
 ├── Repositories/
@@ -48,3 +51,88 @@ app/Plugins/CostTracking/
     ├── projectTab.blade.php      # 项目设置页成本分析面板
     └── projectCardCost.blade.php # 项目集卡片总成本
 ```
+
+## 元数据、版权与发布信息（2026-09-14 变更）
+
+将插件对外身份从官方模板值改为作者自有信息，并补充开源许可证与元数据同步手段。
+
+### 1. `composer.json` 字段变更
+
+| 字段 | 旧值 | 新值 |
+|---|---|---|
+| `name` | `leantime/costtracking` | `mindrose/costtracking` |
+| `description` | 英文单语 | 中英双语（英文 + 中文，同一字符串） |
+| `version` | `1.0.0` | `1.0.0`（不变） |
+| `license` | 无 | `AGPL-3.0-only`（新增） |
+| `homepage` | `https://github.com/leantime/leantime` | `https://github.com/GavinCnod/mr-leantime-costtracking` |
+| `authors[0].name` | `Internal` | `Gavin Chen` |
+| `authors[0].email` | `noreply@example.com` | `gavinchen@mindrose.xyz` |
+
+变更后 `composer.json` 全文：
+
+```json
+{
+    "name": "mindrose/costtracking",
+    "description": "Adds planned/actual cost fields to tickets and project-level cost rollups against the project budget. 为任务增加计划成本与实际成本字段，并按项目预算汇总项目级成本。",
+    "version": "1.0.0",
+    "type": "leantime-plugin",
+    "license": "AGPL-3.0-only",
+    "homepage": "https://github.com/GavinCnod/mr-leantime-costtracking",
+    "authors": [
+        {
+            "name": "Gavin Chen",
+            "email": "gavinchen@mindrose.xyz"
+        }
+    ],
+    "require": {}
+}
+```
+
+### 2. `LICENSE`
+
+新增 `app/Plugins/CostTracking/LICENSE`：
+
+- 正文为 **GNU Affero General Public License v3** 标准全文（与 Leantime 本体一致，插件作为衍生作品继承 AGPL）。
+- 文件末尾附版权声明：`Copyright (C) 2026 Gavin Chen <gavinchen@mindrose.xyz>` + 仓库地址。
+- 同时在 `composer.json` 声明 `"license": "AGPL-3.0-only"`，供插件市场/工具链识别。
+
+### 3. 元数据同步机制与命令
+
+**背景**：Leantime 只在安装/发现插件时（`Plugins::createPluginFromComposer()`，`app/Domain/Plugins/Services/Plugins.php:258`）读取一次 `composer.json`，之后元数据落库到 `zp_plugins`，列表/详情页一律**读库**（`Repositories/Plugins.php:24-77`）。因此**改 `composer.json` 不会自动更新已部署实例**显示的作者/邮箱/描述/版本。
+
+**解决**：随插件新增命令 `plugin:costtracking:sync-metadata`，读取插件自身 `composer.json` 并与 `zp_plugins` 行对比更新，随后清理 `plugins.enabledPlugins` / `plugins.marketplacePluginsFlat` 缓存。**不触碰 `zp_ticket_costs`**，不会丢成本数据。
+
+命令文件 `app/Plugins/CostTracking/Command/SyncMetadataCommand.php` 之所以能生效，是因为 `ConsoleKernel::discoverCommands()`（`app/Core/Console/ConsoleKernel.php:125-143`）会自动扫描 `app/Plugins/**/Command/`——命令随插件发布，无需改动核心。
+
+```bash
+# 预览将发生的变更（不写库）
+php bin/leantime plugin:costtracking:sync-metadata --dry-run
+
+# 实际写入
+php bin/leantime plugin:costtracking:sync-metadata
+```
+
+- 仅同步 `name / description / version / homepage / authors` 五列；以 `foldername`（默认 `CostTracking`）定位记录。
+- 插件命令仅在插件**启用**时被加载（`getEnabledPluginPaths()`）。
+- 无差异时输出 "already up to date" 并以成功码退出。
+
+### 4. 无 CLI 时的等价 SQL 兜底
+
+```sql
+UPDATE zp_plugins
+SET name        = 'mindrose/costtracking',
+    description = 'Adds planned/actual cost fields to tickets and project-level cost rollups against the project budget. 为任务增加计划成本与实际成本字段，并按项目预算汇总项目级成本。',
+    version     = '1.0.0',
+    homepage    = 'https://github.com/GavinCnod/mr-leantime-costtracking',
+    authors     = '[{"name":"Gavin Chen","email":"gavinchen@mindrose.xyz"}]'
+WHERE foldername = 'CostTracking';
+-- 之后清理 installation 缓存（plugins.enabledPlugins）以让 UI 立即生效
+```
+
+### 5. 对已部署实例的影响（部署/升级注意）
+
+- **运行时身份是文件夹名，不是 `composer.json.name`**：`Plugins.php:147`、`238`、`412-419` 与 `register.php:131 new Registration('CostTracking')` 均按目录名 `CostTracking` 定位。只改 `composer.json.name` 并覆盖部署，插件仍正常加载、启用状态保留、不会被当作新插件。
+- **不要改**：目录名 `CostTracking`、命名空间 `Leantime\Plugins\CostTracking`、`new Registration('CostTracking')`。任一改动会使插件被识别为新插件、旧记录变孤儿。
+- **元数据需手动同步**：升级后运行上述命令或 SQL，否则列表仍显示旧作者/邮箱/描述/版本。
+- **卸载会删数据**：`Services/CostTracking.php::uninstall()` 执行 `Schema::dropIfExists('zp_ticket_costs')`。请勿用"卸载再重装"来刷新元数据，改用同步命令，并始终先备份该表。
+- **市场授权标识**：`InstalledPlugin::getIdentifier()`（`Models/InstalledPlugin.php:160-174`）由 `name` 推导（`mindrose/costtracking` → `mindrose_costtracking`）。文件夹插件不走授权；若将来改为 phar/市场发行，标识变化会导致旧授权对不上。
