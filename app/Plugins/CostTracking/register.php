@@ -407,11 +407,14 @@ EventDispatcher::add_event_listener('leantime.*.ticketCard.meta', function ($eve
 */
 
 EventDispatcher::add_event_listener('leantime.*.projectTabsList', function (): void {
+    costtracking_probe('TABLIST', ['local_scope' => 'projectTabsList']);
     costtracking_render('projectTabLink');
 });
 
 EventDispatcher::add_event_listener('leantime.*.projectTabsContent', function (): void {
     $projectId = (int) session('currentProject');
+
+    costtracking_probe('TABCONTENT', ['project_id' => $projectId]);
 
     if ($projectId <= 0) {
         return;
