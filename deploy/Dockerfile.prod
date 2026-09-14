@@ -45,6 +45,14 @@ WORKDIR /var/www/html
 # 应用源码
 COPY . .
 
+# 内置（随镜像发布的）插件快照。
+# 运行时 app/Plugins 会被命名卷（Compose）或 /data 软链（Railway 单卷模式）
+# 遮蔽，首次部署时卷为空会导致镜像内置插件不可见。entrypoint.sh 启动时
+# 会把该快照幂等同步进运行时插件目录。
+COPY app/Plugins/ /opt/leantime/plugins.builtin/
+# 幂等安装/启用内置插件的 CLI 引导脚本（供 entrypoint 调用）
+COPY deploy/plugin_ensure.php /opt/leantime/plugin_ensure.php
+
 # PHP 依赖（跳过 dev 依赖与脚本，减小体积）
 RUN composer install --no-dev --no-interaction --prefer-dist --optimize-autoloader \
  && rm -rf /root/.composer/cache
