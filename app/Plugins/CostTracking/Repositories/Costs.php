@@ -111,16 +111,16 @@ class Costs
         }
 
         $rows = $this->buildRollupQuery($scope)
-            ->addSelect('t.projectId')
+            ->addSelect('t.projectId as project_id')
             ->groupBy('t.projectId')
             ->get();
 
         $map = [];
         foreach ($rows as $row) {
-            $map[(int) $row->projectId] = [
-                'cost' => (float) $row->cost,
-                'actualCost' => (float) $row->actualCost,
-                'ticketCount' => (int) $row->ticketCount,
+            $map[(int) $row->project_id] = [
+                'cost' => (float) $row->planned_cost,
+                'actualCost' => (float) $row->actual_cost,
+                'ticketCount' => (int) $row->ticket_count,
             ];
         }
 
@@ -136,12 +136,17 @@ class Costs
     {
         $query = $this->connection->table(CostTracking::TABLE.' as c')
             ->join('zp_tickets as t', 't.id', '=', 'c.ticketId')
-            ->selectRaw('COALESCE(SUM(c.cost), 0) AS cost')
+            // Aliases MUST be lowercase/snake_case. PostgreSQL folds unquoted
+            // aliases to lowercase, so `AS actualCost` would come back as
+            // `actualcost` and reading $row->actualCost would raise an
+            // undefined-property warning (Laravel turns that into an
+            // ErrorException, aborting the render).
+            ->selectRaw('COALESCE(SUM(c.cost), 0) AS planned_cost')
             // Column names are camelCase in the schema (Laravel quotes them at
             // creation). PostgreSQL folds unquoted identifiers to lowercase, so
             // reference them with explicit double quotes to match the real case.
-            ->selectRaw('COALESCE(SUM(c."actualCost"), 0) AS actualCost')
-            ->selectRaw('COUNT(c."ticketId") AS ticketCount');
+            ->selectRaw('COALESCE(SUM(c."actualCost"), 0) AS actual_cost')
+            ->selectRaw('COUNT(c."ticketId") AS ticket_count');
 
         // type is '' / NULL for regular tasks; milestones and (optionally)
         // subtasks are excluded so money is never double-counted.
