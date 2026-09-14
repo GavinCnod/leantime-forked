@@ -275,7 +275,7 @@ class Plugins
             ->set('enabled', 0)
             ->set('description', $pluginFile['description'])
             ->set('version', $pluginFile['version'])
-            ->set('installdate', date('y-m-d'))
+            ->set('installdate', date('Y-m-d'))
             ->set('foldername', $pluginFolder)
             ->set('license', $license_key)
             ->set('format', $format)
