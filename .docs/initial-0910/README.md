@@ -5,7 +5,7 @@
 >
 > 修订 2026-09-14：以下内容为上述提交时的**基线快照**，历史描述保留。但有两处已变化——① `app/Plugins` 已不再是官方 git submodule，现为普通目录，其中 `app/Plugins/CostTracking` 是指向独立仓库 `mindrose/costtracking` 的 submodule（clone 需 `--recurse-submodules`）；② 本目录实际已被纳入版本库跟踪（原"已被 .gitignore 忽略"的描述已过期）。
 >
-> 修订 2026-09-18：PostgreSQL 报表采集 bug 修复——`zp_stats.tickets` 死字段停止读写（物理列保留）、空状态组改用可移植的 `IN (NULL)`、删除死方法 `Install::sqlPrep()`。本目录 `04-数据层.md` 与 `10-领域模块地图.md` 已同步更新；完整说明见 `.docs/bug-fix-0918/`。
+> 修订 2026-09-18：PostgreSQL 报表 bug 修复（两批）。① 采集失败：`zp_stats.tickets` 死字段停止读写（物理列保留）、空状态组改用可移植的 `IN (NULL)`、删除死方法 `Install::sqlPrep()`；② 报表页 500（追加）：上游 `Reports/Repositories/ReportEngine.php` 的 `selectRaw()` 裸写混合大小写列名（`moduleId`/`projectId`）改为经 `DatabaseHelper::wrapColumn()` 引用。本目录 `04-数据层.md` 与 `10-领域模块地图.md` 已同步更新；完整说明见 `.docs/bug-fix-0918/`（§1–§5 第 1 批，§6 第 2 批）。
 
 ## 文档索引
 

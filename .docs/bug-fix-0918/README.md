@@ -1,8 +1,12 @@
-# bug-fix-0918 — PostgreSQL 报表采集失败修复
+# bug-fix-0918 — PostgreSQL 报表功能兼容性修复
 
 > 日期：2026-09-18
-> 影响模块：Reports（报表）、Tickets、Install、Core/Db
+> 影响模块：Reports（报表采集 + 报表引擎 ReportEngine）、Tickets、Install、Core/Db
 > 相关文档：[ideas-0917 第 4 条](../ideas-0917/ideas.md)、[initial-0910/04-数据层](../initial-0910/04-数据层.md)、[initial-0910/10-领域模块地图](../initial-0910/10-领域模块地图.md)
+>
+> 本文包含两批修复，二者是同一类问题（PG 下 MySQL 专有写法/裸标识符导致的报表故障）：
+> - **第 1 批（采集失败）**：§1–§5，`zp_stats.tickets` 死字段 + `IN(FALSE)`。
+> - **第 2 批（报表页 500，追加）**：§6，上游 `ReportEngine` 的 raw SQL 混合大小写标识符。
 
 ---
 
@@ -107,3 +111,94 @@ MySQL 环境下不报错（隐式截断为第一个数字），因此长期未�
 - `zp_stats.tickets` 物理列仍在（新装由 `SchemaBuilder` 仍会创建 `integer` 列，但因不再读写而无影响）。若后续希望彻底清理，可另起一个 `update_sql_*` 迁移 DROP 该列并同步 `SchemaBuilder`。
 - `IN(FALSE)` 仅有 `getStatusListGroupedByType()` 一处产生，已全部改为 `IN (NULL)`；`Goalcanvas`/`Blueprints` 的注入点因此同时获得 PG 兼容性。
 - 本次未改动 `Reports` 的采集口径与图表逻辑。
+
+---
+
+## 6. 追加修复：ReportEngine 报表引擎的 PG 标识符大小写（同一 PG 兼容根因）
+
+> 第 1 批修复上线部署后，打开**项目报表页** `/reports/project` 仍然 500。经排查为上游报表引擎自带、与第 1 批同属“PG 下 raw SQL 写法不兼容”这一类问题，故作为追加修复记录于此。
+
+### 6.1 背景与现象
+
+第 1 批修复已让每日采集（`addReport` 路径）恢复，因此流程继续向后走，在渲染阶段暴露新错误：
+
+```
+SQLSTATE[42703]: Undefined column: 7 ERROR: column "moduleid" does not exist
+LINE 1: ... from "zp_comment" inner join (select moduleId, ...
+HINT: Perhaps you meant to reference the column "zp_comment.moduleId"
+```
+
+调用链：`Reports\Controllers\Project::get()` → `Reports\Services\ReportEngine::buildReport()` → `getProjectSummaries()` → `Reports\Repositories\ReportEngine::getLatestStatusUpdateForProjects()`。
+
+MySQL 下不报错（标识符大小写不敏感），仅 PostgreSQL 暴露。
+
+### 6.2 根因
+
+上游 `app/Domain/Reports/Repositories/ReportEngine.php`（随 PR #3643 “period-based status report screens + shared report engine” 引入）在 `selectRaw()` 里直接写了**未加引号的裸标识符**，没有走 `DatabaseHelper::wrapColumn()`。PostgreSQL 会把未加引号的标识符折叠为小写，于是混合大小写的列名找不到：
+
+- `ReportEngine.php:198`（本次报错点，`getLatestStatusUpdateForProjects`）：
+  `selectRaw('moduleId, MAX(date) as maxDate')` → PG 解析为 `moduleid`。
+- `ReportEngine.php:286`（同一类问题，下一个会炸的点，`getHoursLoggedForProjects`）：
+  `selectRaw('zp_tickets.projectId AS '.$this->dbHelper->wrapColumn('projectId'))` → PG 解析为 `zp_tickets.projectid`。
+
+Leantime 的表列名大小写并不统一：
+- **混合大小写**（必须加引号）：`zp_comment."moduleId"`、`zp_tickets."projectId"`、`zp_projects."clientId"`、`zp_user."profileId"` 等；
+- **纯小写**：`zp_tickets.milestoneid`、`zp_tickets.sprint`、`zp_tickets.tags`、`zp_timesheets.hours` 等。
+
+Laravel 查询构造器对通过 `select([...])` / `where()` / `join()` 传入的标识符会自动加引号并保留大小写，所以**只有拼进 raw 字符串的部分会踩这个雷**——这也是为什么同文件其他查询在 PG 上正常、只有这两处 `selectRaw` 失败。
+
+### 6.3 功能调整（Behavior）
+
+1. **报表页恢复正常**：`getLatestStatusUpdateForProjects()` 与 `getHoursLoggedForProjects()` 在 PostgreSQL 上不再抛 `42703`。
+2. **行为/数值不变**：仅改变标识符引用方式，查询语义、返回结构、排序、聚合结果完全一致；MySQL 下同样不变。
+3. **别名一致**：子查询别名 `maxDate` 也一并加引号，保证外层 `joinSub` 里的 `"latest"."maxDate"` 能匹配（否则别名被折叠为 `maxdate`，引用 `"maxDate"` 又会找不到）。
+
+### 6.4 技术描述
+
+| 文件 | 改动 |
+|---|---|
+| `app/Domain/Reports/Repositories/ReportEngine.php:198` | `selectRaw('moduleId, MAX(date) as maxDate')` → `selectRaw(wrapColumn('moduleId').', MAX('.wrapColumn('date').') AS '.wrapColumn('maxDate'))` |
+| `app/Domain/Reports/Repositories/ReportEngine.php:286` | `selectRaw('zp_tickets.projectId AS '.wrapColumn('projectId'))` → `selectRaw(wrapColumn('zp_tickets.projectId').' AS '.wrapColumn('projectId'))` |
+
+**审计结论（同批次）**：对 `Reports/Repositories` 下全部 `selectRaw` / `whereRaw` / `orderByRaw` / `groupByRaw` / `havingRaw` / `->raw(` 逐一核对，其余裸写片段引用的都是**纯小写列名**或已用 `wrapColumn`/`castAs`，无需改动：
+- `ReportEngine.php:60` `'milestone' AS "type"`、`:61` `... AS tags`（`zp_tickets.tags` 小写）、`:287/293` `zp_tickets.milestoneid`、`:288` `SUM(zp_timesheets.hours)`；
+- `Reports.php` 的 `sprint`、`zp_tickets.storypoints`、`zp_timesheets.hours`、`isYesterday('date')` 等均为小写列名或已包装。
+
+### 6.5 验证（真实 `postgres:16-alpine`）
+
+用与真实 `SchemaBuilder` 一致**列名大小写**的最小表结构，反射注入 `ConnectionInterface` + `DatabaseHelper` 到 `ReportEngine`（绕过构造函数），直接调用真实仓库方法：
+
+```
+OK   confirmed: PG rejects unquoted moduleId (root cause)
+OK   latestStatus: returns both projects keyed by int id
+OK   latestStatus: project 4 picks the LATEST update
+OK   latestStatus: joined author firstname
+OK   latestStatus: project 5 single update
+OK   latestStatus: empty list returns []
+OK   milestones: returns the one milestone (got 1)
+OK   milestones: raw type alias maps to "milestone"
+OK   milestones: project name joined
+OK   hours: one grouped row (got 1)
+OK   hours: projectId alias mapped
+OK   hours: milestoneId alias mapped
+OK   hours: loggedHours summed to 5.0
+ALL PASSED
+```
+
+覆盖了 `ReportEngine` 中**全部三处含 raw SQL 的方法**：
+- `getLatestStatusUpdateForProjects`（本次报错点，校验“每项目取最新一条”语义、作者 join、空数组）；
+- `getMilestonesForProjects`（raw CASE + 类型别名 + 访问谓词）；
+- `getHoursLoggedForProjects`（raw `COALESCE`/`SUM`/`groupByRaw`）。
+
+同时复现确认旧写法会被 PG 拒绝（`moduleid does not exist`），证明该验证确实能捕获此缺陷。
+
+**静态检查**
+- PHPStan（`-c .phpstan/phpstan.neon`，针对该文件）：`No errors`。
+- Pint：仅 `line_ending`（Windows `core.autocrlf=true` 环境问题，非本次引入）。
+
+> 说明：首次冒烟测试只覆盖了 `:198`；正是把三处 raw 方法都纳入测试后，才在 `:286` 抓到第二处同类缺陷，故一并修复。
+
+### 6.6 遗留与后续
+
+- 这两处属**上游代码自带缺陷**（非本 fork 引入）。可选：向上游 Leantime 提 PR，把 `ReportEngine.php` 的 raw 标识符统一改为 `DatabaseHelper::wrapColumn()`。
+- `ReportEngine` 其余查询均通过查询构造器传递标识符，PG 安全性依赖 schema 列名大小写不变；若上游后续新增 `selectRaw` 裸写混合大小写列名，仍会复现同类问题。建议在 PG 上对报表各视图（项目 / 计划 / 策略）做一次回归。
