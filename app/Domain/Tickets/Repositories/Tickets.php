@@ -208,16 +208,16 @@ class Tickets
         $openTodos = 'IN('.implode(',', array_merge($statusByType['NEW'], $statusByType['INPROGRESS'])).')';
 
         if ($doneQuery == 'IN()') {
-            $doneQuery = 'IN(FALSE)';
+            $doneQuery = 'IN (NULL)';
         }
         if ($inProgressQuery == 'IN()') {
-            $inProgressQuery = 'IN(FALSE)';
+            $inProgressQuery = 'IN (NULL)';
         }
         if ($newQuery == 'IN()') {
-            $newQuery = 'IN(FALSE)';
+            $newQuery = 'IN (NULL)';
         }
         if ($openTodos == 'IN()') {
-            $openTodos = 'IN(FALSE)';
+            $openTodos = 'IN (NULL)';
         }
 
         $statusByTypeQuery = [

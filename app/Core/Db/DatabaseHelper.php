@@ -72,6 +72,10 @@ class DatabaseHelper
      * Converts status group SQL strings like 'IN(0,-1,3)' to integer arrays [0, -1, 3]
      * This is used to convert legacy SQL-based status groups to Query Builder compatible arrays.
      *
+     * Empty groups are represented by the portable "IN (NULL)" marker (or a bare
+     * "IN()") — both mean "matches nothing" and resolve to an empty array so
+     * callers never fall back to an unintended default status.
+     *
      * @param  array  $statusGroupsSQL  Associative array with status group names as keys and SQL strings as values
      * @return array Associative array with status group names as keys and integer arrays as values
      *
@@ -82,10 +86,17 @@ class DatabaseHelper
         $statusGroups = [];
 
         foreach ($statusGroupsSQL as $key => $sqlString) {
-            // Match patterns like "IN(0,-1,3)" or "IN (0, -1, 3)"
-            if (preg_match('/IN\s*\(([\d,\s-]+)\)/', $sqlString, $matches)) {
+            // Match patterns like "IN(0,-1,3)", "IN (0, -1, 3)", "IN()" or "IN (NULL)".
+            if (preg_match('/IN\s*\(\s*([\d,\s-]*|NULL)\s*\)/i', (string) $sqlString, $matches)) {
+                $raw = trim($matches[1]);
+
+                if ($raw === '' || strcasecmp($raw, 'NULL') === 0) {
+                    $statusGroups[$key] = [];
+                    continue;
+                }
+
                 // Split by comma, trim whitespace, convert to integers
-                $values = explode(',', $matches[1]);
+                $values = explode(',', $raw);
                 $statusGroups[$key] = array_map(fn ($val) => (int) trim($val), $values);
             } else {
                 // If pattern doesn't match, return empty array

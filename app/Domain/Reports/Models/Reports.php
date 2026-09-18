@@ -46,8 +46,6 @@ class Reports
 
     public $sum_todos_none;
 
-    public $tickets;
-
     public $daily_avg_hours_booked_todo;
 
     public $daily_avg_hours_booked_point;
