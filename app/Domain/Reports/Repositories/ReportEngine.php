@@ -195,7 +195,7 @@ class ReportEngine
         }
 
         $latest = $this->connection->table('zp_comment')
-            ->selectRaw('moduleId, MAX(date) as maxDate')
+            ->selectRaw($this->dbHelper->wrapColumn('moduleId').', MAX('.$this->dbHelper->wrapColumn('date').') AS '.$this->dbHelper->wrapColumn('maxDate'))
             ->where('module', '=', 'project')
             ->whereIn('moduleId', $projectIds)
             ->groupBy('moduleId');
@@ -283,7 +283,7 @@ class ReportEngine
         }
 
         return $this->connection->table('zp_timesheets')
-            ->selectRaw('zp_tickets.projectId AS '.$this->dbHelper->wrapColumn('projectId'))
+            ->selectRaw($this->dbHelper->wrapColumn('zp_tickets.projectId').' AS '.$this->dbHelper->wrapColumn('projectId'))
             ->selectRaw('COALESCE(zp_tickets.milestoneid, 0) AS '.$this->dbHelper->wrapColumn('milestoneId'))
             ->selectRaw('SUM(zp_timesheets.hours) AS '.$this->dbHelper->wrapColumn('loggedHours'))
             ->join('zp_tickets', 'zp_timesheets.ticketId', '=', 'zp_tickets.id')
