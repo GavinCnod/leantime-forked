@@ -21,7 +21,7 @@
             break;
         }
     }
-    $fmt = fn ($n) => \Illuminate\Support\Number::format((float) $n, maxPrecision: 1);
+    $fmt = fn ($n) => format_number((float) $n);
 @endphp
 
 @if (count($goals) === 0)

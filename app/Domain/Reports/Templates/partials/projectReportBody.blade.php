@@ -12,7 +12,7 @@
     $deltas = $report['deltas'];
 
     $inFlightMilestones = array_merge($report['milestones']['overdue'], $report['milestones']['inProgress']);
-    $fmt = fn ($n) => \Illuminate\Support\Number::format((float) $n, maxPrecision: 1);
+    $fmt = fn ($n) => format_number((float) $n);
 @endphp
 
 <div id="reportBody">

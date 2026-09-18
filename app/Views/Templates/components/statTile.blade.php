@@ -90,7 +90,7 @@
                 @if ((float) $deltaValue == 0.0)
                     ±0
                 @else
-                    {{ (float) $deltaValue > 0 ? '+' : '−' }}{{ \Illuminate\Support\Number::format(abs((float) $deltaValue), maxPrecision: 1) }}
+                    {{ (float) $deltaValue > 0 ? '+' : '−' }}{{ format_number(abs((float) $deltaValue)) }}
                 @endif
             </span>
         @endif

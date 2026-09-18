@@ -1,12 +1,13 @@
-# bug-fix-0918 — PostgreSQL 报表功能兼容性修复
+# bug-fix-0918 — 报表功能修复（PostgreSQL 兼容 + ext-intl 依赖）
 
 > 日期：2026-09-18
-> 影响模块：Reports（报表采集 + 报表引擎 ReportEngine）、Tickets、Install、Core/Db
-> 相关文档：[ideas-0917 第 4 条](../ideas-0917/ideas.md)、[initial-0910/04-数据层](../initial-0910/04-数据层.md)、[initial-0910/10-领域模块地图](../initial-0910/10-领域模块地图.md)
+> 影响模块：Reports（采集 + 报表引擎 ReportEngine + 报表模板）、Tickets、Install、Core/Db、Core（helpers）、Views（共享 statTile 组件）
+> 相关文档：[ideas-0917 第 4 条](../ideas-0917/ideas.md)、[initial-0910/04-数据层](../initial-0910/04-数据层.md)、[initial-0910/10-领域模块地图](../initial-0910/10-领域模块地图.md)、[initial-0910/12-二开指南](../initial-0910/12-二开指南.md)
 >
-> 本文包含两批修复，二者是同一类问题（PG 下 MySQL 专有写法/裸标识符导致的报表故障）：
-> - **第 1 批（采集失败）**：§1–§5，`zp_stats.tickets` 死字段 + `IN(FALSE)`。
-> - **第 2 批（报表页 500，追加）**：§6，上游 `ReportEngine` 的 raw SQL 混合大小写标识符。
+> 本文包含三批修复（均为自建 PostgreSQL 部署报表暴露的问题）：
+> - **第 1 批（采集失败）**：§1–§5，`zp_stats.tickets` 死字段 + `IN(FALSE)`（PG）。
+> - **第 2 批（报表页 500）**：§6，上游 `ReportEngine` 的 raw SQL 混合大小写标识符（PG）。
+> - **第 3 批（报表页 500）**：§7，报表模板对 `ext-intl` 的依赖（**与数据库无关**，MySQL/PG 都会触发）。
 
 ---
 
@@ -202,3 +203,65 @@ ALL PASSED
 
 - 这两处属**上游代码自带缺陷**（非本 fork 引入）。可选：向上游 Leantime 提 PR，把 `ReportEngine.php` 的 raw 标识符统一改为 `DatabaseHelper::wrapColumn()`。
 - `ReportEngine` 其余查询均通过查询构造器传递标识符，PG 安全性依赖 schema 列名大小写不变；若上游后续新增 `selectRaw` 裸写混合大小写列名，仍会复现同类问题。建议在 PG 上对报表各视图（项目 / 计划 / 策略）做一次回归。
+
+---
+
+## 7. 追加修复：报表模板的 ext-intl 依赖（报表页 500 的第三个错误）
+
+> 承接 §6：标识符问题修完后，报表页继续渲染，又在模板层抛出第三个错误。它**与数据库无关**（MySQL / PostgreSQL 都会触发），故单独记录。
+
+### 7.1 背景与现象
+
+```
+RuntimeException
+The "intl" PHP extension is required to use the [format] method.
+(View: /var/www/html/app/Domain/Reports/Templates/partials/projectReportBody.blade.php)
+
+Illuminate\Support\Number::ensureIntlExtensionIsInstalled  vendor/.../Support/Number.php:38
+Number::format(0.0, null, 1)                                projectReportBody.blade.php:15
+```
+
+调用链：`Reports\Controllers\Project::get()` → `Core\UI\Template::display('reports.project')` → `partials/projectReportBody.blade.php`。
+
+### 7.2 根因
+
+- 报表/统计模板使用了 `Illuminate\Support\Number::format(..., maxPrecision: 1)`；Laravel 该方法的**第一件事**就是 `ensureIntlExtensionIsInstalled()`，缺 `ext-intl` 直接抛 `RuntimeException`（vendor `Illuminate/Support/Number.php:36-49, 380-387`），并非只在特定 locale 下才需要 intl。
+- **Leantime 并未把 `intl` 列为必需扩展**（`CLAUDE.md` 扩展清单、[01-项目概览](./../initial-0910/01-项目概览.md) 均无 intl），本 fork 的 `deploy/Dockerfile.prod`（第 35 行扩展列表）与 `.dev/dockerfile` 也**都没有安装** intl。代码库其它地方（Goalcanvas `progressReadout`/`canvasDialog`、CostTracking、stakeholder 报表 partials）统一用 PHP 原生 `number_format()`。
+- 属上游 PR #3643 引入的回归，全库仅 5 处模板用了 `Number::format`。
+- **为何单测没拦住**：唯一渲染该组件的 `StatTileEscapingTest` 未传 `delta`，从未走到格式化那一行；CI 测试镜像同样无 intl，只因未命中该分支而通过。这也说明「PG 仓库层验证」覆盖不到模板渲染。
+
+### 7.3 功能调整（Behavior）
+
+- 新增全局助手 `format_number()`（`app/helpers.php`），语义对齐 `Number::format($n, maxPrecision: 1)`：
+  - 四舍五入到最多 1 位小数、**去除末尾 0**、带千分位：`12.34 → "12.3"`、`1000.0 → "1,000"`、`0.0 → "0"`、`-3.5 → "-3.5"`；
+  - 纯 `number_format()` 实现，**不依赖 intl**。
+- 5 处调用点替换（含报表 partials 与共享 `statTile` 组件），详见 §7.4。
+- **行为差异**：不再按用户 locale 决定小数/千分位分隔符（如德语用逗号）。Leantime 现有的 `number_format` 调用同样不本地化，故与全项目一致；若将来确实需要 locale 感知，应统一引入 intl 并在镜像安装 + 加启动检查，而不是零散使用 `Number::`。
+
+### 7.4 技术描述
+
+| 文件 | 改动 |
+|---|---|
+| `app/helpers.php` | 新增 `format_number(int\|float $number, int $maxPrecision = 1): string`（`number_format` + 去末尾 0） |
+| `app/Domain/Reports/Templates/partials/projectReportBody.blade.php:15` | `$fmt` 闭包由 `Number::format(..., maxPrecision: 1)` 改为 `format_number(...)` |
+| `app/Domain/Reports/Templates/partials/goalTable.blade.php:24` | 同上 |
+| `app/Domain/Reports/Templates/partials/milestoneList.blade.php:54` | 直接调用改为 `format_number(...)` |
+| `app/Domain/Reports/Templates/partials/needsAttention.blade.php:47` | 2 处调用改为 `format_number(...)` |
+| `app/Views/Templates/components/statTile.blade.php:93` | delta 数值格式化改为 `format_number(abs(...))` |
+| `tests/Unit/app/FormatNumberHelperTest.php` | 新增：格式化语义 + 无 intl 断言（4 tests） |
+| `tests/Unit/app/Views/Components/StatTileDeltaFormattingTest.php` | 新增：用真实 Blade 渲染带 delta 的 `statTile`，覆盖原 500 的确切行（3 tests） |
+
+### 7.5 验证（php 8.2 容器，已确认 `extension_loaded('intl') === false`）
+
+- 新增 `FormatNumberHelperTest`：4 tests / 12 assertions 通过（含「无 intl 也能工作」）。
+- 新增 `StatTileDeltaFormattingTest`：3 tests 通过，断言 `+12.3` / `−3.5` / `±0`，即在无 intl 环境下渲染真实组件不再抛错。
+- 全量单元测试：**928 tests, 2299 assertions, 8 skipped, 0 failures**（修复前 921 → +7）。
+- Reports 域测试 46 tests / 129 assertions 通过；PHPStan（helpers + 2 个测试文件）`No errors`。
+- Pint：`app/helpers.php` 仅报与改动前**完全相同**的问题（`line_ending` 来自 Windows CRLF 环境；`unary_operator_spaces`/`not_operator_with_successor_space` 在 HEAD 基线即存在），无新增。
+- 审计：`app/` 下已无任何 `Number::` / `Illuminate\Support\Number` 调用。
+
+### 7.6 遗留与后续
+
+- 上游问题，可选提 PR：把 5 处 `Number::format()` 改为 `number_format()`，或在其镜像安装 intl。
+- 若未来确需 locale 感知数字，建议在配置/镜像层统一引入 intl，并加一个「intl 可用性」的启动检查，避免模板再次静默依赖一个非必需扩展。
+- 无 intl 环境下应对报表各页面（项目 / 计划 / 策略）做一次回归；本次修复覆盖了 Reports 全部 partials 与共享 `statTile`。

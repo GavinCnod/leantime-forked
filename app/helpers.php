@@ -101,6 +101,31 @@ if (! function_exists('format')) {
     }
 }
 
+if (! function_exists('format_number')) {
+    /**
+     * Formats a number for display without depending on the "intl" extension.
+     *
+     * Drop-in replacement for `Illuminate\Support\Number::format(..., maxPrecision: n)`,
+     * which throws a RuntimeException when ext-intl is missing (Leantime does not list intl
+     * as a required extension and the shipped Docker images do not install it). Rounds to at
+     * most $maxPrecision fraction digits and trims trailing zeros, e.g. 12.34 -> "12.3",
+     * 1000.0 -> "1,000".
+     *
+     * @param  int|float  $number  The number to format.
+     * @param  int  $maxPrecision  Maximum number of fraction digits (0 disables fraction digits).
+     */
+    function format_number(int|float $number, int $maxPrecision = 1): string
+    {
+        $formatted = number_format((float) $number, max(0, $maxPrecision), '.', ',');
+
+        if ($maxPrecision > 0) {
+            $formatted = rtrim(rtrim($formatted, '0'), '.');
+        }
+
+        return $formatted;
+    }
+}
+
 if (! function_exists('cast')) {
     /**
      * Casts a variable to a different type if possible.
