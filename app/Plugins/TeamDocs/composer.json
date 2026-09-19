@@ -1,9 +1,16 @@
 {
     "name": "leantime/teamdocs",
-    "description": "Team documentation in the Help menu for this Leantime fork.",
+    "description": "Adds the team's documentation to the Help menu as modal dialogs. 在右上角帮助菜单中加入团队文档（记账规矩 / 中文操作指南 / 术语表），点击以浮态弹框展示。",
     "version": "1.0.0",
     "type": "leantime-plugin",
     "license": "AGPL-3.0-only",
+    "homepage": "https://github.com/GavinCnod/leantime-forked",
+    "authors": [
+        {
+            "name": "Gavin Chen",
+            "email": "gavinchen@mindrose.xyz"
+        }
+    ],
     "require": {
         "league/commonmark": "^2.8"
     }
