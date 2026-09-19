@@ -1,7 +1,10 @@
 # Leantime 中文术语对照表
 
 > 本团队 fork 使用中文界面(`app/Language/zh-CN.ini`),但部分界面元素、CostTracking 插件字段、以及官方英文文档仍用英文。本表统一团队沟通和文档里的用词。
+
 > 配套:`docs/leantime-zh-guide.md`、`docs/cost-tracking-rules.md`。
+
+> 最后更新: 2026年9月19日 15:00 版本号（v1.0）
 
 ## 导航与项目
 
