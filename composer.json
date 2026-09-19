@@ -58,6 +58,7 @@
         "robthree/twofactorauth": "^1.8",
         "endroid/qr-code": "^6.0",
         "league/html-to-markdown": "^5.1",
+        "league/commonmark": "^2.8",
         "ramsey/uuid": "^4.3",
         "htmlawed/htmlawed": "^1.2",
         "symfony/dotenv": "^7.1.6",

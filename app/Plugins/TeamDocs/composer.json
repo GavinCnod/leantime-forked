@@ -1,0 +1,10 @@
+{
+    "name": "leantime/teamdocs",
+    "description": "Team documentation in the Help menu for this Leantime fork.",
+    "version": "1.0.0",
+    "type": "leantime-plugin",
+    "license": "AGPL-3.0-only",
+    "require": {
+        "league/commonmark": "^2.8"
+    }
+}

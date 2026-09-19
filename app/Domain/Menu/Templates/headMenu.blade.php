@@ -182,6 +182,8 @@
                     {!! __("menu.submit_bug") !!}
                 </a>
             </li>
+            {{-- Plugins may add <li> entries to the Help dropdown here. --}}
+            @dispatchEvent('insideHelpMenu')
             <li class="nav-header border">{!! __("menu.leantime_community") !!}</li>
             <li>
                 <a href='https://discord.gg/4zMzJtAq9z' target="_blank">
