@@ -10,10 +10,32 @@ $documents = [
 ];
 $resourceRoot = $root.'/app/Plugins/TeamDocs/Resources/docs';
 
+$sync = in_array('--sync', $argv, true);
+
+if ($sync) {
+    foreach ($documents as $document) {
+        $source = $root.'/docs/'.$document;
+        if (! is_file($source)) {
+            fwrite(STDERR, "TeamDocs source document missing, nothing copied: {$document}\n");
+            exit(1);
+        }
+    }
+}
+
 $failed = false;
 foreach ($documents as $document) {
     $source = $root.'/docs/'.$document;
     $target = $resourceRoot.'/'.$document;
+
+    if ($sync) {
+        if (! copy($source, $target)) {
+            fwrite(STDERR, "TeamDocs document could not be copied: {$document}\n");
+            $failed = true;
+            continue;
+        }
+
+        echo "  copied {$document}\n";
+    }
 
     if (! is_file($source) || ! is_file($target)) {
         fwrite(STDERR, "TeamDocs document missing: {$document}\n");
