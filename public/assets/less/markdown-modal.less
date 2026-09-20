@@ -1,0 +1,89 @@
+/**
+ * TeamDocs document chrome
+ *
+ * The dialog shell around a document rendered by MarkdownRenderer. The document
+ * body itself is styled by `~/css/components/markdown.css`; what lives here is
+ * the title bar, and the sizing that keeps a long document inside the viewport.
+ *
+ * Sizing is the whole reason this file exists. nyroModal sizes the dialog from
+ * the height of the content it injects, so a document that is longer than the
+ * screen grows the dialog past the bottom of the viewport. nyroModal then
+ * clamps it - see `size()` in jquery.nyroModal.custom.js, which caps height at
+ * `viewH - hMargin` - so the top of the document fits but the end of it is cut
+ * off with no way to scroll to it. Capping the height ourselves and scrolling
+ * the body makes the clamp a no-op and the scroll the user's.
+ *
+ * The cap applies to every document, TOC or not: a long document is just as
+ * likely as a table of contents to outgrow the screen.
+ *
+ * If a future nyroModal (or a replacement) sizes the dialog from its own
+ * viewport instead of from the content, this file becomes unnecessary - the
+ * `height`/`overflow-y` pair is a workaround for content-driven sizing, not a
+ * design choice.
+ */
+
+.teamdocs-modal {
+    --teamdocs-modal-gutter: 24px;
+    /* Vertical space reserved around the dialog. nyroModal's own hMargin is the
+       container's padding, which is why this is a tight 24px rather than a
+       full 2x gutter. */
+    --teamdocs-modal-vspace: 24px;
+
+    display: flex;
+    flex-direction: column;
+    height: calc(100vh - var(--teamdocs-modal-vspace));
+    height: calc(100dvh - var(--teamdocs-modal-vspace));
+    min-height: 320px;
+    padding: 0 var(--teamdocs-modal-gutter) var(--teamdocs-modal-gutter);
+}
+
+/* The error state is a couple of lines, so it sizes to its content. */
+.teamdocs-modal--error {
+    height: auto;
+    min-height: 0;
+}
+
+/* Above nyroModal's 500px minW - the breakpoint at which its 75px of horizontal
+   padding starts pushing a scrollbar into the dialog - the error state fills
+   the height as well, so a failed load does not leave a stub of a dialog
+   floating in the overlay. Below it, a short dialog is what the padding was
+   sized for. */
+@media (min-width: 501px) {
+    .teamdocs-modal--error { height: calc(100vh - var(--teamdocs-modal-vspace)); }
+    .teamdocs-modal--error { height: calc(100dvh - var(--teamdocs-modal-vspace)); }
+}
+
+.teamdocs-modal__header {
+    flex: none;
+    /* Not `position: sticky` - the scrolling box is `__body` below, so the
+       header is already outside it and needs no stickiness. */
+    padding: 20px 0 12px;
+    border-bottom: 1px solid var(--main-border-color);
+}
+
+.teamdocs-modal__body {
+    flex: 1 1 auto;
+    /* Without this a flex item refuses to shrink below its content height and
+       the overflow never triggers. */
+    min-height: 0;
+    overflow-y: auto;
+    padding-top: 20px;
+    /* The body is a focus target purely so keyboard users can scroll it; the
+       ring is drawn inward because the box spans the dialog edge to edge. */
+    outline-offset: -2px;
+}
+
+/* ==========================================================================
+   Narrow screens
+   ========================================================================== */
+
+@media (max-width: 767px) {
+    .teamdocs-modal {
+        /* nyroModal's container padding shrinks at this width too. */
+        --teamdocs-modal-vspace: 16px;
+        --teamdocs-modal-gutter: 16px;
+    }
+
+    .teamdocs-modal__header { padding: 14px 0 10px; }
+    .teamdocs-modal__body { padding-top: 14px; }
+}

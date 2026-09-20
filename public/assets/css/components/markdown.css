@@ -1,0 +1,373 @@
+/**
+ * Markdown Typography
+ *
+ * Styles the HTML produced by `Leantime\Core\Support\MarkdownRenderer`. The
+ * renderer emits a bare fragment, so every rule here is scoped to `.md-body` -
+ * the class the *caller* puts on its container - and nothing leaks into the
+ * rest of the application.
+ *
+ * Colours and sizes are the project's design tokens. The token block at the
+ * top of this file documents which ones the renderer's output depends on, so a
+ * new theme can be checked against that list rather than against the rules
+ * below it.
+ *
+ * Where this file and `wiki.css` overlap (both render author-written Markdown
+ * into the same theme) the values are kept identical on purpose. The single
+ * deliberate exception is `.md-table`, see the Tables section.
+ */
+
+/* ==========================================================================
+   Theme contract
+
+   The rendered output only looks right when the active theme defines the
+   tokens below. All of them are present in the four shipped variants
+   (default/minimal x light/dark); the fallbacks elsewhere in this file are a
+   safety net for a custom theme, not a supported configuration.
+
+     Surfaces      --layered-background, --main-bg
+     Text          --primary-font-color
+     Lines         --main-border-color
+     Accent        --accent1, --accent2
+     Shape         --box-radius-small
+     Type          --primary-font-family, --base-font-size
+     Semantic      --green, --red, --orange
+
+   Notes on the semantic three, which are what the callout labels colour with:
+
+     - `--orange` is defined by no shipped theme, so the warning callout always
+       uses its literal fallback. Add the token to a theme to override it.
+     - `--red` here is the *palette* red (the one paired with `--red-text-color`),
+       not the softer `--feedback-danger-color` used for UI status. Callouts
+       want the saturated one.
+
+   `--primary-font-color` is the one to be careful with: the token order flips
+   between light and dark. In the light themes it is body text and
+   `--secondary-font-color` is a darker emphasis; in the dark themes they swap,
+   making `--secondary-font-color` the *lower* contrast of the two. Anything
+   meant to be read as prose therefore inherits the body colour rather than
+   naming a token - see `blockquote` and `md-footnotes`.
+   ========================================================================== */
+
+/* ==========================================================================
+   Base
+   ========================================================================== */
+
+.md-body {
+    font-family: var(--primary-font-family);
+    font-size: var(--base-font-size);
+    line-height: 1.75;
+    color: var(--primary-font-color);
+    overflow-wrap: break-word;
+}
+
+/* ==========================================================================
+   Headings
+   ========================================================================== */
+
+.md-body h1,
+.md-body h2,
+.md-body h3,
+.md-body h4,
+.md-body h5,
+.md-body h6 {
+    margin: 1.5em 0 0.5em;
+    line-height: 1.3;
+    font-weight: 600;
+    letter-spacing: -0.01em;
+}
+
+.md-body h1 {
+    font-size: 1.75em;
+    font-weight: 700;
+    margin-top: 0.5em;
+}
+
+.md-body h2 {
+    font-size: 1.4em;
+    padding-bottom: 0.3em;
+    border-bottom: 1px solid var(--main-border-color);
+}
+
+.md-body h3 { font-size: 1.2em; }
+.md-body h4 { font-size: 1.05em; }
+
+.md-body h1:first-child,
+.md-body h2:first-child,
+.md-body h3:first-child { margin-top: 0; }
+
+/* The permalink `#` sits after the heading text. It stays invisible until the
+   heading is hovered or the anchor itself is focused, so it is reachable by
+   keyboard without adding noise to the rendered document. */
+.md-body .md-heading-anchor {
+    margin-left: 0.4em;
+    color: var(--accent1);
+    text-decoration: none;
+    border-bottom: none;
+    opacity: 0;
+    transition: opacity 0.15s ease;
+}
+
+.md-body h1:hover .md-heading-anchor,
+.md-body h2:hover .md-heading-anchor,
+.md-body h3:hover .md-heading-anchor,
+.md-body h4:hover .md-heading-anchor,
+.md-body .md-heading-anchor:focus-visible { opacity: 0.55; }
+
+@media (hover: none) {
+    /* No hover on touch, so the affordance has to be visible by default. */
+    .md-body .md-heading-anchor { opacity: 0.35; }
+}
+
+/* ==========================================================================
+   Text
+   ========================================================================== */
+
+.md-body p { margin: 0 0 1em; }
+.md-body strong { font-weight: 700; }
+.md-body del { opacity: 0.75; }
+
+.md-body a {
+    color: var(--accent1);
+    text-decoration: none;
+    border-bottom: 1px solid transparent;
+    transition: border-color 0.15s ease;
+}
+
+.md-body a:hover { border-bottom-color: var(--accent1); }
+
+/* Links between packaged documents read as "another document in here" rather
+   than as an external link. */
+.md-body a.md-cross-doc-link {
+    border-bottom-style: dashed;
+    border-bottom-color: var(--accent1);
+}
+
+/* ==========================================================================
+   Lists
+   ========================================================================== */
+
+.md-body ul,
+.md-body ol {
+    margin: 0 0 1em;
+    padding-left: 1.6em;
+}
+
+.md-body ul { list-style: disc; }
+.md-body ol { list-style: decimal; }
+.md-body li { margin-bottom: 0.35em; }
+.md-body li > ul,
+.md-body li > ol { margin: 0.35em 0 0; }
+.md-body li:last-child { margin-bottom: 0; }
+
+/* GFM task lists */
+.md-body ul.contains-task-list {
+    list-style: none;
+    padding-left: 0.2em;
+}
+
+.md-body li.task-list-item {
+    display: flex;
+    align-items: flex-start;
+    gap: 8px;
+}
+
+.md-body li.task-list-item > input[type="checkbox"] {
+    flex: none;
+    width: 1em;
+    height: 1em;
+    margin: 0.4em 0 0;
+    accent-color: var(--accent1);
+}
+
+/* ==========================================================================
+   Code
+   ========================================================================== */
+
+.md-body code {
+    font-family: 'SF Mono', 'Monaco', 'Inconsolata', 'Fira Code', monospace;
+    font-size: 0.9em;
+    padding: 2px 6px;
+    background: var(--layered-background);
+    border-radius: 4px;
+    color: var(--accent1);
+}
+
+.md-body pre {
+    margin: 1em 0;
+    padding: 16px 20px;
+    background: var(--layered-background);
+    border-radius: var(--box-radius-small, 8px);
+    overflow-x: auto;
+}
+
+.md-body pre code {
+    padding: 0;
+    background: none;
+    color: inherit;
+    font-size: 0.875em;
+    line-height: 1.6;
+}
+
+/* ==========================================================================
+   Tables
+
+   `display: block` is what lets a table overflow its own box and scroll,
+   instead of stretching the containing block and forcing the whole dialog to
+   scroll sideways. The cost is that `display: block` collapses the table's
+   intrinsic width, so `width: 100%` would stretch two-column tables with short
+   cells across the full dialog. `width: fit-content` sizes to the content and
+   still lets a wide table reach the container edge (and scroll) because the
+   max is pinned to 100%. This is the one place `wiki.css` diverges; it renders
+   into a full-width page where stretching is the wanted behaviour.
+
+   `white-space: nowrap` on `th` is deliberately absent: Chinese header cells
+   are short and wrapping them keeps the intrinsic width down.
+   ========================================================================== */
+
+.md-body table.md-table {
+    display: block;
+    width: fit-content;
+    max-width: 100%;
+    overflow-x: auto;
+    border-collapse: collapse;
+    margin: 1em 0;
+    font-size: 0.95em;
+}
+
+.md-body table.md-table th,
+.md-body table.md-table td {
+    padding: 10px 12px;
+    text-align: left;
+    border: 1px solid var(--main-border-color);
+    vertical-align: top;
+}
+
+.md-body table.md-table th {
+    background: var(--layered-background);
+    font-weight: 600;
+}
+
+.md-body table.md-table tr:hover td {
+    background: var(--layered-background);
+}
+
+/* ==========================================================================
+   Blockquotes and GitHub-style callouts (`> [!NOTE]`)
+
+   The renderer adds `md-callout--{type}` to the blockquote. The quoted text
+   stays as authored - only the `[!TYPE]` marker is consumed - so the type
+   label is generated here from `content` rather than read from the Markdown.
+   The label is `aria-hidden` by construction (generated content is not exposed
+   to assistive tech), and the border colour carries the same meaning visually.
+   ========================================================================== */
+
+.md-body blockquote {
+    margin: 1em 0;
+    padding: 14px 20px;
+    border-left: 3px solid var(--accent1);
+    background: var(--layered-background);
+    border-radius: 4px 12px 12px 4px;
+    /* Inherits `--primary-font-color` rather than using the secondary one.
+       The token order flips between themes: in the light themes primary is the
+       body colour and secondary is a darker emphasis; in the dark themes they
+       swap. Inheriting the body colour is the only choice that stays the
+       readable one in all four variants. */
+}
+
+.md-body blockquote p:last-child { margin-bottom: 0; }
+
+.md-body .md-callout { border-left-width: 4px; }
+
+.md-body .md-callout::before {
+    display: block;
+    font-size: var(--font-size-s, 0.8em);
+    font-weight: 700;
+    letter-spacing: 0.06em;
+    margin-bottom: 0.35em;
+    opacity: 0.75;
+}
+
+/* `--accent2` is the theme's own second accent (teal in the shipped themes),
+   which keeps the "important" callout on-palette without claiming a colour
+   the theme does not define - there is no `--purple` to reach for. */
+.md-body .md-callout--note { border-left-color: var(--accent1); }
+.md-body .md-callout--tip { border-left-color: var(--green, #2e7d32); }
+.md-body .md-callout--important { border-left-color: var(--accent2); }
+.md-body .md-callout--warning { border-left-color: var(--orange, #e08600); }
+.md-body .md-callout--caution { border-left-color: var(--red, #d64045); }
+
+.md-body .md-callout--note::before { content: '注意'; color: var(--accent1); }
+.md-body .md-callout--tip::before { content: '提示'; color: var(--green, #2e7d32); }
+.md-body .md-callout--important::before { content: '重要'; color: var(--accent2); }
+.md-body .md-callout--warning::before { content: '警告'; color: var(--orange, #e08600); }
+.md-body .md-callout--caution::before { content: '当心'; color: var(--red, #d64045); }
+
+/* ==========================================================================
+   Footnotes
+   ========================================================================== */
+
+.md-body .md-footnotes {
+    margin-top: 2em;
+    padding-top: 1em;
+    border-top: 1px solid var(--main-border-color);
+    font-size: 0.9em;
+    /* Inherits the body colour for the same reason as `blockquote` above:
+       `--secondary-font-color` is the lower-contrast surface colour in the dark
+       themes, and footnotes are prose, not de-emphasised chrome. */
+}
+
+.md-body .md-footnotes ol { padding-left: 1.2em; }
+.md-body .md-footnotes p { margin: 0 0 0.5em; }
+
+.md-body .md-footnote-backref {
+    margin-left: 0.35em;
+    text-decoration: none;
+    border-bottom: none;
+}
+
+/* ==========================================================================
+   Misc
+   ========================================================================== */
+
+.md-body hr {
+    border: none;
+    height: 1px;
+    background: var(--main-border-color);
+    margin: 2em 0;
+}
+
+.md-body img {
+    max-width: 100%;
+    height: auto;
+    border-radius: var(--box-radius-small, 8px);
+    margin: 1em 0;
+}
+
+/* ==========================================================================
+   Generated table of contents
+
+   The renderer emits the whole list in one `<ul class="md-toc">` and drops the
+   intermediate nesting levels (a document with `##` and `####` headings nests
+   the `####` under the `##`). Each level is therefore indented by one step and
+   the depth itself carries the hierarchy.
+   ========================================================================== */
+
+.md-toc {
+    margin: 0 0 1.5em;
+    padding: 12px 18px;
+    background: var(--layered-background);
+    border: 1px solid var(--main-border-color);
+    border-radius: var(--box-radius-small, 8px);
+    font-size: 0.95em;
+}
+
+.md-toc ul {
+    margin: 0;
+    padding-left: 0;
+    list-style: none;
+}
+
+.md-toc ul ul { padding-left: 1.1em; }
+.md-toc li { margin-bottom: 0.25em; }
+.md-toc a { color: var(--primary-font-color); }
+.md-toc a:hover { color: var(--accent1); }
