@@ -2,809 +2,426 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
-## About Leantime
+## What this repo is
 
-Leantime is an open source project management system designed for non-project managers. It combines strategy, planning, and execution in an easy-to-use interface. The application is built with PHP (Laravel), MySQL, and a JS frontend. Current version: 3.6.2.
+A **self-hosted fork** of [Leantime](https://github.com/Leantime/leantime) (open source project management system), maintained by one team for their own use.
 
-## Current State & Active Migrations
+- **Branch strategy**: `dev-self-hosted` is the working branch. The fork **deliberately does not track upstream** — it sits ~45 commits ahead of `upstream/master` and does not merge upstream changes. Treat `dev-self-hosted` as the source of truth; do not propose rebases or upstream merges.
+- **Version**: Leantime **3.9.8** (`app/Core/Configuration/AppSettings.php` → `$appVersion`; also `package.json`). The app version is read at *makefile parse time*, so bumping it changes build artifact names.
+- **Upstream**: `upstream` remote = `Leantime/leantime`; `origin` = `GavinCnod/leantime-forked`.
+- **Language**: the team works in Chinese. `docs/` and `.docs/` hold the Chinese operating guides, glossary, and design records — see [Team docs](#team-docs-and-chinese-documentation).
 
-These are ongoing architectural efforts. None need to be fixed proactively -- they provide context for understanding why the codebase has mixed patterns.
+## Fork-specific surface
 
-### 1. HTMX Migration (In Progress)
-**Goal**: Replace jQuery AJAX and full-page reloads with HTMX partial updates.
-**Status**: 8 of 42 domains have dedicated `Hxcontrollers/` with 19 total HxControllers. ~57 Blade templates and ~14 tpl.php files use HTMX attributes.
-**Domains with HxControllers**: Tickets, Projects, Timesheets, Widgets, Menu, Notifications, Plugins, Help.
-**Pattern**: Main page controllers load minimal data + skeleton; content loads via HTMX partials. New async work should use HTMX, not jQuery AJAX.
+Everything below is what this fork adds on top of stock Leantime. Prefer these over upstream patterns.
 
-### 2. Template Migration (In Progress)
-**Goal**: Move from legacy `.tpl.php` to Laravel Blade `.blade.php`.
-**Status**: ~198 `.tpl.php` files (legacy) vs ~91 `.blade.php` files in domains + ~33 in shared Views. About 30% migrated.
-- **Fully modernized (Blade-only)**: Dashboard, Gamecenter, Goalcanvas, Menu, Notifications, Plugins, Widgets
-- **Partially modernized (mix)**: Auth, Calendar, Comments, Help, Projects, Tickets, Timesheets, Users
-- **Fully legacy (TPL-only)**: Blueprints/Canvas, Clients, Files, Ideas, Wiki, Sprints, Setting, etc.
-**Pattern**: Main page views tend to stay `.tpl.php` while new partials and HTMX fragments use `.blade.php`. When touching templates, prefer Blade for new work.
+### Production deploy stack (`deploy/`)
 
-### 3. Service Layer / JSON-RPC
-**Current state**: Services are the business logic layer AND the JSON-RPC API surface. Any public method on a service class can be called via `leantime.rpc.{domain}.{service}.{method}`. The `@api` annotation marks intended API methods but is NOT enforced at runtime.
+Self-hosted container deployment, **PostgreSQL 16 + Redis 7 + Caddy** (not the upstream MySQL default).
 
-### 4. Plugin System (Private Submodule)
-**Current state**: `app/Plugins/` is a git submodule pointing to a private repository for commercial plugins. In the OSS repo this directory is essentially empty. Three plugin types: system (env config, loads at boot), custom (folder), marketplace (phar + license key).
+| File | Purpose |
+|---|---|
+| `docker-compose.prod.yml` | db (Postgres) + redis + app + caddy. MySQL swap documented in a trailing comment block. |
+| `Dockerfile.prod` | 2-stage: `node:20-alpine` builds assets (`npx mix --production`), `php:8.3-fpm-alpine` runs nginx+php-fpm+scheduler under supervisord. |
+| `entrypoint.sh` | Boot: symlink persistence dirs, sync built-in plugins, auto-enable plugins, chown, `exec /start.sh`. |
+| `plugin_ensure.php` | Idempotent plugin install/enable by composer package name. Called by the entrypoint with retry (30×2s). |
+| `Caddyfile` | TLS terminating reverse proxy → `app:8080`. |
+| `backup.sh` | DB dump + userfiles tarball, gzip, retention prune (default 14 days). |
+| `.env.prod.example` | Template for `deploy/.env`. |
+| `tencent-lighthouse.md`, `railway.md` | Step-by-step deploy guides for the two target hosts. |
 
-### 5. Event System (String-Based, Moving to Class-Based)
-**Current state**: 100% string-based event names dynamically generated from class namespace (e.g., `leantime.domain.tickets.services.tickets.updateTicket.ticket_updated`). Only one class-based event exists: `Files/Events/FileUploaded.php` (boilerplate). The `DispatchesEvents` trait is mixed into nearly every core class. Future work should prefer class-based events where practical.
+Key operational facts:
 
-### 6. JavaScript Architecture (Outdated, Needs Componentization)
-**Current state**: All JS uses a global `leantime` namespace with IIFE module pattern. ~7-8MB of JS loaded on every page (no code splitting). jQuery 3.7.1 + Bootstrap 2.x (ancient) still in use. TinyMCE 5.10.9 is 3.6MB alone. Both Moment.js and Luxon included (redundant). A file-based per-domain loading system was planned but remains commented out in `webpack.mix.js`. Eventually needs componentized architecture with code splitting.
+- **The prod entrypoint does NOT run migrations.** Install and upgrades are user-driven: `/install` on first boot, and the `Updated` middleware prompts on version change.
+- **Secrets**: generate with `openssl rand -hex 32` (session) / `-hex 24` (DB, Redis). `/start.sh` also supports `*_FILE` env vars for Docker secrets.
+- **Persistence**: named volumes `userfiles`, `public_userfiles`, `plugins`, `logs`. On Railway, single-volume mode via `LEAN_PERSIST_ROOT=/data` (symlinks the four dirs into `/data`).
+- Deploy flow: `cd deploy && cp .env.prod.example .env` → edit → `docker compose -f docker-compose.prod.yml up -d --build`. Update: `git pull` then `up -d --build app`.
+- Prod images do not install `ext-intl` — hence the custom `format_number()` helper (see [helpers.php](#global-helpers-apphelpersphp)).
 
-## Development Environment Setup
+### Plugins this fork ships (`app/Plugins/`)
 
-### Requirements
-- PHP 8.2+
-- MySQL 8.0+ or MariaDB 10.6+
-- Required PHP extensions: BC Math, Ctype, cURL, DOM, Exif, Fileinfo, Filter, GD, Hash, LDAP, Multibyte String, MySQL, OPcache, OpenSSL, PCNTL, PCRE, PDO, Phar, Session, Tokenizer, Zip, SimpleXML
+`app/Plugins/` is a git submodule upstream, but this fork replaced it with **ordinary tracked directories** (`.gitmodules` now only declares `CostTracking`).
 
-### Local Development with Docker (Recommended)
-```bash
-# First build the development environment
-make clean build
+- **`CostTracking`** — git submodule → `https://github.com/GavinCnod/mr-leantime-costtracking.git` (currently v1.0.1). Adds per-ticket cost tracking. Registers **FQCN class-event listeners** (`TicketCreated`, `TicketDeleted`, `TicketListFilter`) — the reference example for consuming the class-based event API. Depends on core dispatching only *after* its permission checks, so it inherits authorization rather than declaring its own.
+- **`TeamDocs`** — in-repo folder plugin (`leantime/teamdocs`, v1.1.0). Adds team documents to the Help dropdown as modal dialogs. Listens on `leantime.*.insideHelpMenu` and renders `teamdocs::helpMenu`. Documents live in `Resources/docs/*.md` and are rendered through the core `MarkdownRenderer`.
+- The prod Dockerfile has a **submodule fallback**: if `app/Plugins/CostTracking/composer.json` is missing (e.g. CI clone without submodules) it clones `COSTTRACKING_REF` (default `main`) and hard-fails if still absent.
 
-# Start the development server
-make run-dev
-```
+Plugin mechanics worth knowing:
 
-This starts a development server on port 8090 with:
-- Leantime app: http://localhost:8090
-- MailDev (for email testing): http://localhost:8081
-- phpMyAdmin: http://localhost:8082 (auth: leantime/leantime)
-- S3Ninja (for S3 testing): http://localhost:8083
+- Discovery scans `app/Plugins/*/` for directories; a plugin is identified by `composer.json`. Marketplace plugins may be phars. The main class name is **derived, not configurable**: `Leantime\Plugins\{Studly(folder)}\Services\{Studly(folder)}`.
+- **Permission classes are globbed from `app/Plugins/*/Permissions/*Permissions.php`** — path convention, no registration. Neither plugin in this repo declares one yet, but plugin routes *are* wrapped by the permission middleware, so the mechanism is live.
+- Plugin `register.php` files are discovered at boot for system plugins, and later (after session/install/update checks) for user-enabled plugins.
 
-### Manual Local Development
-```bash
-# Install dependencies
-make install-deps-dev
+Installing a plugin (`php bin/leantime plugin:install|enable|disable|remove`):
 
-# Build for development
-make build-dev
+- The argument is the **composer package name**, never the folder name — `mindrose/costtracking`, not `CostTracking`. Passing the folder name fails with `Invalid plugin name`. Add `--no-interaction` in scripts. On shell-less platforms set `LEAN_PLUGINS_ENABLE=name1,name2` instead (this is what the prod entrypoint uses).
+- `createPluginFromComposer()` **requires all five** of `name`, `description`, `version`, `homepage`, `authors` — they are raw array reads, so a missing key fails the install. (`type: leantime-plugin` is conventional but **not** validated in PHP.)
+- Metadata is read from `composer.json` **only at install/discovery time**; afterwards the UI reads `zp_plugins`. Editing `composer.json` on a deployed instance changes nothing — use the plugin's own sync command (CostTracking ships `plugin:costtracking:sync-metadata`).
 
-# Point your web server to the public/ directory
-# Create MySQL database
-# Copy config/.env.sample to config/.env and configure your database
-# Navigate to <localdomain>/install
-```
+Three plugin-authoring traps — all fail **silently**:
 
-## Common Commands
+1. **Template events need the `leantime.*.` wildcard.** `@dispatchEvent('beforeEndRightColumn')` arrives with its full path prefix (e.g. `leantime.domain.tickets.templates.submodules.additionalfields.beforeEndRightColumn`). Class-based events/filters must **not** use the prefix — those are matched on the FQCN.
+2. **Template-event callbacks receive exactly one argument** (the payload array). Writing `function ($event, $wrap)` with `$payload = $wrap[0] ?? []` renders nothing forever, with no warning. Regression coverage: `EventDispatcherCharacterizationTest`.
+3. **Language `.ini` files must be flat with no `[section]` header.** Core uses `parse_ini_file(..., false)` but the plugin loader uses `parse_ini_file(..., true)`; a section produces a nested array, so `__('myplugin.key')` fails and the literal key string is shown.
 
-### Build Commands
-```bash
-make install-deps-dev    # Install development dependencies
-make install-deps        # Install production dependencies
-make build-dev           # Build for development (with source maps)
-make build               # Build for production
-make clear-cache         # Clear cache
-make package             # Package for release
-npx mix                  # Build js/css using webpack (run in root or within a plugin)
-```
+Also: language arrays are cached for 7 days, and plugin Blade namespaces are cached in `storage/framework/viewPaths.php` — clear both when new plugin UI doesn't appear.
 
-### Testing Commands
-```bash
-make phpstan             # Run static analysis (level 0)
-make test-code-style     # Run code style checks (Laravel Pint)
-make fix-code-style      # Fix code style issues (Laravel Pint)
-make unit-test           # Run unit tests (Docker)
-make acceptance-test     # Run acceptance tests (Docker)
+Note that `app/Plugins` was a git submodule upstream; this fork removed that gitlink so the directory is ordinary tracked content (only `CostTracking` is still a submodule). Don't "restore" it.
 
-# Run specific acceptance test groups (inside Docker):
-docker compose --file .dev/docker-compose.yaml --file .dev/docker-compose.tests.yaml exec leantime-dev php vendor/bin/codecept run -g api --steps
-docker compose --file .dev/docker-compose.yaml --file .dev/docker-compose.tests.yaml exec leantime-dev php vendor/bin/codecept run -g timesheet --steps
-# Available groups: api, timesheet, login, ticket, user
-```
+### Team docs and Chinese documentation
 
-### CLI Commands
-Leantime extended the standard Laravel artisan command and includes several command-line tools located in the `app/Command` directory that can be executed via:
-```bash
-php bin/leantime [command]
-```
+- `docs/` (tracked, user-facing guides): `leantime-zh-guide.md` (operator guide), `leantime-zh-glossary.md` (EN↔ZH glossary), `cost-tracking-rules.md` (team expense-recording rules), `designs/`.
+- `.docs/` (design/development records, dated folders): `initial-0910/` holds a **full Chinese translation of an older CLAUDE.md** (`CLAUDE.zh-CN.md`) plus 12 architecture chapters — genuinely useful, but **written against an older revision and partially stale**; cross-check against the code. Also `plugins-0914/` (CostTracking), `teamdocs-0919/` (TeamDocs), `bug-fix-0918/`, `ideas-0917/`.
+- **Three files are duplicated between `docs/` and `app/Plugins/TeamDocs/Resources/docs/` and must stay byte-identical**: `cost-tracking-rules.md`, `leantime-zh-guide.md`, `leantime-zh-glossary.md`. The runtime image can't read root `docs/` (`.dockerignore` excludes it), so TeamDocs reads its own packaged copy; `Resources/docs/README.md` is plugin-only and has no counterpart. Edit the source in `docs/`, then run `php scripts/check-teamdocs-docs.php --sync` (without `--sync` it just reports drift). `TeamDocsResourceSyncTest` asserts the SHA-256 match, so drift fails CI.
+- `MarkdownRenderer` (`app/Core/Support/MarkdownRenderer.php`, league/commonmark) is the **shared** Markdown→HTML renderer used by TeamDocs; styling lives in core's `markdown.css` in the main bundle. Reuse it rather than adding another Markdown dependency.
 
-Common commands:
-- `system:update` - Update the Leantime installation
-- `plugin:enable [pluginname]` - Enable a specific plugin
-- `plugin:disable [pluginname]` - Disable a specific plugin
-- `plugin:install [pluginname]` - Install a plugin from the marketplace
-- `plugin:list` - List all installed plugins
-- `user:add` - Add a new user
-- `setting:save [key] [value]` - Save a system setting
+### Fork-specific helper: `format_number()`
 
-## Code Architecture
+`app/helpers.php` defines `format_number(int|float $number, int $maxPrecision = 1): string` as a drop-in replacement for `Illuminate\Support\Number::format(...)`, which throws when `ext-intl` is absent. **Use `format_number()` for number display**, never `Number::format()` — the shipped Docker images have no intl.
 
-### Directory Structure
+## Core systems
 
-- `app/` - Main application code
-  - `Core/` - Framework core components
-    - `Application/` - Application service providers
-    - `Auth/` - Authentication services (guards, Sanctum tokens)
-    - `Bootstrap/` - Custom bootstrap (LoadConfig)
-    - `Configuration/` - App configuration (Environment, DefaultConfig, AppSettings, laravelConfig)
-    - `Console/` - Console kernel
-    - `Controller/` - Base controllers (Controller, HtmxController, Frontcontroller, Composer)
-    - `Db/` - Database abstraction (Db, Repository, DbColumn, DatabaseHelper)
-    - `Domains/` - Base domain interfaces (DomainService, DomainRepository, DomainModel)
-    - `Events/` - Event system (EventDispatcher, DispatchesEvents trait)
-    - `Exceptions/` - Exception handling
-    - `Files/` - File management
-    - `Http/` - HTTP handling (HttpKernel, IncomingRequest, ApiRequest, HtmxRequest)
-    - `Middleware/` - Request middleware (16 middlewares)
-    - `Plugins/` - Plugin infrastructure
-    - `Routing/` - Route loading
-    - `Support/` - Helper utilities (CarbonMacros, DateTimeHelper, Format, Cast)
-    - `UI/` - Template handling (Template, Theme, ViewsServiceProvider)
-  - `Domain/` - Application domains (~42 modules, after the canvas-variant consolidation into Blueprints), organized by feature
-    - Each domain typically contains:
-      - `Controllers/` - HTTP endpoints
-      - `Hxcontrollers/` - HTMX-specific controllers
-      - `Repositories/` - Data access
-      - `Services/` - Business logic
-      - `Models/` - Data structures
-      - `Templates/` - View templates (`.tpl.php`, `.blade.php`, `partials/`)
-      - `Js/` - Domain-specific JavaScript
-      - `Composers/` - View composers
-      - `Listeners/` - Event listeners
-      - `Htmx/` - HTMX event enums
-      - `Middleware/` - Domain middleware
-      - `register.php` - Event/filter listener registration
-  - `Views/` - Shared view files
-    - `Templates/layouts/` - Layout skeletons (app, entry, blank, error, registration)
-    - `Templates/components/` - Shared Blade components (`<x-global::componentName>`)
-    - `Templates/sections/` - Header, footer, nav sections
-    - `Composers/` - Shared view composers (App, Header, Footer, Entry, PageBottom)
-  - `Plugins/` - Extension plugins (git submodule to private repo)
-  - `Language/` - Internationalization files (INI-based)
-- `bootstrap/` - Application bootstrap files
-- `config/` - Configuration files (.env, .env.sample)
-- `public/` - Web root directory
-  - `assets/` - Static assets (CSS, JS, images, fonts)
-  - `dist/` - Built/compiled assets (output of `npx mix`)
-  - `theme/` - Theme files (default, minimal)
-- `storage/` - Storage for logs, cache, and sessions
-- `tests/` - Test files (Codeception v5.1)
-  - `Acceptance/` - Acceptance tests (Cest format, WebDriver + Selenium)
-  - `Unit/` - Unit tests (extending Laravel TestCase)
+Four systems carry most of the architectural weight. Read these before touching controllers, services, or events.
 
-### General Architecture Overview
-The application is built on Laravel 11 with significant custom components. It uses a plugin system for extensibility.
-Leantime follows a domain-driven architecture:
+### Permission engine (`app/Core/Auth/Permissions/`)
 
-**Core**
+**This is the current authorization model.** Upstream Leantime authorizes with role-name comparisons (`$login::userIsAtLeast('manager')`), which still appears ~198 times in legacy code; new code must use the permission engine instead.
 
-Framework code (Laravel) and any extended classes are in the `app/Core` folder.
-Core manages all shared functionality and base features.
+A domain declares a **vocabulary of verbs** (no role information) in `app/Domain/{Domain}/Permissions/{X}Permissions.php`:
 
-**Domain**
-
-~42 domain modules in `app/Domain/`. Each module has several layers representing one domain:
-
-1. **Controllers** handle HTTP requests and delegate to services
-2. **Services** contain business logic and orchestrate operations
-3. **Repositories** access and manipulate data storage
-4. **Models** represent data structures
-5. **Templates** represent view files (Blade and legacy PHP)
-6. **Listeners** contain event listeners
-7. **Jobs** are queueing jobs
-
-**Plugins**
-Plugins are installable domain modules living in `app/Plugins/`.
-Each plugin follows the same structure as domain modules but also contains a `composer.json` file for plugin identification.
-Plugins can be managed as folders or pre-packaged phar files.
-
-### Domain Module Reference
-
-**Core Feature Domains**: Tickets, Projects, Users, Sprints, Timesheets, Calendar, Comments, Files, Wiki, Ideas, Reports, Notifications, Dashboard, Widgets, Menu, Tags, Reactions, Entityrelations, Audit, Read
-
-**Canvas Domains**: The ~14 individual canvas-variant domains (Cpcanvas, Dbmcanvas, Leancanvas, Swotcanvas, etc.) were **consolidated into a single `Blueprints` domain**. The variants no longer exist as separate domains — they are YAML-defined and selected by slug at runtime. Remaining canvas-family domains:
-- **Blueprints** — the consolidated canvas framework and current base. Native routes `/blueprints/{canvasSlug}/...` ({canvasSlug} = swot/lean/goal/etc.); legacy `/{x}canvas/...` paths 301-redirect here. All canvas data lives in the shared `zp_canvas` (boards, `type` column) + `zp_canvas_items` (items, `box` column) tables, keyed by `canvasId`. `Wiki` and `Goalcanvas` both `extend Blueprints`; the old `Canvas` repo `extends BlueprintsRepository`.
-- **Goalcanvas** — extends Blueprints; fully Blade with its own service.
-- **Logicmodelcanvas** — newer canvas type; still routed through the legacy `Canvas` controllers (Frontcontroller).
-- **Canvas** — the *old* base, now semi-legacy/dead. Only `Logicmodelcanvas` still rides on its controllers; otherwise a deprecated shim layer over Blueprints. New canvas work should target Blueprints, never the old `Canvas` domain.
-
-**System Domains**: Api, Auth, Cron, CsvImport, Connector, Environment, Errors, Install, Ldap, Modulemanager, Oidc, Plugins, Queue, Setting, TwoFA
-
-**Backend-only Domains** (no UI): Audit, Entityrelations, Ldap, Reactions, Read, Tags, Queue
-
-**Shared canvas tables (IDOR caution)**: `zp_canvas` and `zp_canvas_items` are shared across **every** canvas type with one id sequence. A bare-id repository read/write can therefore land on a *foreign* canvas type or project. Canvas-family service/repo methods must fail **closed** — resolve the entity's real project (returning false/null/0 when the id doesn't match the expected `type`/`box`) and authorize against that, never falling back to `session('currentProject')`. (See Wiki/Ideas for the established pattern.)
-
-### Architecture Details
-
-#### Application Boot Sequence
-
-1. `public/index.php` loads helpers, autoloader, creates Application via `bootstrap/app.php`
-2. `bootstrap/app.php` creates `Leantime\Core\Application` (extends Laravel's), binds HttpKernel, ConsoleKernel, ExceptionHandler, IncomingRequest
-3. `Bootloader::getInstance()->boot($app)` captures request and routes to HttpKernel or ConsoleKernel
-4. **HttpKernel bootstrappers** (in order): LoadEnvironmentVariables, **LoadConfig** (custom -- loads `laravelConfig.php` + Environment), HandleExceptions, RegisterFacades, RegisterProviders, BootProviders
-5. **Middleware pipeline** processes the request (see Middleware section)
-6. **Routing**: Tries Laravel routes first, falls back to Frontcontroller if no match
-
-#### Config
-
-System Administrators can configure Leantime using .env files or Environment variables. These need to be stored in the `config/` folder.
-
-**Custom config loader** (`app/Core/Bootstrap/LoadConfig.php`):
-- Creates `Environment` instance as config repository (NOT Laravel's standard Repository)
-- Loads from `app/Core/Configuration/laravelConfig.php` (NOT from `config/` PHP files)
-- Priority order: Environment Variables > .env file > PHP config file > DefaultConfig defaults
-- Maps `#[LaravelConfig('dotted.key')]` attributes on `DefaultConfig` properties to Laravel config
-
-**Important**: The list of ServiceProviders is stored in `laravelConfig.php`. ALL Laravel config (database, cache, session, auth, etc.) lives in this single file, not in separate `config/*.php` files. Standard `artisan publish` will NOT work correctly.
-
-User-editable variables should be added to `config/.env.sample` and exposed via `LEAN_*` prefix.
-
-#### Data Layer Architecture (To Be Refactored)
-
-1. **Repository Classes**: Located in domain-specific `/Repositories` folders, these classes extend `Leantime\Core\Db\Repository` and provide the data access layer. They mix raw SQL queries with Laravel Query Builder depending on when code was written. The `dbcall()` method provides a wrapper that dispatches events around SQL execution.
-
-2. **Models**: Located in domain-specific `/Models` folders, these are simple data structures with public properties. No ORM annotations, no validation, no encapsulation. Properties typically use `mixed` type hints. Some use `#[DbColumn('name')]` attributes for column mapping.
-
-3. **Database Abstraction**: `Core/Db/Db.php` wraps Laravel's `DatabaseManager` (not raw PDO anymore). `Core/Db/DatabaseHelper.php` provides cross-database compatibility helpers for MySQL, PostgreSQL, and MS SQL Server.
-
-4. **Table Naming Convention**: Database tables use a `zp_` prefix (e.g., `zp_projects`, `zp_users`).
-
-The following areas will need refactoring for Doctrine integration:
-
-- **Repository Pattern**: Current repositories mix domain logic with data access. They need to be refactored to use Doctrine's EntityManager.
-- **Entity Definition**: Current models need to be converted to proper Doctrine entities with annotations/attributes for mapping.
-- **SQL Statements**: Raw SQL queries need to be replaced with Doctrine's DQL or QueryBuilder.
-- **Column Attributes**: The current `DbColumn` attribute will need to be replaced with Doctrine's mapping annotations.
-- **Transactions**: Current manual transaction handling would be replaced with Doctrine's transaction management.
-- **Relationship Management**: Current manual relationship handling would be replaced with Doctrine's relationship mappings.
-
-#### HTTP Layer Architecture
-
-**Dual Routing System**:
-1. **Laravel Routes** (new, preferred): Standard `routes.php` files in domains and plugins, loaded by `RouteLoader`
-2. **Frontcontroller** (legacy, deprecated but still handles most requests): Convention-based URL-to-class mapping
-
-**Frontcontroller URL Convention** (`Core/Controller/Frontcontroller.php`):
-```
-/module/action           -> Domain\{Module}\Controllers\{Action}::get()|post()
-/module/action/id        -> Domain\{Module}\Controllers\{Action}::get()|post() with id param
-/module/action/id/method -> Domain\{Module}\Controllers\{Action}::method()
-/hx/module/action        -> Domain\{Module}\Hxcontrollers\{Action}
-```
-Resolution order: Domain Controllers > Domain Hxcontrollers > Plugin Controllers > Plugin Hxcontrollers
-
-**Two Controller Method Patterns** (both coexist):
-1. **`run()` method (legacy, ~55 controllers)**: Single method handles GET and POST with inline `$_POST`/`$_GET` checks
-2. **`get($params)` / `post($params)` (modern, ~83 controllers)**: Separate methods per HTTP verb. Returns `Response`. **Prefer this pattern for new code.**
-
-**Request Types** (auto-detected via `RequestTypeDetector`):
-- `IncomingRequest` - Standard web requests
-- `ApiRequest` - API requests (adds `getAuthorizationHeader()`, `getAPIKey()`, `getBearerToken()`)
-- `HtmxRequest` - HTMX requests (adds `isBoosted()`, `getTarget()`, `getTriggerName()`, etc.)
-
-**Middleware Stack** (exact order in `HttpKernel.php`):
-1. `TrustProxies` - Proxy trust validation
-2. `StartSession` - Session init with locking and exponential backoff
-3. `Installed` - Redirects to `/install` if not installed
-4. `Updated` - Redirects to update if DB version behind
-5. `LoadPlugins` - Fires events that trigger user plugin `register.php` loading
-6. `InitialHeaders` - Security headers (CSP, X-Frame-Options) -- filterable by plugins
-7. `AuthCheck` - Authentication (web guards + API guards, 2FA check, public route bypass)
-8. `AuthenticateSession` - Password hash validation, Leantime user session data
-9. `RequestRateLimiter` - Rate limits (per minute; keyed by IP + session user id; API/MCP/general share a counter): login 20/min, API 120/min, MCP 300/min, general 2000/min — overridable via `LEAN_RATELIMIT_*`
-10. `HandleCors` - CORS handling
-11. `ValidatePostSize` - POST size validation
-12. `TrimStrings` - Whitespace trimming (except passwords)
-13. `ConvertEmptyStringsToNull` - Empty string to null
-14. `SetCacheHeaders` - Cache control with etag support
-15. `Localization` - Language, timezone, date/time formats, CarbonImmutable macros
-16. `CurrentProject` (domain middleware) - Sets active project context for non-HTMX/API requests
-
-**Two-Pipeline Architecture**: After the core middleware stack, a second pipeline runs for plugin-registered middleware:
 ```php
-// Core middleware -> Plugin middleware -> Router dispatch
-```
-Plugins register into this second pipeline via `Registration::registerMiddleware()`.
-
-#### Event System
-
-Leantime has a custom event system in `Core/Events/` that implements Laravel's `Dispatcher` interface but provides two parallel mechanisms (similar to WordPress hooks):
-
-**Events** (fire-and-forget):
-```php
-self::dispatch_event('ticket_created', $payload);
-```
-
-**Filters** (modify data through a pipeline):
-```php
-$result = self::dispatch_filter('beforeReturnAllPlugins', $installedPlugins, ['enabledOnly' => $enabledOnly]);
-```
-
-**Event Name Convention**: Names are auto-generated from class namespace + method:
-```
-leantime.domain.tickets.services.tickets.updateTicket.ticket_updated
-```
-Moving a class changes all its event names -- this is why class-based events are the desired direction.
-
-**Listener Registration** (in `register.php` files):
-```php
-// Class-based listener (calls handle() method)
-EventDispatcher::add_event_listener(
-    'leantime.domain.projects.services.projects.notifyProjectUsers.notifyProjectUsers',
-    NotifyProjectUsers::class
-);
-
-// Closure listener with wildcard
-EventDispatcher::addEventListener('leantime.domain.auth.*.userSignUpSuccess', function ($params) {
-    $helperService = app()->make(\Leantime\Domain\Help\Services\Helper::class);
-    $helperService->createDefaultProject(session('userdata.id'), session('userdata.role'));
-});
-
-// Filter listener with priority
-EventDispatcher::add_filter_listener(
-    'leantime.domain.menu.repositories.menu.getMenuStructure.menuStructures.project',
-    function ($menu) { $menu['newItem'] = [...]; return $menu; },
-    50  // lower = earlier execution
-);
-```
-
-**Pattern Matching**: Supports `*` (any string), `?` (any char), `{RGX:pattern:RGX}` (inline regex).
-
-**Blade Directives**: `@dispatchEvent('eventName')`, `@dispatchFilter('filterName', $data)`
-
-**Event Discovery** (`discoverListeners()`): Called at boot, scans all `app/Domain/*/register.php` files + system plugin `register.php` files. User-enabled plugin register files load later via `LoadPlugins` middleware event.
-
-**register.php Pattern Guide**: Domains that have `register.php`: Auth, CsvImport, Help, Install, Notifications, Plugins, Queue, Reports. These files:
-- Register event/filter listeners via `EventDispatcher`
-- Schedule cron jobs via Laravel Scheduler
-- Hook into application lifecycle events
-- All currently use string-based event names
-
-#### Service Layer Architecture
-
-The service layer implements business logic and follows these principles:
-
-1. **Domain Services**: Located in domain-specific `/Services` folders, these classes implement the `Leantime\Core\Domains\DomainService` interface.
-
-2. **Responsibility**: Service classes encapsulate business rules and coordinate between repositories, often combining data from multiple repositories.
-
-3. **Implementation Pattern**:
-   - Services delegate data access to repositories
-   - Services handle domain-specific validation rules
-   - Services trigger events when important state changes occur
-   - Services implement permission checks and authorization logic
-   - Use constructor-based DI with PHP 8 promoted properties
-   - Use `DispatchesEvents` trait for event integration
-   - Use `dispatch_filter()` for plugin hook points
-
-4. **Filter System**: Services use a filter system to allow plugins to modify data before and after processing.
-
-5. **API Exposure**: Most public methods in service classes are marked with `@api` annotation to indicate they are part of the stable API. Any public service method can be called via JSON-RPC at `leantime.rpc.{Domain}.{Service}.{method}` -- the `@api` annotation is documentation only, not enforced at runtime.
-
-When refactoring for Doctrine:
-- Services will need to work with Doctrine entities instead of array structures
-- Transaction handling would be moved from repositories to services
-- Hydration logic can be simplified using Doctrine's entity manager
-
-#### JSONRPC API Architecture
-
-Leantime provides its users with a JSON-RPC 2.0 API. The API is a thin wrapper accessible through the API domain (`app/Domain/Api/Controllers/Jsonrpc.php`) and provides structured access to the service layers of all domains.
-
-**Method routing convention**:
-```
-leantime.rpc.{domain}.{methodname}                  # 4 segments (service = domain name)
-leantime.rpc.{domain}.{servicename}.{methodname}     # 5 segments
-```
-
-**How it works**: The controller uses PHP Reflection to introspect service method parameters, matches request params by name, validates required params, and attempts type casting. Services are resolved via `app()->make()`.
-
-**Authentication**: Two types:
-1. **Leantime API Keys** (`x-api-key` header): Format `lt_{user}_{key}`, acts as service account
-2. **Laravel Sanctum** (Bearer tokens): Personal access tokens (requires AdvancedAuth plugin)
-
-**Deprecated API controllers**: The `app/Domain/Api/Controllers/` directory contains legacy REST-like controllers (Tickets.php, Projects.php, etc.) that return JSON. These are deprecated -- all new JS API calls should go through the JSON-RPC endpoint.
-
-#### Template System
-
-Leantime uses a dual template system actively migrating from PHP to Blade:
-
-**Template types**:
-- `.tpl.php` (~198 files) - Legacy PHP templates using `$tpl->get('variable')` pattern
-- `.blade.php` (~91 in domains, ~33 in Views) - Modern Laravel Blade
-- `.sub.php` (~19 files) - Reusable legacy template fragments via `$tpl->displaySubmodule()`
-- `.inc.php` (~10 files) - Canvas base includes
-
-**Shared View Folder** (`app/Views/`):
-- `Templates/layouts/` - Layout skeletons: `app.blade.php` (main), `entry.blade.php` (login), `blank.blade.php`, `error.blade.php`, `registration.blade.php`
-- `Templates/components/` - Shared Blade components: accordion, badge, button, dropdownPill, emojiinput, inlineLinks, inlineSelect, loader, loadingText, pageheader, selectable, tabs, undrawSvg, plus kanban sub-components
-- `Templates/sections/` - header, footer, pageBottom, appAnnouncement
-- `Composers/` - App, Header, Footer, Entry, PageBottom
-
-**Component syntax**: `<x-global::componentName>` for shared, `<x-widgets::moveableWidget>` for domain-specific. Anonymous components resolve automatically — `<x-{domain}::{name}>` → `app/Domain/{Domain}/Templates/components/{name}.blade.php`, `<x-global::{name}>` → `app/Views/Templates/components/{name}.blade.php` (registered in `ViewsServiceProvider::registerBladeCompiler()`).
-
-**Three component types** (prefer components over `@include`'d partials for anything reusable):
-1. **Presentational (anonymous)** — pure markup driven by `@props`, no controller. Lives in `Templates/components/`, called `<x-{domain}::{name}>`. The default for cards/badges/submenus/etc.
-2. **HTMX-backed** — a self-fetching/refreshing widget backed by an `HxController` (`init()` DI, `$view`, action methods). Mounted with the standard `<x-global::hx>` component instead of hand-written `hx-get`/`hx-trigger` boilerplate. Declare the event contract on an `HxComponent` (see below).
-3. **Class-backed** — a Blade component with a PHP class for constructor DI / computed props. Class at `app/Domain/{Domain}/View/Components/{Name}.php` (or `app/Views/Components/` for global), resolves before the anonymous file. Use sparingly, only when logic is too heavy for an anonymous component and it is not a server fetch.
-
-`partials/` is reserved for non-reusable, page-specific fragments and for `HxController` `$view` targets.
-
-**Template rendering methods** (on `Template` class):
-- `display($template, $layout, $code)` - Full page render with layout
-- `displayPartial($template)` - Render without layout
-- `displayFragment($viewPath, $fragment)` - HTMX fragment rendering
-- `displaySubmodule($alias)` - Render legacy submodule
-- `emptyResponse()` - Empty HTTP response
-
-**HTMX for asynchronous calls**
-
-Leantime is using HTMX for elements that should update asynchronously. The process is ongoing.
-The goal is that the main page controllers are loading minimal amounts of data to show the page and some shared components (think filters or similar) and all content is being loaded via htmx.
-All htmx controllers are inside the HxControllers folder. Templates for htmx calls should be in `templates/partials` as they only represent a small part of the page content.
-If a partial or htmx call represents an entity that may be used in various other places (ticket cards, project cards, user cards etc) a component should be created.
-
-**HTMX Pattern Guide**:
-
-URL convention: `/hx/{module}/{controller}/{action}`
-
-Creating an HxController:
-```php
-namespace Leantime\Domain\{Module}\Hxcontrollers;
-
-use Leantime\Core\Controller\HtmxController;
-
-class MyController extends HtmxController
+final class TicketsPermissions implements ProvidesPermissions
 {
-    // Required: points to a Blade partial
-    protected static string $view = '{module}::partials.myPartial';
-
-    // DI via init(), NOT __construct()
-    public function init(MyService $service): void
-    {
-        $this->service = $service;
-    }
-
-    // Action methods are named semantically, not by HTTP verb
-    public function get($params): void
-    {
-        $this->tpl->assign('data', $this->service->getData($params['id']));
-    }
-
-    public function save(): void
-    {
-        // Process $_POST
-        $this->tpl->setNotification('Saved!', 'success');   // already emits HtmxUiEvents::Notify
-        $this->tpl->emit(HtmxTicketEvents::UPDATE);          // tell listeners the entity changed
+    public const VIEW = 'tickets.view';
+    public const EDIT = 'tickets.edit';
+    // ...
+    public function domain(): string { return 'tickets'; }
+    public function permissions(): array {
+        return [new Permission(self::VIEW, 'View to-dos'), /* ... */];
     }
 }
 ```
 
-**Client (HTMX) event naming convention** — events travel server→browser on the `HX-Trigger` header. Two planes, kept separate from the backend `leantime.*` events:
-- **Data events** (`lt:{domain}:{entity}.{verb}`, past tense): "entity X changed → refresh". Consumed declaratively via `hx-trigger="lt:tickets:ticket.updated from:body"`. Backed by per-domain enums `app/Domain/{D}/Htmx/Htmx{D}Events.php`.
-- **UI command events** (`lt:ui:{command}`): "do a UI thing" (toast, close modal). Backed by the single core enum `Leantime\Core\Events\Htmx\HtmxUiEvents` (Notify, ModalClose, …) — consumed by JS listeners in `app.js`/`modals.js`. Plugins reuse these, never mint their own `lt:ui:*`.
+Discovery is by **path glob**, not registration — `app/Domain/*/Permissions/*Permissions.php` and `app/Plugins/*/Permissions/*Permissions.php`. 18 providers exist. Class name and key prefix need not match (e.g. `GoalcanvasPermissions` declares `goals.*`).
 
-Enums implement `HtmxEvent` via the `InteractsWithHtmxEvents` trait (gives `event()`→wire value, `scoped($id)` for per-entity events, `trigger()` for `hx-trigger` strings). PHP enums can't implement `__toString`, so use `event()`/`->value` in PHP; Blade `{{ Events::Case }}` renders the value via Laravel's `e()`. Emit with `$this->tpl->emit(...)` / `$this->setHTMXEvent(...)` (both accept `HtmxEvent|string`).
+Enforcement is one method — `PermissionEnforcer::enforce()` — reached from three entry points: `Frontcontroller::executeAction()` (legacy convention controllers), the `CheckPermissions` middleware (`app/Core/Auth/Permissions/CheckPermissions.php`, applied globally by `RouteLoader` to all domain *and* plugin routes), and `Jsonrpc::executeApiRequest()`.
 
-> Migration window: legacy DOMAIN-event strings (`ticket_update`, `subtasks_update`, etc.) are bidirectionally dual-emitted with their `lt:` replacement via `HtmxEvents::LEGACY_ALIASES`, so old and new declarative `hx-trigger` listeners both fire. Remove that map once every emitter + listener is migrated. UI command events (`lt:ui:*`) are NOT dual-emitted — they're consumed by JS `addEventListener` handlers that listen for each legacy name directly, so aliasing them would invoke the handler once per alias (double growl / multiple modal-close).
+`#[RequiresPermission(permission, projectIdParam: ?, global: ?, entityScoped: ?)]` is a **method attribute** (`Attribute::TARGET_METHOD`). Semantics:
+
+| Usage | Enforcement |
+|---|---|
+| No attribute | **Complete no-op** — no session/DB/permission-engine access at all. |
+| `#[RequiresPermission(P)]` | Project = `session('currentProject')` (may be null → capability-only check). |
+| `projectIdParam: 'x'` | Resolve project from `$params['x']`; strict positive int. If unresolvable **and the parameter is mandatory**, **fail closed (deny)**. |
+| `global: true` | Check against the global role; no project. Use for company-wide capability screens. |
+| `entityScoped: true` | **The enforcer returns immediately and performs no check.** It is a *declared-coverage marker*, not a check. |
+
+`entityScoped: true` is the one that bites:
+
+- Because it short-circuits **before** `global`, combining `global: true, entityScoped: true` makes the attribute inert — the *global* behavior then comes solely from the permission's own `projectScoped = false` metadata.
+- The method body **must** call `$this->authorize()` against the project of the **loaded entity** (the enforcer cannot see it). Load the entity first and authorize against *its* project; fail closed (return `false`/`null`) when the id doesn't resolve. This is the same fail-closed discipline as the [shared canvas tables](#shared-canvas-tables-idor-caution).
+
+Resolving the current user:
+
+- In services: `$this->authorize($perm, ?int $projectId)`, `$this->can(...)` (from `Core/Domains/BaseService`). These always enforce regardless of audit mode.
+- In Blade: `@can('tickets.edit')` — routed through the Gate bridge (`PermissionServiceProvider::registerPermissionGate()`), which only resolves dotted abilities present in the synced catalog.
+- In legacy templates / anywhere a boolean is handy: `can('tickets.edit', $projectId)` (from `app/helpers.php`).
+
+Roles are **incremental grants unioned up a hierarchy** — `readonly(5) < commenter(10) < editor(20) < manager(30) < admin(40) < owner(50)` — defined in `DefaultRolePermissions::ROLES` / `GRANTS`. Roles are **project-scoped**: `RoleResolver::effectiveRoleForProject()` resolves the user's role *in that project*. Manager+ keep their global role everywhere. Store: `zp_roles` / `zp_permissions` / `zp_role_permissions`.
+
+Critical gotchas:
+
+- **Run `php bin/leantime permissions:sync` after adding or changing permission classes.** Discovery and the grant map are cached `rememberForever` on the `installation` store, so a newly shipped domain's permissions are **invisible until synced**. An unsynced key is treated as *global-scoped* rather than deny-by-default, and the Gate bridge defers (returns `null`) instead of denying — silent under-enforcement, not an error.
+- `--seed` re-grants built-in role defaults **additively** (never revokes, so admin edits survive); `--prune` is the only destructive path.
+- Role/permission writes do **not** auto-invalidate: callers must `PermissionService::flushCache()`. Plugin enable/disable should call `PermissionRegistry::flush()`.
+- Denials throw `AuthorizationException` → Web 403 / RPC `-32001`. Set `LEAN_PERMISSIONS_ENFORCE=false` for audit-only mode (logs `[permissions:audit]` instead of blocking; default `true`).
+- **There is no admin UI for role→permission editing yet** — custom roles are reachable only through `PermissionRepository`.
+
+### Event system (`app/Core/Events/`)
+
+Two parallel mechanisms, WordPress-hook style. Both coexist; **new work should prefer the class-based form.**
+
+**Class-based events** implement `LeantimeEvent` and use `InteractsWithEvents`:
 
 ```php
-// Per-domain data-event enum
-use Leantime\Core\Events\Htmx\{HtmxEvent, InteractsWithHtmxEvents};
-
-enum HtmxTicketEvents: string implements HtmxEvent {
-    use InteractsWithHtmxEvents;
-    case UPDATE = 'lt:tickets:ticket.updated';
-    case SUBTASK_UPDATE = 'lt:tickets:subtask.updated';
+final class TicketUpdated implements LeantimeEvent
+{
+    use InteractsWithEvents;
+    public function __construct(
+        public readonly ?int $ticketId = null,
+        private readonly ?string $legacyHook = null,   // TEMPORARY migration-window discriminator
+    ) {}
+    public function legacyHooks(): array {
+        if ($this->legacyHook === null) return [];
+        return ['leantime.domain.tickets.services.tickets.'.$this->legacyHook.'.ticket_updated'];
+    }
 }
-
-// Emit from an HxController action
-$this->tpl->emit(HtmxTicketEvents::UPDATE);
 ```
 
-**HTMX-backed components** — declare the event contract on an `HxComponent` and mount with `<x-global::hx>` (no hand-written boilerplate). The mount reads `listensTo()` so the emit side and the listen side reference the SAME enum and cannot drift apart:
+Dispatch with named args — `TicketCreated::dispatch(ticketId: $id, legacyHook: __FUNCTION__)`. Class **filters** implement `LeantimeFilter` and return the payload: `$tickets = TicketListFilter::dispatch(tickets: $tickets, legacyHook: __FUNCTION__)`.
+
+Listen with the FQCN; the closure receives the **typed object**:
+
 ```php
-class Subtasks extends \Leantime\Core\Controller\HxComponent {
-    protected static string $view = 'tickets::partials.subtasks';
-    public static string $swap = 'innerHTML';
-    public static function route(): string { return 'tickets/subtasks'; }
-    public static function listensTo(): array { return [HtmxTicketEvents::SUBTASK_UPDATE]; }
-    public static function emits(): array { return [HtmxTicketEvents::SUBTASK_UPDATE]; }
-}
-```
-```blade
-{{-- contract-driven: route + refresh triggers derived from the class --}}
-<x-global::hx :for="\Leantime\Domain\Tickets\Hxcontrollers\Subtasks::class" :id="$ticket->id" trigger="load" />
-
-{{-- attribute-driven escape hatch (one-offs / plugins) --}}
-<x-global::hx endpoint="comments/reactions/get" :listen="[HtmxTicketEvents::UPDATE]" />
+EventDispatcher::add_event_listener(TicketCreated::class, function (TicketCreated $e) { /* $e->ticketId */ });
 ```
 
-Common HTMX patterns used:
-- Lazy loading: `hx-trigger="revealed"` (widgets load when scrolled into view) — `<x-global::hx>` defaults to this
-- Cross-component updates: `hx-trigger="lt:tickets:ticket.updated from:body"`
-- Loading indicators: `hx-indicator=".htmx-indicator"` with `<x-global::loadingText>`
-- Preloading: `preload="mouseover"` (hover-preload for dropdowns)
-- Notifications: `$tpl->setNotification(...)` emits `HtmxUiEvents::Notify` (`lt:ui:notify`) → jQuery growl via the global listener in `app.js`
+**Compatibility mechanism** (why both styles keep working): `EventDispatcher::dispatch_event()` detects `LeantimeEvent` and bypasses all string machinery. `executeClassEventHandlers()` then runs two phases — (1) FQCN listeners get the bare typed object; (2) for each name in `legacyHooks()`, it rebuilds the legacy payload via `get_object_vars()` (so only *public* properties cross over — the `private $legacyHook` discriminator is excluded by construction) and runs the **exact same code path** as string events. Wildcard and string listeners therefore still fire, with today's array payload.
 
-**Batch template variable assignment** (common pattern in HxControllers):
-```php
-array_map([$this->tpl, 'assign'], array_keys($tplVars), array_values($tplVars));
-```
+Naming rules:
 
-#### Role Management, Authorization and Authentication
-- Leantime uses a combination of Laravel's standard Authentication and Sanctum and Custom auth providers.
-- Three auth guards: `leantime` (web, session-based), `sanctum` (token), `jsonRpc` (API)
-- Each user can have a role which is currently hard coded
-- Each user can be assigned to 1 client
-- Users can be assigned to projects
-- Roles give users access to data or parts of the system
-- Additionally each user has specific project access.
-  - Projects can be either "Accessible to everyone", "accessible only by users within a client" or accessible by users directly assigned to the project only.
-  - Admins and Owners can access all projects
+- **Class names are `{Entity}{Verb}` / `{Thing}Filter`, and the verb must come from the `EventVerb` enum** (18 past-tense cases: `Created`, `Updated`, `Deleted`, … — not `Changed`/`Edited`/`Saved`). `tests/Unit/app/Core/Events/EventVocabularyTest.php` globs `app/Domain/*/Events/*.php` and `app/Core/*/Events/*.php` and enforces this on classes implementing `LeantimeEvent`/`LeantimeFilter` only.
+- The legacy string name is **not derived** — it is hardcoded in `legacyHooks()` with the emit-site method spliced in. This is deliberate: every historical emit site passes its own `__FUNCTION__` so exact subscribers fire under the right conditions and wildcard subscribers fire **once**, not N times. Never statically list all historical emit sites.
+- **Do not combine `InteractsWithEvents` with Laravel's `Dispatchable`** — both define `dispatch()`, and Laravel's bypasses the `LeantimeEvent` fast path.
 
-**API Authentication**
+String events (legacy, still dominant) are auto-named from class namespace + calling method + raw hook string, e.g. `leantime.domain.tickets.services.tickets.updateTicket.ticket_updated`. `DispatchesEvents` provides `self::dispatch_event()` / `self::dispatch_filter()`. Pattern matching supports `*`, `?`, and `{RGX:pattern:RGX}`.
 
-System admins and users can create API Keys. There are 2 types of keys:
-1. Leantime API Keys which act as service accounts and are handled like a regular user. Format: `lt_{user}_{key}`. The username is the api key name and password is the api-secret
-2. Personal Access Tokens can be created by users (if the AdvancedAuth plugin is installed). Tokens can be used to authenticate the user owning them. We use Laravel Sanctum for this.
+**Class-based events currently in production** (11 total): Tickets (`TicketCreated`, `TicketUpdated`, `TicketDeleted`, `TicketStatusUpdated`, `StatusLabelsUpdated`, `MilestoneCreated/Updated/Deleted`, plus filters `TicketListFilter`, `TodoWidgetTasksFilter`) and Blueprints (`CanvasItemUpdated`). Note `Files/Events/FileUploaded.php` is a **plain Laravel stub, not** a `LeantimeEvent` — don't copy it as a template.
 
-**Additional Auth providers**
-Leantime supports LDAP and OIDC authentication natively but can also integrate additional providers via Laravel Socialite (Authentik, Auth0, Gitea, GitHub, GitLab, Google, Keycloak, Microsoft, Okta, PropelAuth, EduID, SAML2).
+Listener registration lives in `register.php`; only 8 domains have one (Auth, CsvImport, Help, Install, Notifications, Plugins, Queue, Reports). Not every domain needs one.
 
-## Frontend Architecture
+### HTMX architecture
 
-### Build System
-Laravel Mix 6.x (Webpack 5.x) -- configured in `webpack.mix.js`. Output goes to `public/dist/` with version-stamped filenames.
+The async/DOM-update layer. **Use HTMX for data loading and refreshes; use JS only for interactivity** (editors, drag-and-drop). Do not add jQuery AJAX for new async work.
 
-**JS bundles** (ALL loaded on every page via `header.blade.php`):
-- `compiled-htmx` + `compiled-htmx-extensions` - HTMX core + head-support, preload, SSE extensions
-- `compiled-frameworks` - jQuery 3.7.1 + Bootstrap 2.x
-- `compiled-framework-plugins` - jQuery UI, Chosen.js, growl, tags input, nestedSortable
-- `compiled-global-component` - Luxon, Moment, Tippy.js, Uppy, Croppie, Packery, Shepherd.js, Isotope, GridStack, jsTree, Mermaid, Marked
-- `compiled-editor-component` - TinyMCE 5.10.9 + ~20 custom plugins (3.6MB)
-- `compiled-calendar-component` - FullCalendar + iCal.js
-- `compiled-table-component` - DataTables + plugins
-- `compiled-gantt-component` - Snap.svg + custom Frappe Gantt
-- `compiled-chart-component` - Chart.js + Luxon adapter
-- `compiled-app` - Core app + ALL domain JS files via glob `./app/Domain/**/*.js`
+- HxControllers live in `app/Domain/{Domain}/Hxcontrollers/` (13 domains, 26 controllers — plus `app/Plugins/TeamDocs/Hxcontrollers/`) and extend `Core\Controller\HtmxController`. URL convention: `/hx/{module}/{controller}/{action}`. Templates go in `Templates/partials/` — `partials/` is reserved for non-reusable, page-specific fragments and HxController `$view` targets.
+- DI goes through `init()`, **not** `__construct()`. Action methods are named semantically, not by HTTP verb.
+- Event enums: per-domain `app/Domain/{D}/Htmx/Htmx{D}Events.php` for **data events** (`lt:{domain}:{entity}.{verb}`, past tense), and the single core `Core\Events\Htmx\HtmxUiEvents` for **UI commands** (`lt:ui:*` — notify, modal-close). Plugins reuse the core UI enum; never mint their own `lt:ui:*`.
+- Emit with `$this->tpl->emit(...)`; consume declaratively with `hx-trigger="lt:tickets:ticket.updated from:body"`.
+- **Migration window**: legacy DOMAIN event strings (`ticket_update`) are bidirectionally dual-emitted via `HtmxEvents::LEGACY_ALIASES`. UI command events are deliberately **not** aliased — JS listens on each legacy name directly, so aliasing would double-fire (double growl / multiple modal close).
+- Prefer `<x-global::hx :for="...HxController::class">` over hand-written `hx-get`/`hx-trigger`. Declaring the contract on an `HxComponent` (`listensTo()`/`emits()`) means the emit side and listen side reference the same enum and cannot drift. Note how early this pattern is: there is exactly **one** `HxComponent` subclass today (`Tickets/Hxcontrollers/Subtasks`) and one mount — treat it as a new convention, and expect most components to still be anonymous Blade.
 
-### JavaScript Architecture
-**Global namespace**: All JS uses `leantime` namespace with IIFE module pattern:
-```javascript
-leantime.ticketsController = (function () {
-    function doSomething() { ... }
-    return { doSomething: doSomething };
-})();
-```
+PHP enums can't implement `__toString` — use `->event()` / `->value` in PHP; Blade `{{ Events::Case }}` renders the value via Laravel's `e()`.
 
-**Domain JS files** (46 total in `app/Domain/*/Js/`): Pattern mirrors backend -- `{domain}Repository.js` for AJAX, `{domain}Service.js` for logic, `{domain}Controller.js` for UI/DOM.
+### WorkStructure (`app/Core/WorkStructure/`)
 
-**Guidance**: Use HTMX for data loading/updates. Use JS only for interactivity (editors, drag-and-drop, etc.). Use JSON-RPC endpoint when fetch is needed. When using fetch:
-```javascript
-fetch(url, { credentials: "include", headers: { 'X-Requested-With': 'XMLHttpRequest' } })
-```
+A meta-model for how Leantime entities compose and map **across structures** — e.g. a Logic Model output "generates" a Project milestone. It lives in Core (like Plugins and Auth) because it governs domains rather than being one.
 
-### CSS Architecture
-**Three-layer system**:
-1. **Third-party**: Bootstrap 2.x, jQuery UI, Font Awesome 6.5.2, library-specific CSS
-2. **Custom components**: `public/assets/css/components/` -- structure.css, style.default.css, nav.css, kanban.css, forms.css, mobile.css, tables.css, etc.
-3. **Tailwind 3.4.x**: Available with `tw-` prefix to avoid Bootstrap conflicts. Only `@tailwind components` and `@tailwind utilities` active (base disabled). Moving towards Tailwind for new CSS.
+Registration entry point is `StructureRegistry`: `register(title, type, elements, relationships): int` and `registerMappings(sourceId, targetId, mappings)`. It is idempotent, caches forever, and degrades to a no-op (`return 0`) when `zp_work_structures` doesn't exist yet — so it is safe to call from a provider `boot()` during install. Tables: `zp_work_structures`, `zp_work_structure_elements`, `zp_work_structure_relationships`, `zp_work_structure_mappings`.
 
-**CSS Variables (Design Tokens)**: The theme system is built on 100+ CSS custom properties. Always use these instead of hardcoded values:
-- Colors: `--accent1`, `--accent2`, `--primary-color`, `--primary-font-color`, `--primary-background`, `--secondary-background`, `--layered-background`
-- Typography: `--primary-font-family`, `--base-font-size`, `--font-size-xs` through `--font-size-xxxl`
-- Layout: `--box-radius`, `--box-radius-small`, `--box-radius-large`, `--element-radius`, `--input-radius`
-- Shadows: `--min-shadow`, `--regular-shadow`, `--large-shadow`, `--input-shadow`
-- Z-index: `--zlayer-1` through `--zlayer-9`
-- Glass: `--glass-blur`, `--glass-background`, `--glass-border`
+**Status — infrastructure plus one seed.** `WorkStructureServiceProvider::boot()` seeds a built-in "Project" structure (milestone/task/goal). Beyond that, **no domain and no plugin in this repo calls `register()` or `registerMappings()`**, and `MappingService` / `WorkStructureService` have zero consumers outside `app/Core/WorkStructure/`. `ElementDefinition::$domainReference` is stored but never resolved or validated. Its three events are plain Laravel-style (`Dispatchable`), not `LeantimeEvent`, and nothing listens to them. Treat this as an unexercised extension point.
 
-### Theme System
-Themes in `public/theme/{name}/` with `theme.ini`, `css/light.css`, `css/dark.css`.
-Two built-in themes: **default** ("More") and **minimal** ("Less"), both with light/dark mode.
-Fonts: Roboto (default), Atkinson Hyperlegible (accessibility), Shantell Sans.
+## Architecture reference
 
-## Coding Guidelines
+### Boot sequence
 
-### Task Approach Hierarchy
+1. `public/index.php` → helpers, autoloader, `bootstrap/app.php`
+2. `bootstrap/app.php` creates `Leantime\Core\Application`, binds HttpKernel / ConsoleKernel / ExceptionHandler / IncomingRequest
+3. `Bootloader::getInstance()->boot($app)` routes to HttpKernel or ConsoleKernel
+4. HttpKernel bootstrappers: LoadEnvironmentVariables → **LoadConfig** (custom) → HandleExceptions → RegisterFacades → RegisterProviders → BootProviders
+5. Middleware pipeline → routing (Laravel routes first, `Frontcontroller` fallback)
 
-When handling user requests, follow this priority order:
+### Config
 
-1. **Simple Queries**: For straightforward questions about existing code, use Read/Grep tools directly
-2. **Code Modifications**: For changes to existing functionality, analyze the current implementation first
-3. **New Features**: For new functionality, research similar existing patterns before implementing
-4. **Debugging**: For bug fixes, reproduce the issue first, then implement the fix
-5. **Complex Tasks**: For multi-step operations, use TodoWrite to plan before executing
+Config is **not** standard Laravel. A custom loader (`app/Core/Bootstrap/LoadConfig.php`) makes `Environment` (not Laravel's `Repository`) the config repository and reads `app/Core/Configuration/laravelConfig.php` — **not** `config/*.php`.
 
-### Context Management
-
-#### Working with Large Codebases
-- Use search tools (Grep, Glob) strategically to find relevant code before reading files
-- When multiple files might be relevant, batch tool calls to read them efficiently
-- Focus on understanding the specific area of code related to the user's request
-
-#### Clarifying Requirements
-- Ask clarifying questions when the user's request is ambiguous
-- When multiple implementation approaches are possible, present options to the user
-- If unsure about existing patterns or conventions, research the codebase first
-
-#### Efficient Tool Usage
-- Use Task tool for complex searches that might require multiple rounds
-- Batch independent tool calls in single responses
-- Read related files together when working on connected functionality
-
-### Testing Strategy
-
-**Framework**: Codeception v5.1 (wraps PHPUnit). All test targets are Docker-first via `make` commands.
-
-#### When to Run Tests
-- **Before making changes**: Run relevant tests to establish baseline
-- **During development**: Run unit tests for the specific domain being modified
-- **After implementation**: Run full test suite for the affected areas
-- **Before committing**: Always run code style checks and static analysis
-
-#### Test Selection Guidelines
-- For API changes: Run API-specific acceptance tests (`-g api`)
-- For domain-specific changes: Run tests for that domain (e.g., `-g timesheet`)
-- For core changes: Run full test suite
-- For frontend changes: Test both functionality and styling
-
-#### Test Failure Handling
-- Never ignore test failures
-- Fix failing tests before proceeding with new functionality
-- If tests are legitimately outdated, update them as part of the task
-
-### Security Guidelines
-
-#### Data Protection
-- Never log sensitive user data (passwords, API keys, personal information)
-- Use proper input validation and sanitization for all user inputs
-- Follow the existing authentication and authorization patterns
-- Be mindful of SQL injection prevention when working with database queries
-
-#### Plugin Development Security
-- When working with plugins, ensure they follow the same security standards
-- Validate plugin inputs and outputs
-- Don't expose internal system information through plugin APIs
-- Follow the principle of least privilege for plugin permissions
-
-#### Code Security Practices
-- Use parameterized queries through the existing Repository pattern
-- Validate file uploads and handle them securely
-- Ensure proper session management
-- Follow OWASP guidelines for web application security
-
-### Performance Guidelines
-
-#### Database Operations
-- Use the existing Repository pattern instead of direct queries
-- Be mindful of N+1 query problems when working with related data
-- Consider database indexes when adding new query patterns
-- Use pagination for large result sets
-
-#### File Operations
-- Use batch tool calls when reading multiple related files
-- Avoid reading large files unnecessarily - use targeted searches first
-- Consider memory usage when processing large datasets
-
-#### Frontend Performance
-- Minimize JavaScript bundle size when adding new features
-- Use HTMX for efficient partial page updates
-- Optimize images and assets appropriately
-- Follow existing patterns for lazy loading and caching
-- Use htmx for information updates and reloads, use javascript for interactivity
-
-#### Caching
-- Leantime uses the Laravel cache either file-based or Redis.
-- Cache should be used wherever expensive operations are happening.
-- When Redis is available, check if admin has chosen Redis and auto-load config via respective ServiceProvider.
-
-## Development Practices
-
-### Plugin System
-
-Leantime has a comprehensive plugin system that allows extending core functionality:
-
-1. **Plugin Architecture**:
-   - Plugins reside in the `app/Plugins` directory (git submodule to private repo for commercial plugins)
-   - Each plugin is a self-contained package with its own domain structure
-   - Plugins can have their own vendors through Composer
-   - Two plugin formats: folder-based and phar-based (for marketplace plugins)
-
-2. **Plugin Registration** (`register.php`):
-   - Registers event listeners and filters via `EventDispatcher`
-   - The `Registration` service (`Domain\Plugins\Services\Registration`) provides a fluent API:
-     ```php
-     $registration = new Registration('MyPlugin');
-     $registration->registerMiddleware([MyMiddleware::class]);
-     $registration->registerLanguageFiles(['en-US', 'de-DE']);
-     $registration->addMenuItem([...], 'project', ['main', 'submenu-key']);
-     $registration->addCss(['app.css']);
-     $registration->addHeaderJs(['vendor.js']);
-     $registration->addFooterJs(['app.js']);
-     ```
-
-3. **Plugin Loading Order**:
-   - **System plugins** (from `LEAN_PLUGINS` env): Loaded at boot during `discoverListeners()`, before middleware. Cannot be disabled via UI.
-   - **User plugins**: Loaded when `LoadPlugins` middleware fires (after session, install check, update check)
-   - Plugin `routes.php` files are loaded via `RouteLoader`
-
-4. **Plugin Types**:
-   - System: Core enabled plugins defined in config. Always loaded, cannot be disabled via UI, load earlier in the stack
-   - Marketplace: From marketplace.leantime.io. Delivered as phar packages, require license key validation
-   - Custom Folders: Regular plugins or plugins in development
-
-5. **Plugin Lifecycle**: `discoverNewPlugins()` -> `installPlugin()` -> `enablePlugin()` -> `disablePlugin()` -> `removePlugin()`. Each plugin service class can implement `install()`, `uninstall()`, `enable()`, `disable()` hooks.
-
-6. **Plugin license keys and validation**:
-   - Plugins can be purchased from the marketplace (marketplace.leantime.io).
-   - Each plugin needs to be installed with a license key which is stored in the database
-   - License Keys are perpetual however they are restricted by the number of users.
-   - Leantime checks number of active users in the system regularly and against the server.
-   - If a system has more users than allowed for a plugin the plugin is disabled. Data remains in the database
-   - Daily cron validates all marketplace plugin licenses
-
-7. **Refactoring Considerations**:
-   - Move away from string-based event hooks to class-based events
-   - Implement a more robust dependency management system
-   - Standardize plugin activation/deactivation hooks
-   - Add versioning and compatibility checking
-   - Plugin updates should be handled automatically without having to enter license keys
-
-### Event System
-Features should use the event system to maintain loose coupling between components. Event System is custom extension of Laravel events and also includes options for filters. See the Event System section under Architecture Details for full documentation.
+- **All** Laravel config (database, cache, session, auth, …) lives in the single `laravelConfig.php`. `artisan vendor:publish` will **not** work correctly.
+- Priority: env vars > `.env` > PHP config file > `DefaultConfig` defaults.
+- `#[LaravelConfig('dotted.key')]` attributes on `DefaultConfig` properties map to Laravel config.
+- User-editable settings belong in `config/sample.env` under a `LEAN_*` name (note: `sample.env`, **not** `.env.sample`).
 
 ### Routing
-Leantime has dual routing: Laravel routes (preferred for new code) and legacy Frontcontroller (convention-based URL-to-class mapping). See HTTP Layer Architecture for details.
 
-### Testing
-Code should be tested using:
-- PHPStan for static analysis (currently level 0)
-- Laravel Pint for code style (primary tool; PHPCS also configured but Pint is preferred)
-- Codeception v5.1 for both unit and acceptance testing
-- Test groups: `api`, `timesheet`, `login`, `ticket`, `user`
+Two systems:
 
-## Specific Code Style Guidelines
+1. **Laravel routes** — `routes.php` per domain, loaded by `RouteLoader` (only 5 exist: Blueprints, Files, Projects, Setting, Users). All domain and plugin routes are wrapped in the `CheckPermissions` middleware group, so `#[RequiresPermission]` is honored without per-route `can:` declarations. **Prefer this for new code.**
+2. **Frontcontroller** (legacy, convention-based, still handles most requests):
+   - `/module/action` → `Domain\{Module}\Controllers\{Action}::get()|post()`
+   - `/module/action/id`, `/module/action/id/method`
+   - `/hx/module/action` → `Domain\{Module}\Hxcontrollers\{Action}`
+   - Resolution order: Domain Controllers → Domain Hxcontrollers → Plugin Controllers → Plugin Hxcontrollers
 
-### Code Style
-We use Laravel Pint for code style (config at `.pint/pint.json`).
+**Controller style is now uniform**: `get($params)` / `post($params)` returning a `Response` (145 of 159 domain controllers). The old single-method `run()` pattern has been fully removed — do not reintroduce it. A note in `Frontcontroller::getValidControllerCall()` warns that the route cache can outlive a deploy, so it self-invalidates on mismatch.
 
-### Backwards Compatibility
-Unless specifically called out DO NOT keep any old code or build any sort of backwards compatibility.
+Request types are auto-detected: `IncomingRequest`, `ApiRequest` (API key / bearer helpers), `HtmxRequest` (boosted, target, trigger name).
 
-### Configs
-All laravel configs need to be stored in the laravelConfig file inside the core configuration folder. Any variables that should be editable by the user should be
-added to the sample.env file and exposed via `LEAN_*`. We do not load any custom php configs from the root config folder and as such things like artisan publish will not publish configs correctly. Instead the content needs to be added to laravelConfig.
-When redis is available for a certain service (queue, cache, sessions etc) we should check if the admin has chosen to use redis and then automatically load the redis config via the respective serviceProvider.
+Middleware order (see `HttpKernel.php`): TrustProxies → StartSession → Installed → Updated → LoadPlugins → InitialHeaders → AuthCheck → AuthenticateSession → RequestRateLimiter → HandleCors → ValidatePostSize → TrimStrings → ConvertEmptyStringsToNull → SetCacheHeaders → Localization → CurrentProject. A **second pipeline** then runs plugin-registered middleware before dispatch.
 
-### Error Logging
-When logging errors ALWAYS use the Log Facade (ensure it's included in the use statements).
-Example: `Log::error($exception)`
+Rate limiting applies **only to login/signup/invite POSTs and to `/cron`, `/api/jsonrpc`, and `/mcp` requests** — ordinary page views take an early return and are not limited. The key is `ratelimit-{ip}-{userId}`, with API/MCP/general sharing one counter: login 20/min (`…:loginAttempts`), signup + invite POSTs 5/min per IP (`…:signup`), API 120/min, MCP 300/min, general 2000/min — overridable via `LEAN_RATELIMIT_*`. Note **MCP gets its own 300/min budget (2.5× the API limit)** because agentic clients legitimately burst parallel tool calls; don't assume the API ceiling covers it.
 
-DO NOT use the helper functions error_log()
+Beware a trap when reading any setting here: `DefaultConfig`'s property values are only **fallbacks**. `Environment` derives each property's env var name mechanically (`LEAN_` + snake_case of the property), and a value present in the environment or `config/.env` wins. `config/sample.env` is a **template that gets copied to `config/.env`**, not a runtime file — but where its documented value differs from `DefaultConfig` (e.g. rate limits, where the class says 10000/100/20/300 but `sample.env` ships 2000/120/20/300), an installed instance behaves per `.env`. When the two disagree, trust `.env` for runtime behavior.
 
-### Strict types
-- Use strict types where ever possible (for returns and for parameters)
-- When creating arrays evaluate whether a model/object should be used and create one if deemed appropriate
+### Data layer
 
-### Comments
-- Add valid phpDoc comments to all methods and classes.
-- For each method that is changed verify that PhpDoc comment exists and is aligned
-- Methods in services that should be available to our jsonRPC should include the @api doc comment
+- Repositories extend `Leantime\Core\Db\Repository`; they mix raw SQL with Laravel Query Builder depending on vintage. `dbcall()` wraps execution with events.
+- Models are plain public-property data structures (no ORM annotations, no validation); some use `#[DbColumn('name')]` for column mapping.
+- `Core/Db/Db.php` wraps Laravel's `DatabaseManager`. `Core/Db/DatabaseHelper.php` is the **cross-database compatibility layer** — it has explicit `mysql` / `pgsql` / `sqlsrv` branches for string aggregation, date formatting, upserts, and column types. **Any query that must run on PostgreSQL has to go through these helpers**, which matters here because production is Postgres (this fork has already fixed several Postgres-only report bugs).
+- **PostgreSQL folds unquoted identifiers and aliases to lowercase.** Column names Leantime uses are camelCase (`ticketId`, `actualCost`), so raw SQL written for MySQL silently misbehaves on Postgres — double-quote the identifiers and use lowercase aliases. This is the single most common source of "works in dev, breaks in prod" here.
+- Tables use a `zp_` prefix.
+- **Doctrine migration is a stated future direction** (repositories/entities/SQL → EntityManager/DQL/annotations). Nothing in this fork has started; don't refactor toward it unasked.
 
-### DateTime Handling
-Always use `CarbonImmutable` or the `dtHelper()` function class for all things datetime and have various macros to help with common date formats.
-As a general rule all dates from the database are assumed to be in UTC and in the format YYYY-MM-DD HH:MM:SS
-Dates coming from the frontend/user are assumed in the user's timezone and their respective date format.
-We have a DateTimeHelper class to parse common datetime formats we find, the dateTimeHelper should be used in most cases.
+### Shared canvas tables (IDOR caution)
 
-### Layer enforcement
-- Controllers should only call services NOT repositories. If a repo call is detected it should be refactored.
-- Services can call repositories
-- Be careful when calling domain services in other domain services as circular references can happen
-- Services should validate input and throw exceptions when validation fails
+`zp_canvas` and `zp_canvas_items` are shared across **every** canvas type with one id sequence, so a bare-id repository read/write can land on a *foreign* canvas type or project. Canvas-family service/repo methods must **fail closed** — resolve the entity's real project (return `false`/`null`/`0` when the id doesn't match the expected `type`/`box`) and authorize against that, never falling back to `session('currentProject')`. Wiki and Ideas are the established reference implementations.
+
+### Template system
+
+**The `.tpl.php` → Blade migration is complete** in the sense that no `.tpl.php` / `.sub.php` / `.inc.php` files remain — 342 Blade files, 0 of the legacy extensions. Two caveats:
+
+- One template keeps the bare `.php` extension and is still rendered through the legacy path: `app/Domain/Ideas/Templates/boardDialog.php`, loaded by `Ideas/Controllers/BoardDialog.php` via `displayPartial('ideas.boardDialog')`.
+- Legacy helpers survive with a little residual usage: `$tpl->get(` still has 19 call sites (16 in Blade — mostly Logicmodelcanvas and Ideas). `displaySubmodule()` has zero call sites and is effectively dead.
+
+- `app/Views/Templates/layouts/` — app, entry, blank, error, registration
+- `app/Views/Templates/components/` — shared components, with `COMPONENTS.md` as the **maintained single source of truth** for the componentization effort (taxonomy, prop vocabulary, migration rules)
+- `app/Views/Templates/sections/`, `app/Views/Composers/`
+
+Component syntax: `<x-global::{name}>` → `app/Views/Templates/components/{name}.blade.php`; `<x-{domain}::{name}>` → `app/Domain/{Domain}/Templates/components/{name}.blade.php`. Anonymous components resolve automatically; class-backed ones (`app/Domain/{Domain}/View/Components/`) take precedence.
+
+The componentization playbook (`COMPONENTS.md`) is worth reading before adding UI: components are introduced **no-op first** (byte-for-byte identical render, zero visual change), and the **prop API is the durable contract** while rendered CSS classes are the swappable implementation. Category-namespaced naming (`<x-global::{category}.{name}>`) and a shared camelCase prop vocabulary (`contentRole`, `state`, `variant`, `scale`, `position`, …) are defined there. Follow it rather than inventing props.
+
+Rendering methods on `Template`: `display()`, `displayPartial()`, `displayFragment()` (HTMX), `displaySubmodule()`, `emptyResponse()`. HxControllers set `protected static string $view`; batch assignment uses `array_map([$this->tpl, 'assign'], array_keys($vars), array_values($vars))`.
+
+### JSON-RPC API
+
+`app/Domain/Api/Controllers/Jsonrpc.php`. Method routing: `leantime.rpc.{domain}.{method}` (4 segments) or `leantime.rpc.{domain}.{service}.{method}` (5 segments). It uses Reflection to match request params to service method parameters by name and to type-cast.
+
+**Any public service method is callable** — the `@api` annotation (487 uses) is documentation only, not enforced. The RPC entry point resolves the *service* method, so `#[RequiresPermission]` there is enforced by the RPC path, not the controller's.
+
+Auth: Leantime API keys (`x-api-key`, format `lt_{user}_{key}`, acts as a service account) or Laravel Sanctum bearer tokens (requires the AdvancedAuth plugin). The legacy REST-like controllers in `app/Domain/Api/Controllers/` are deprecated — new work goes through JSON-RPC.
+
+### Auth and roles
+
+Three guards: `leantime` (web session), `sanctum` (token), `jsonRpc` (API). Native LDAP and OIDC support, plus Laravel Socialite providers (Authentik, Auth0, Gitea, GitHub, GitLab, Google, Keycloak, Microsoft, Okta, PropelAuth, EduID, SAML2).
+
+Each user has one client and a role; projects are visible to everyone, to the user's client, or to explicitly assigned users. Admins/owners see all projects. **For new authorization logic use the [permission engine](#permission-engine-appcoreauthpermissions), not role-name comparisons.**
+
+### CLI commands
+
+`php bin/leantime [command]` — commands live in `app/Command/` and are discovered by globbing that directory. Names come from the `#[AsCommand(name: ...)]` attribute and **often do not match the class name**:
+
+| Command | Class |
+|---|---|
+| `system:update` | `UpdateLeantime` |
+| `db:migrate` | `MigrateCommand` |
+| `db:backup` | `BackupDbCommand` |
+| `user:add` | `AddUserCommand` |
+| `setting:save [key] [value]` | `SaveSettingCommand` |
+| `permissions:sync [--seed] [--prune]` | `SyncPermissionsCommand` |
+| `plugin:list\|enable\|disable\|install\|remove` | `*PluginCommand` |
+| `cache:clearAll` | `ClearAll` |
+| `language:clear` | `ClearLanguage` |
+| `email:testemail` | `TestEmailCommand` |
+| `event:check-listeners` | `CheckEventListeners` |
+| `translations:check-unused` | `CheckTranslations` |
+| `goals:backfillHistory` | `BackfillGoalHistoryCommand` |
+| `auth:create-bearer-token` | `CreateBearerTokenCommand` |
+
+Run `php bin/leantime` with no arguments or `list` to see the live set; guessing a name from the class name (e.g. `php bin/leantime migrate`) fails.
+
+### Global helpers (`app/helpers.php`)
+
+Beyond the fork-specific `format_number()`:
+
+- `format($value)` — formatting object for dates/values (`FromFormat::DbDate` default)
+- `dtHelper()`, `CarbonImmutable` + `CarbonMacros` for all datetime work. DB dates are **UTC** in `YYYY-MM-DD HH:MM:SS`; frontend/user input is in the user's timezone and date format — `DateTimeHelper` parses common formats
+- `can()`, `cast()`, `build()`, `do_once()`, `mix()`, `safe_unserialize()` (JSON-first, then `unserialize` with `allowed_classes: false`)
+- `get_release_version()` / `get_domain_key()`
+
+## Frontend
+
+### Build
+
+Laravel Mix 6 (Webpack 5), output `public/dist/` with version-stamped filenames. There are **no npm or composer scripts** — `package.json` has an empty `"scripts": {}` and `composer.json` has no `scripts` key — so invoke tools directly:
+
+```bash
+npx mix                 # dev build (with source maps)
+npx mix --production    # production build
+node generateBlocklist.mjs   # post-step both ways; extracts tw-* classes from app.css
+```
+
+`make build` / `make build-dev` wrap these and also clear caches. The `.eslint({fix: true})` config means **builds auto-fix lint**.
+
+Bundles (all loaded on every page — no code splitting): `compiled-htmx`, `compiled-htmx-extensions`, `compiled-frameworks` (jQuery 3.7.1 + Bootstrap 2.x), `compiled-framework-plugins`, `compiled-global-component`, `compiled-editor-component` (TinyMCE 5.10.9, ~3.6MB alone), `compiled-calendar-component`, `compiled-table-component`, `compiled-gantt-component`, `compiled-chart-component`, `compiled-footer`, `compiled-app` (all of `app/Domain/**/*.js` by glob), plus `compiled-lottieplayer` and three `compiled-tiptap-*` entries (editor, toolbar, tests).
+
+Per-domain JS chunking remains **commented out** in `webpack.mix.js` — a known, deferred improvement, not something to "fix" incidentally.
+
+### JavaScript
+
+Global `leantime` namespace with IIFE modules — `leantime.ticketsController = (function () { ... })();`. 33 JS files under `app/Domain/*/Js/`, mirroring backend layering (`{domain}Repository.js` / `{domain}Service.js` / `{domain}Controller.js`). Use `leantime.rpc(...)` for calls; when using `fetch`, include `credentials: 'include'` and `X-Requested-With: XMLHttpRequest`.
+
+Bootstrap 2.x and jQuery are ancient but load-bearing — don't assume modern Bootstrap semantics.
+
+### CSS
+
+Three layers: third-party (Bootstrap 2, jQuery UI, Font Awesome), custom component CSS in `public/assets/css/components/` (plus LESS sources in `public/assets/less/`), and Tailwind 3.4 **with the `tw-` prefix** (base layer disabled to avoid Bootstrap conflicts). Tailwind is in active use (~67 templates) and its output ships as `app.{version}.min.css`; `node generateBlocklist.mjs` extracts the generated `tw-*` names into `blocklist.json` as a post-build step.
+
+Use the design-token CSS variables rather than hardcoded values: `--accent1/2`, `--primary-color`, `--primary-font-color`, `--primary-background`, `--secondary-background`, `--layered-background`; `--base-font-size`, `--font-size-xs`…`xxxl`; `--box-radius*`, `--element-radius`, `--input-radius`; `--min-shadow`, `--regular-shadow`, `--large-shadow`, `--input-shadow`; `--zlayer-1`…`9`; `--glass-*`.
+
+Themes in `public/theme/{default,minimal}/` with `theme.ini` + `css/light.css` + `css/dark.css`.
+
+## Commands
+
+### Setup
+
+```bash
+make install-deps-dev    # npm install + composer install
+make install-deps        # production variant (--no-dev --optimize-autoloader)
+make build-dev           # dev assets + blocklist
+make build               # production assets + blocklist
+make run-dev             # Docker dev server (port 8090)
+make clear-cache         # clears bootstrap/cache, viewPaths, storage/framework caches
+make get-version         # prints the version parsed from AppSettings.php
+```
+
+`make run-dev` starts: app `:8090`, MailDev `:8081`, phpMyAdmin `:8082` (leantime/leantime), S3Ninja `:8083`.
+
+Manual setup: install deps → point the web server at `public/` → create the database → copy `config/sample.env` to `config/.env` and configure → visit `<localdomain>/install`.
+
+### Quality
+
+```bash
+make phpstan             # static analysis — level 5 (.phpstan/phpstan.neon; excludes app/Plugins/*)
+make test-code-style     # Pint, check only
+make fix-code-style      # Pint, apply fixes
+make codesniffer         # PHPCS (PSR12-based); codesniffer-fix to apply
+```
+
+Note: the **root `phpstan.neon` (level 0) is orphaned** — `make phpstan` uses `.phpstan/phpstan.neon` at **level 5**. `app/Plugins/*` is excluded from analysis.
+
+### Tests
+
+Codeception **5.3.2** (wraps PHPUnit). Two suites only: `Unit` and `Acceptance` (API tests are Cests under `tests/Acceptance/API/`, part of the Acceptance suite — there is no `Api` suite, so `make api-test`, which runs `codecept run Api`, matches nothing). Groups are declared with PHP 8 `#[Group('...')]` attributes.
+
+`tests/Unit/TestCase.php` forces `cache.default=array`, `session.driver=array`, and an empty `database.default`, so **unit tests are configured not to need a DB**. Acceptance tests run against a containerized MySQL (`leantime-db`, database `leantime_test`) driven by `.dev/test.env`; they need the dev+test compose stack up (which the `make` targets do for you).
+
+```bash
+make unit-test           # docker: full Unit suite
+make acceptance-test     # docker: full Acceptance suite (clean + build + run)
+make api-test            # (matches no suite — see above)
+
+# Single suite / file / method / group, inside the dev container:
+docker compose --file .dev/docker-compose.yaml --file .dev/docker-compose.tests.yaml exec leantime-dev \
+  php vendor/bin/codecept run Unit --steps
+docker compose --file .dev/docker-compose.yaml --file .dev/docker-compose.tests.yaml exec leantime-dev \
+  php vendor/bin/codecept run Unit tests/Unit/app/Core/Events/ClassEventDispatchTest.php
+docker compose --file .dev/docker-compose.yaml --file .dev/docker-compose.tests.yaml exec leantime-dev \
+  php vendor/bin/codecept run Unit tests/Unit/app/Core/Events/ClassEventDispatchTest.php:test_fqcn_closure_listener_receives_typed_event_object
+docker compose --file .dev/docker-compose.yaml --file .dev/docker-compose.tests.yaml exec leantime-dev \
+  php vendor/bin/codecept run Acceptance -g api --steps
+```
+
+Groups in use: `api`, `bearer-api`, `mcp`, `user`, `goals`, `wiki`, `ticket`, `timesheet`, `login`, `blueprints`. Watch for a bug in the suite: `tests/Acceptance/InstallCest.php` declares `#[Group('install, api')]` as **one comma-joined string**, and `Group::__construct(string ...$groups)` does not split on commas — so the intended `install` group does not exist and those Cests are reachable only via no group filter. Run `codecept build` after changing suite config. There is no `phpunit.xml`; `vendor/bin/phpunit` exists only transitively.
+
+### CI (`.github/workflows/`)
+
+Runs on push/PR to `master` and `*.*-dev`: `make build`, `make unit-test`, `make acceptance-test-ci`, `make bearer-api-test-ci`, `make phpstan`, and Pint — plus `composer audit` / `npm audit` / CodeQL on a weekly cron. `release-prepare.yml` and `release.yml` handle versioning and release artifacts (they call the Anthropic API to draft changelog entries). PHPCS is **not** in CI.
+
+## Conventions
+
+- **Layer enforcement**: controllers call services only, never repositories. Services call repositories. Services validate input and throw on failure. Watch for circular references when calling one domain service from another.
+- **No backwards compatibility** unless explicitly requested — do not keep shims or legacy branches.
+- **Error logging**: always `Log::error($exception)` via the Log facade; never `error_log()`.
+- **Strict types** wherever possible, on parameters and returns. When you reach for an array, consider whether a model/DTO is warranted (see `Core/Domains/DTO.php`).
+- **PhpDoc** on all classes and methods; keep it aligned when you change a signature. Public service methods intended for the JSON-RPC API should carry `@api`.
+- **Caching**: Leantime uses the Laravel cache (file or Redis). Cache expensive operations. When Redis is available, check whether the admin selected it and load the Redis config from the relevant ServiceProvider rather than assuming.
+- **Deploy-sensitive caches**: several caches (`permissionProviders`, `leantime.permissionMap`, `domainRoutes`, `workstructure.*`, Blade view cache) are `rememberForever` outside debug mode. A stale `storage/framework/views/*` is a known cause of "my template change didn't show up" in production — clear it before debugging further.
 
 ## Skill routing
 
 When the user's request matches an available skill, invoke it via the Skill tool. When in doubt, invoke the skill.
 
 Key routing rules:
+
 - Product ideas/brainstorming → invoke /office-hours
 - Strategy/scope → invoke /plan-ceo-review
 - Architecture → invoke /plan-eng-review
