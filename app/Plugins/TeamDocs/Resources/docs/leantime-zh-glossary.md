@@ -6,7 +6,7 @@
 > [!NOTE]
 > **配套文档**:[中文操作指南](docs/leantime-zh-guide.md)、[团队费用记账规矩](docs/cost-tracking-rules.md)。
 
-**最后更新**:2026年9月19日 15:00(v1.0)
+**最后更新**:2026年9月21日 11:00(v1.1 按界面实际译名校正)
 
 ## 导航与项目
 
@@ -20,7 +20,7 @@
 | Milestone | 里程碑 |  |
 | Collaborator / Team member | 协作人 / 成员 | 分配到任务上的人 |
 | Client | 客户 | 项目可归属客户 |
-| Timesheet | 时间表 / 工时 |  |
+| Timesheet | 时间追踪 | 任务详情里的页签叫「时间追踪」;团队口语说"工时" |
 | Idea | 想法 |  |
 | Research | 研究 |  |
 | Reports | 报表 |  |
@@ -33,12 +33,12 @@
 | Task / Ticket | 任务 |  |
 | Title | 标题 |  |
 | Description | 描述 |  |
-| Status | 状态 | 如 待办 / 进行中 / 已完成 |
+| Status | 状态 | 新增 / 进行中 / 完成; 每项目可自定义,见指南 4.2.3 |
 | Priority | 优先级 |  |
-| Collaborators | 协作人 |  |
-| Deadline | 截止日期 |  |
+| Collaborators | 协作人 | 界面显示英文 `Collaborators`(zh-CN 缺键); 团队文档统一写「协作人」 |
+| Deadline | 到期日 | 任务上是「到期日」;项目上的起止日期才叫「开始日期 / 截止日期」 |
 | Sub-tasks | 子任务 |  |
-| Effort / Estimate | 预估工时 |  |
+| Effort / Estimate | 工作量 | 任务上是「工作量」(点数);项目的工时预算才叫「预估时间」 |
 | Attachments | 附件 |  |
 | Tags | 标签 |  |
 | Reaction / Emoji | 表情回应 |  |
