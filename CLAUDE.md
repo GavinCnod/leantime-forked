@@ -6,8 +6,8 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 A **self-hosted fork** of [Leantime](https://github.com/Leantime/leantime) (open source project management system), maintained by one team for their own use.
 
-- **Branch strategy**: `dev-self-hosted` is the working branch. The fork **deliberately does not track upstream** — it sits ~45 commits ahead of `upstream/master` and does not merge upstream changes. Treat `dev-self-hosted` as the source of truth; do not propose rebases or upstream merges.
-- **Version**: Leantime **3.9.8** (`app/Core/Configuration/AppSettings.php` → `$appVersion`; also `package.json`). The app version is read at *makefile parse time*, so bumping it changes build artifact names.
+- **Branch strategy**: `dev-self-hosted` is the working branch (fork-only commits on top of upstream). Since the 2026-10-11 upgrade, the fork **does track upstream via merges**: `master` mirrors `upstream/master` (synced to v3.11.0+10, `b0268c95b`), and `upgrade/3.11.0` is the merge-and-validate branch that upgrades `dev-self-hosted` from the old 3.10.0-era base to 3.11.0 (see `.docs/upgrade-1011/README.md`; merge into `dev-self-hosted` pending owner sign-off). Treat `dev-self-hosted` as the source of truth once the upgrade lands.
+- **Version**: Leantime **3.11.0** on `upgrade/3.11.0` (`app/Core/Configuration/AppSettings.php` → `$appVersion`; also `package.json`); `dev-self-hosted` is still 3.9.8 until the upgrade merges. The app version is read at *makefile parse time*, so bumping it changes build artifact names.
 - **Upstream**: `upstream` remote = `Leantime/leantime`; `origin` = `GavinCnod/leantime-forked`.
 - **Language**: the team works in Chinese. `docs/` and `.docs/` hold the Chinese operating guides, glossary, and design records — see [Team docs](#team-docs-and-chinese-documentation).
 
@@ -36,7 +36,7 @@ Key operational facts:
 - **Secrets**: generate with `openssl rand -hex 32` (session) / `-hex 24` (DB, Redis). `/start.sh` also supports `*_FILE` env vars for Docker secrets.
 - **Persistence**: named volumes `userfiles`, `public_userfiles`, `plugins`, `logs`. On Railway, single-volume mode via `LEAN_PERSIST_ROOT=/data` (symlinks the four dirs into `/data`).
 - Deploy flow: `cd deploy && cp .env.prod.example .env` → edit → `docker compose -f docker-compose.prod.yml up -d --build`. Update: `git pull` then `up -d --build app`.
-- Prod images do not install `ext-intl` — hence the custom `format_number()` helper (see [helpers.php](#global-helpers-apphelpersphp)).
+- Prod images do not install `ext-intl` — use the intl-free `Leantime\Core\Support\Format::number()` for number display (upstream 3.11; replaces the retired fork helper `format_number()`).
 
 ### Plugins this fork ships (`app/Plugins/`)
 
@@ -75,9 +75,9 @@ Note that `app/Plugins` was a git submodule upstream; this fork removed that git
 - **Three files are duplicated between `docs/` and `app/Plugins/TeamDocs/Resources/docs/` and must stay byte-identical**: `cost-tracking-rules.md`, `leantime-zh-guide.md`, `leantime-zh-glossary.md`. The runtime image can't read root `docs/` (`.dockerignore` excludes it), so TeamDocs reads its own packaged copy; `Resources/docs/README.md` is plugin-only and has no counterpart. Edit the source in `docs/`, then run `php scripts/check-teamdocs-docs.php --sync` (without `--sync` it just reports drift). `TeamDocsResourceSyncTest` asserts the SHA-256 match, so drift fails CI.
 - `MarkdownRenderer` (`app/Core/Support/MarkdownRenderer.php`, league/commonmark) is the **shared** Markdown→HTML renderer used by TeamDocs; styling lives in core's `markdown.css` in the main bundle. Reuse it rather than adding another Markdown dependency.
 
-### Fork-specific helper: `format_number()`
+### Number formatting: `Format::number()`
 
-`app/helpers.php` defines `format_number(int|float $number, int $maxPrecision = 1): string` as a drop-in replacement for `Illuminate\Support\Number::format(...)`, which throws when `ext-intl` is absent. **Use `format_number()` for number display**, never `Number::format()` — the shipped Docker images have no intl.
+Since the 3.11 upgrade, use `Leantime\Core\Support\Format::number()` (`app/Core/Support/Format.php`) for number display. It wraps `Illuminate\Support\Number::format(...)` when `ext-intl` is loaded and falls back to an intl-free `number_format()` implementation otherwise — the shipped Docker images have no intl, so **never call `Number::format()` directly**. (The fork's own `format_number()` helper was retired in the 3.11 merge; history in `.docs/upgrade-1011/README.md`.)
 
 ## Core systems
 
@@ -310,7 +310,7 @@ Run `php bin/leantime` with no arguments or `list` to see the live set; guessing
 
 ### Global helpers (`app/helpers.php`)
 
-Beyond the fork-specific `format_number()`:
+Beyond the helpers above (`Format::number()` is now a core class, not a helper):
 
 - `format($value)` — formatting object for dates/values (`FromFormat::DbDate` default)
 - `dtHelper()`, `CarbonImmutable` + `CarbonMacros` for all datetime work. DB dates are **UTC** in `YYYY-MM-DD HH:MM:SS`; frontend/user input is in the user's timezone and date format — `DateTimeHelper` parses common formats
