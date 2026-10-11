@@ -6,6 +6,7 @@ use Illuminate\Support\Str;
 use Leantime\Core\Auth\Permissions\RequiresPermission;
 use Leantime\Core\Controller\Controller;
 use Leantime\Core\Controller\Frontcontroller;
+use Leantime\Core\Http\TrustedAppUrl;
 use Leantime\Core\Mailer as MailerCore;
 use Leantime\Domain\Blueprints\Permissions\BlueprintsPermissions;
 use Leantime\Domain\Blueprints\Services\Blueprints as BlueprintsService;
@@ -205,7 +206,13 @@ class ShowCanvas extends Controller
             'projectId' => session('currentProject'),
         ];
         // createBoard authorizes CREATE against the target (current) project.
-        $currentCanvasId = $this->blueprintsService->createBoard($values, static::CANVAS_NAME.'canvas');
+        $newCanvasId = $this->blueprintsService->createBoard($values, static::CANVAS_NAME.'canvas');
+        if ($newCanvasId === false) {
+            $this->tpl->setNotification($this->language->__('notification.board_create_failed'), 'error');
+
+            return null;
+        }
+        $currentCanvasId = (int) $newCanvasId;
         $allCanvas = $this->canvasRepo->getAllCanvas(session('currentProject'));
 
         $this->notifyBoardCreated($values['title'], 'notification.board_created', 'email_notifications.canvas_created_message');
@@ -308,22 +315,30 @@ class ShowCanvas extends Controller
             return null;
         }
 
-        $uploadfile = tempnam(sys_get_temp_dir(), 'leantime.').'.xml';
+        // One unpredictable temp path carrying the .xml extension the importer requires (no
+        // tempnam(): it would create a second, never-deleted file). Always removed afterwards,
+        // even when the import throws.
+        $uploadfile = sys_get_temp_dir().DIRECTORY_SEPARATOR.'leantime.'.bin2hex(random_bytes(16)).'.xml';
 
-        if (! move_uploaded_file($_FILES['canvasfile']['tmp_name'], $uploadfile)) {
-            $this->tpl->setNotification($this->language->__('notification.board_import_failed'), 'error');
+        try {
+            if (! move_uploaded_file($_FILES['canvasfile']['tmp_name'], $uploadfile)) {
+                $this->tpl->setNotification($this->language->__('notification.board_import_failed'), 'error');
 
-            return null;
+                return null;
+            }
+
+            $services = app()->make(CanvaService::class);
+            $importCanvasId = $services->import(
+                $uploadfile,
+                static::CANVAS_NAME.'canvas',
+                projectId: session('currentProject'),
+                authorId: session('userdata.id')
+            );
+        } finally {
+            if (is_file($uploadfile)) {
+                @unlink($uploadfile);
+            }
         }
-
-        $services = app()->make(CanvaService::class);
-        $importCanvasId = $services->import(
-            $uploadfile,
-            static::CANVAS_NAME.'canvas',
-            projectId: session('currentProject'),
-            authorId: session('userdata.id')
-        );
-        unlink($uploadfile);
 
         if ($importCanvasId === false) {
             $this->tpl->setNotification($this->language->__('notification.board_import_failed'), 'error');
@@ -359,7 +374,7 @@ class ShowCanvas extends Controller
         $message = sprintf(
             $this->language->__($messageKey),
             session('userdata.name'),
-            "<a href='".CURRENT_URL."'>".strip_tags($title).'</a>'
+            "<a href='".\Leantime\Core\Mailer::notificationEmailUrl(app()->make(TrustedAppUrl::class)->rebase(CURRENT_URL), 'board_created')."'>".strip_tags($title).'</a>'
         );
         $mailer->setHtml($message);
 

@@ -6,6 +6,8 @@ use Illuminate\Contracts\Container\BindingResolutionException;
 use Illuminate\Support\Facades\Log;
 use Leantime\Core\Configuration\Environment;
 use Leantime\Core\Events\DispatchesEvents;
+use Leantime\Core\Events\EventDispatcher;
+use Leantime\Core\Http\TrustedAppUrl;
 use Leantime\Core\Support\NameSanitizer;
 use PHPMailer\PHPMailer\Exception;
 use PHPMailer\PHPMailer\PHPMailer;
@@ -46,6 +48,16 @@ class Mailer
 
     private string $html;
 
+    /**
+     * Sender display name (brand) shown in the From header, from LEAN_EMAIL_FROM_NAME.
+     */
+    private string $fromBrandName = self::DEFAULT_FROM_NAME;
+
+    /**
+     * Sender display name used when LEAN_EMAIL_FROM_NAME is not configured.
+     */
+    public const DEFAULT_FROM_NAME = 'Leantime';
+
     private bool $hideWrapper = false;
 
     public bool $nl2br = true;
@@ -60,11 +72,12 @@ class Mailer
         if ($config->email != '') {
             $this->emailDomain = $config->email;
         } else {
-            $host = $_SERVER['HTTP_HOST'] ?? 'leantime';
-            $this->emailDomain = 'no-reply@'.$host;
+            $this->emailDomain = 'no-reply@'.self::fallbackSenderHost((string) $config->appUrl);
         }
 
         $this->emailDomain = self::dispatch_filter('fromEmail', $this->emailDomain, $this);
+
+        $this->fromBrandName = self::resolveFromBrandName((string) ($config->emailFromName ?? ''));
 
         // PHPMailer
         $this->mailAgent = new PHPMailer(false);
@@ -115,6 +128,94 @@ class Mailer
         $this->companyColor = ! session()->has('companysettings.primarycolor') ? '#006c9e' : session('companysettings.primarycolor');
 
         $this->language = $language;
+    }
+
+    /**
+     * fallbackSenderHost - host for the no-reply sender when LEAN_EMAIL_RETURN is not configured.
+     *
+     * Uses the configured application URL. Only when that is missing too does it fall back to the
+     * request host, and then only if it is a syntactically valid hostname — the raw Host header is
+     * client controlled and must not be copied into mail headers as is.
+     *
+     * @param  string  $appUrl  the configured LEAN_APP_URL (may be empty)
+     */
+    public static function fallbackSenderHost(string $appUrl): string
+    {
+        $configuredHost = $appUrl !== '' ? parse_url($appUrl, PHP_URL_HOST) : null;
+
+        if (is_string($configuredHost) && $configuredHost !== '') {
+            return strtolower($configuredHost);
+        }
+
+        $requestHost = strtolower(preg_replace('/:\d+$/', '', (string) ($_SERVER['HTTP_HOST'] ?? '')));
+
+        if ($requestHost !== '' && filter_var($requestHost, FILTER_VALIDATE_DOMAIN, FILTER_FLAG_HOSTNAME) !== false) {
+            return $requestHost;
+        }
+
+        return 'localhost';
+    }
+
+    /**
+     * resolveFromBrandName - the brand part of the From display name.
+     *
+     * Admins can set it via LEAN_EMAIL_FROM_NAME; when unset (or empty after sanitizing) the
+     * historical "Leantime" default is kept.
+     *
+     * @param  string  $configuredName  the configured LEAN_EMAIL_FROM_NAME (may be empty)
+     */
+    public static function resolveFromBrandName(string $configuredName): string
+    {
+        $brandName = NameSanitizer::clean($configuredName);
+
+        if ($brandName === '') {
+            return self::DEFAULT_FROM_NAME;
+        }
+
+        return $brandName;
+    }
+
+    /**
+     * buildFromDisplayName - the full From display name for an outgoing email.
+     *
+     * Callers pass a fixed label (e.g. a project name or "Leantime"). A label equal to the
+     * brand (or the legacy "Leantime" default) collapses to just the brand; anything else
+     * is shown as "Label (Brand)". The label is sanitized because the From display name must
+     * never carry user-controlled content (invite-spam abuse used attacker firstnames here).
+     *
+     * @param  mixed  $callerLabel  the from label passed to sendMail()
+     * @param  string  $brandName  the resolved brand name, see resolveFromBrandName()
+     */
+    public static function buildFromDisplayName(mixed $callerLabel, string $brandName): string
+    {
+        $label = NameSanitizer::clean($callerLabel);
+
+        $labelIsJustTheBrand = $label === ''
+            || strcasecmp($label, $brandName) === 0
+            || strcasecmp($label, self::DEFAULT_FROM_NAME) === 0;
+
+        if ($labelIsJustTheBrand) {
+            return $brandName;
+        }
+
+        return $label.' ('.$brandName.')';
+    }
+
+    /**
+     * Pass an app URL that goes into a notification email through the `notificationEmailUrl`
+     * filter (full name: leantime.core.mailer.notificationEmailUrl), so plugins can rewrite email
+     * links — e.g. append campaign parameters. Listeners receive the URL and ['type' => $type];
+     * without listeners (or on an empty result) the URL is returned unchanged.
+     *
+     * @param  string  $url  The app URL put into the email.
+     * @param  string  $type  The notification type/module (tickets, comments, mention, ...).
+     * @return string The URL to put into the email.
+     */
+    public static function notificationEmailUrl(string $url, string $type): string
+    {
+        $filteredUrl = EventDispatcher::dispatch_filter('notificationEmailUrl', $url, ['type' => $type], 'leantime.core.mailer');
+
+        return is_string($filteredUrl) && $filteredUrl !== '' ? $filteredUrl : $url;
     }
 
     /**
@@ -203,10 +304,18 @@ class Mailer
     /**
      * sendMail - send the mail with mail()
      *
+     * Send failures (bad SMTP credentials, unreachable host…) are logged, not thrown, so
+     * one bad recipient doesn't stop the others. The return value says whether EVERY recipient
+     * was sent, so callers can stop reporting success for mail that never left (#1795).
+     *
+     * @return bool True when every recipient was sent successfully.
+     *
      * @throws Exception
      */
-    public function sendMail(array $to, $from): void
+    public function sendMail(array $to, $from): bool
     {
+        $allSent = true;
+
         $this->dispatchMailerEvent('beforeSendMail', []);
 
         $to = $this->dispatchMailerFilter('sendMailTo', $to, []);
@@ -214,12 +323,7 @@ class Mailer
 
         $this->mailAgent->isHTML(true); // Set email format to HTML
 
-        // The From display name must never carry user-controlled content (invite-spam abuse
-        // used attacker firstnames here). Callers pass fixed labels; sanitize regardless.
-        $fromName = NameSanitizer::clean($from);
-        $fromDisplay = ($fromName === '' || strcasecmp($fromName, 'Leantime') === 0)
-            ? 'Leantime'
-            : $fromName.' (Leantime)';
+        $fromDisplay = self::buildFromDisplayName($from, $this->fromBrandName);
 
         $this->mailAgent->setFrom($this->emailDomain, $fromDisplay);
 
@@ -244,6 +348,12 @@ class Mailer
 
             $inlineLogoContent = 'cid:companylogo';
         }
+
+        // Emails leave the request, so the profile link uses the trusted app URL when one is known.
+        $profileUrl = self::notificationEmailUrl(
+            app()->make(TrustedAppUrl::class)->forLinks().'/users/editOwn/',
+            (string) ($this->context ?? 'email')
+        );
 
         $mailBody = $this->hideWrapper ? $this->html : app('blade.compiler')::render(
             $this->dispatchMailerFilter('bodyTemplate', '<table width="100%" style="background:#fefefe; padding:15px; ">
@@ -278,7 +388,7 @@ class Mailer
                     'inlineLogoContent' => $inlineLogoContent,
                     'headline' => $this->language->__('email_notifications.hi'),
                     'content' => $this->nl2br ? nl2br($this->html) : $this->html,
-                    'unsub_link' => sprintf($this->language->__('email_notifications.unsubscribe'), BASE_URL.'/users/editOwn/'),
+                    'unsub_link' => sprintf($this->language->__('email_notifications.unsubscribe'), $profileUrl),
                 ]
             )
         );
@@ -292,7 +402,7 @@ class Mailer
                     'logoUrl' => $inlineLogoContent,
                     'languageHiText' => $this->language->__('email_notifications.hi'),
                     'emailContentsHtml' => nl2br($this->html),
-                    'unsubLink' => sprintf($this->language->__('email_notifications.unsubscribe'), BASE_URL.'/users/editOwn/'),
+                    'unsubLink' => sprintf($this->language->__('email_notifications.unsubscribe'), $profileUrl),
                 ],
             ]
         );
@@ -313,8 +423,15 @@ class Mailer
             foreach ($to as $recip) {
                 try {
                     $this->mailAgent->addAddress($recip);
-                    $this->mailAgent->send();
+
+                    // PHPMailer runs with exceptions off, so most SMTP failures return false
+                    // instead of throwing.
+                    if (! $this->mailAgent->send()) {
+                        $allSent = false;
+                        Log::error($this->mailAgent->ErrorInfo);
+                    }
                 } catch (Exception $e) {
+                    $allSent = false;
                     Log::error($this->mailAgent->ErrorInfo);
                     Log::error($e);
                 }
@@ -324,5 +441,7 @@ class Mailer
         }
 
         $this->dispatchMailerEvent('afterSendMail', $to);
+
+        return $allSent;
     }
 }

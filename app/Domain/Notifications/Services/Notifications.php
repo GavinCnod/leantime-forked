@@ -4,9 +4,12 @@ namespace Leantime\Domain\Notifications\Services;
 
 use DOMDocument;
 use Illuminate\Contracts\Container\BindingResolutionException;
+use Leantime\Core\Http\TrustedAppUrl;
 use Leantime\Core\Language as LanguageCore;
 use Leantime\Core\Mailer as MailerCore;
 use Leantime\Core\Support\NameSanitizer;
+use Leantime\Domain\Notifications\Events\PushDeviceRegistered;
+use Leantime\Domain\Notifications\Events\UserMentioned;
 use Leantime\Domain\Notifications\Repositories\Notifications as NotificationRepository;
 use Leantime\Domain\Users\Repositories\Users as UserRepository;
 
@@ -47,7 +50,9 @@ class Notifications
     }
 
     /**
-     * @api
+     * @internal Not exposed over JSON-RPC: it writes into ANY user's inbox (the target user
+     *           id is part of each notification row), so a remote caller could forge messages.
+     *           Called by listeners, services and plugins only.
      */
     public function addNotifications(array $notifications): ?bool
     {
@@ -257,7 +262,7 @@ class Notifications
             return false;
         }
 
-        return \Illuminate\Support\Facades\DB::table('zp_access_tokens')
+        $registered = \Illuminate\Support\Facades\DB::table('zp_access_tokens')
             ->where('id', $accessTokenId)
             ->update([
                 'push_token' => $token,
@@ -266,6 +271,12 @@ class Notifications
                 'push_token_updated_at' => now(),
                 'push_invalidated_at' => null,
             ]) > 0;
+
+        if ($registered) {
+            PushDeviceRegistered::dispatch(userId: $userId, platform: $platform);
+        }
+
+        return $registered;
     }
 
     /**
@@ -337,12 +348,23 @@ class Notifications
     }
 
     /**
-     * @throws BindingResolutionException
+     * @internal Not exposed over JSON-RPC: the author id, target users (data-tagged-user-id in
+     *           $content) and URL are all caller-supplied, so an RPC caller could forge mention
+     *           notifications and emails to any user. Called by the comment/status-update flows only.
      *
-     * @api
+     * @param  string  $content  The HTML that may contain mention links.
+     * @param  string  $module  The module of the mentioning entity.
+     * @param  int  $moduleId  The id of the mentioning entity.
+     * @param  int  $authorId  The user who wrote the mention.
+     * @param  string  $url  The app URL of the entity (emailed).
+     * @param  int|null  $projectId  The entity's project, reported on {@see UserMentioned}.
+     *
+     * @throws BindingResolutionException
      */
-    public function processMentions(string $content, string $module, int $moduleId, int $authorId, string $url): void
+    public function processMentions(string $content, string $module, int $moduleId, int $authorId, string $url, ?int $projectId = null): void
     {
+        // The url is emailed: point it at the trusted app URL, not the request host.
+        $url = app()->make(TrustedAppUrl::class)->rebase($url);
 
         $dom = new DOMDocument;
 
@@ -370,7 +392,7 @@ class Notifications
                     ['type' => 'mention', 'module' => $module, 'moduleId' => $moduleId]
                 );
 
-                if ($userMentions === false || (is_array($userMentions) && count($userMentions) == 0)) {
+                if ($userMentions === false || count($userMentions) == 0) {
                     $notification = [
                         'userId' => $taggedUser,
                         'read' => '0',
@@ -378,7 +400,7 @@ class Notifications
                         'module' => $module,
                         'moduleId' => $moduleId,
                         'message' => sprintf($this->language->__('text.x_mentioned_you'), $authorName),
-                        'datetime' => date('Y-m-d H:i:s'),
+                        'datetime' => dtHelper()->dbNow()->formatDateTimeForDb(), // UTC; date() is the user's tz here (#3201)
                         'url' => $url,
                         'authorId' => $authorId,
                     ];
@@ -392,13 +414,20 @@ class Notifications
                     $subject = sprintf($this->language->__('text.x_mentioned_you'), $authorName);
                     $mailer->setSubject($subject);
 
-                    $emailMessage = $subject.' <a href="'.$url.'">'.$this->language->__('text.click_here').'</a>';
+                    $emailMessage = $subject.' <a href="'.MailerCore::notificationEmailUrl($url, 'mention').'">'.$this->language->__('text.click_here').'</a>';
                     $mailer->setHtml($emailMessage);
 
                     $taggedUserObject = $this->userRepository->getUser($taggedUser);
                     if (isset($taggedUserObject['username'])) {
                         $mailer->sendMail([$taggedUserObject['username']], 'Leantime');
                     }
+
+                    UserMentioned::dispatch(
+                        mentionedUserId: (int) $taggedUser,
+                        module: $module,
+                        moduleId: $moduleId > 0 ? $moduleId : null,
+                        projectId: $projectId !== null && $projectId > 0 ? $projectId : null,
+                    );
                 }
             }
         }

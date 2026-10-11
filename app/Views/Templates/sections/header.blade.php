@@ -12,6 +12,7 @@
 <meta name="theme" content="{{ $theme }}">
 <meta name="identifier-URL" content="{!! BASE_URL !!}">
 <meta name="leantime-version" content="{{ $version }}">
+<meta name="soft-reload" content="{{ $softReload ? 'true' : 'false' }}">
 
 @dispatchEvent('afterMetaTags')
 
@@ -145,7 +146,7 @@
 <style id="backgroundImageSetter">
     @if(!empty($themeBg))
             .rightpanel {
-                background-image: url({!! filter_var($themeBg, FILTER_SANITIZE_URL) !!});
+                background-image: url({!! $themeBgCss ?? '""' !!});
                 opacity: {{ $themeOpacity }};
                 mix-blend-mode: {{ $themeType == 'image' ? 'normal' : 'multiply' }};
                 background-size: var(--background-size, cover);

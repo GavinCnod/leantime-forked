@@ -12,6 +12,13 @@
     // by their computed statusType (resolved from each project) instead of the raw status key.
     $programBoard = $programBoard ?? false;
     $placementField = $programBoard ? 'statusType' : 'status';
+    // Which optional fields the cards show (#1859). Boards that don't pass a preference
+    // (e.g. the program board) render the default card.
+    $cardFields = ($kanbanView ?? \Leantime\Domain\Tickets\Services\KanbanViewSettings::defaults())['fields'];
+    $showCardDropdowns = $cardFields['milestone'] || $cardFields['effort'] || $cardFields['priority'] || $cardFields['assignee'];
+    // Card order inside a column (#1536). Anything but "manual" means dragging only changes status.
+    $cardSort = \Leantime\Domain\Tickets\Services\KanbanViewSettings::normalizeSort($kanbanView['sort'] ?? null);
+    $isManualSort = \Leantime\Domain\Tickets\Services\KanbanViewSettings::isManualSort($cardSort);
 @endphp
 
 {!! $tpl->displayNotification() !!}
@@ -39,6 +46,13 @@
             </p>
         @endif
 
+        @if (! $isManualSort)
+            <p class="tw-text-[var(--secondary-font-color)]" style="margin-bottom:15px;">
+                <i class="fa fa-arrow-down-wide-short" aria-hidden="true"></i>
+                {{ sprintf(__('text.kanban_sorted_by'), __('label.kanban_sort_'.$cardSort)) }}
+            </p>
+        @endif
+
         @if (isset($allTicketGroups['all']))
             @php $allTickets = $allTicketGroups['all']['items']; @endphp
         @endif
@@ -58,16 +72,12 @@
             <div class="column">
                 <h4 class="widgettitle title-primary title-border-{{ $statusRow['class'] }}">
                     @if ($login::userIsAtLeast($roles::$manager) && ! $programBoard)
-                        <div class="inlineDropDownContainer" style="float:right;">
-                            <a href="javascript:void(0);" class="dropdown-toggle ticketDropDown editHeadline" data-toggle="dropdown">
-                                <i class="fa fa-ellipsis-v" aria-hidden="true"></i>
-                            </a>
-                            <ul class="dropdown-menu">
-                                <li><a href="#/setting/editBoxLabel?module=ticketlabels&label={{ $key }}" class="editLabelModal">{!! __('headlines.edit_label') !!}</a>
-                                </li>
-                                <li><a href="{{ BASE_URL }}/projects/showProject/{{ session('currentProject') }}#todosettings">{!! __('links.add_remove_col') !!}</a></li>
-                            </ul>
-                        </div>
+                        <x-global::actions.dropdown trigger-class="editHeadline" style="float:right;">
+                            <li><a href="#/setting/editBoxLabel?module=ticketlabels&label={{ $key }}" class="editLabelModal">{!! __('headlines.edit_label') !!}</a>
+                            </li>
+                            <li><a href="{{ BASE_URL }}/projects/showProject/{{ session('currentProject') }}#todosettings">{!! __('links.add_remove_col') !!}</a></li>
+
+                        </x-global::actions.dropdown>
                     @endif
                     <strong class="count">0</strong>
                     {{ $statusRow['name'] }}
@@ -163,7 +173,7 @@
                                                     @if ($row['dependingTicketId'] > 0)
                                                         <small><a href="#/tickets/showTicket/{{ $row['dependingTicketId'] }}" class="form-modal">{{ $row['parentHeadline'] }}</a></small> //
                                                     @endif
-                                                    <small><i class="fa {{ $todoTypeIcons[strtolower($row['type'])] }}"></i> {!! __('label.'.strtolower($row['type'])) !!}</small>
+                                                    <small><i class="fa {{ $todoTypeIcons[strtolower($row['type'])] }}"></i> {{ __('label.'.strtolower($row['type'])) }}</small>
                                                     <small>#{{ $row['id'] }}</small>
                                                     <div class="kanbanCardContent">
                                                         <h4><a href="#/tickets/showTicket/{{ $row['id'] }}" data-hx-get="{{ BASE_URL }}/tickets/showTicket/{{ $row['id'] }}" hx-swap="none" preload="mouseover">{{ $row['headline'] }}</a></h4>
@@ -173,7 +183,7 @@
                                                              without a description carried 20px of dead space above its
                                                              meta row — which is why cards in the same column sat at
                                                              visibly different densities. --}}
-                                                        @if (trim(strip_tags((string) $row['description'])) !== '')
+                                                        @if ($cardFields['description'] && trim(strip_tags((string) $row['description'])) !== '')
                                                         <div class="kanbanContent">
                                                             {!! $tpl->escapeMinimal($row['description']) !!}
                                                         </div>
@@ -184,7 +194,7 @@
                                                     @dispatchEvent('ticketCard.meta', ['ticket' => $row])
 
                                                     <div class="tw-flex">
-                                                    @if ($row['dateToFinish'] != '0000-00-00 00:00:00' && $row['dateToFinish'] != '1969-12-31 00:00:00')
+                                                    @if ($cardFields['dueDate'] && $row['dateToFinish'] != '0000-00-00 00:00:00' && $row['dateToFinish'] != '1969-12-31 00:00:00')
                                                         <div>
                                                             {!! __('label.due_icon') !!}
                                                             <input type="text" title="{{ __('label.due') }}" value="{{ format($row['dateToFinish'])->date() }}" class="duedates secretInput" style="margin-left:0px;" data-id="{{ $row['id'] }}" name="date" />
@@ -199,106 +209,31 @@
 
                                             <div class="clearfix" style="padding-bottom: 8px;"></div>
 
+                                            @if ($showCardDropdowns)
                                             <div class="timerContainer " id="timerContainer-{{ $row['id'] }}" >
 
-                                                    <div class="dropdown ticketDropdown milestoneDropdown colorized show firstDropdown" >
-                                                        <a style="background-color:{{ $tpl->escape($row['milestoneColor']) }}" class="dropdown-toggle f-left  label-default milestone" href="javascript:void(0);" role="button" id="milestoneDropdownMenuLink{{ $row['id'] }}" data-toggle="dropdown" aria-haspopup="true" aria-expanded="false">
-                                                            <span class="text">@if ($row['milestoneid'] != '' && $row['milestoneid'] != 0){{ $row['milestoneHeadline'] }}@else{!! __('label.no_milestone') !!}@endif</span>
-                                                            &nbsp;<i class="fa fa-caret-down" aria-hidden="true"></i>
-                                                        </a>
-                                                        <ul class="dropdown-menu" aria-labelledby="milestoneDropdownMenuLink{{ $row['id'] }}">
-                                                            <li class="nav-header border">{!! __('dropdown.choose_milestone') !!}</li>
-                                                            <li class='dropdown-item'><a style='background-color:#b0b0b0' href='javascript:void(0);' data-label="{!! __('label.no_milestone') !!}" data-value='{{ $row['id'].'_0_#b0b0b0' }}'> {!! __('label.no_milestone') !!} </a></li>
-
-                                                            @php
-                                                            foreach ($milestones as $milestone) {
-                                                                echo "<li class='dropdown-item'>
-                                                                    <a href='javascript:void(0);' data-label='".$tpl->escape($milestone->headline)."' data-value='".$row['id'].'_'.$milestone->id.'_'.$tpl->escape($milestone->tags)."' id='ticketMilestoneChange".$row['id'].$milestone->id."' style='background-color:".$tpl->escape($milestone->tags)."'>".$tpl->escape($milestone->headline).'</a>';
-                                                                echo '</li>';
-                                                            }
-                                                            @endphp
-                                                        </ul>
-                                                    </div>
+                                                    @if ($cardFields['milestone'])
+                                                    <x-tickets::chip-milestone class="firstDropdown" :ticket-id="$row['id']" :milestone-id="$row['milestoneid']" :headline="$row['milestoneHeadline'] ?? ''" :color="$row['milestoneColor'] ?? ''" :milestones="$milestones" />
+                                                    @endif
 
 
-                                                @if ($row['storypoints'] != '' && $row['storypoints'] > 0)
-                                                    <div class="dropdown ticketDropdown effortDropdown show">
-                                                    <a class="dropdown-toggle f-left  label-default effort" href="javascript:void(0);" role="button" id="effortDropdownMenuLink{{ $row['id'] }}" data-toggle="dropdown" aria-haspopup="true" aria-expanded="false">
-                                                        <span class="text">{{ $efforts[''.$row['storypoints']] ?? $row['storypoints'] }}</span>
-                                                        &nbsp;<i class="fa fa-caret-down" aria-hidden="true"></i>
-                                                    </a>
-                                                    <ul class="dropdown-menu" aria-labelledby="effortDropdownMenuLink{{ $row['id'] }}">
-                                                        <li class="nav-header border">{!! __('dropdown.how_big_todo') !!}</li>
-                                                        @php
-                                                        foreach ($efforts as $effortKey => $effortValue) {
-                                                            echo "<li class='dropdown-item'>
-                                                                                <a href='javascript:void(0);' data-value='".$row['id'].'_'.$effortKey."' id='ticketEffortChange".$row['id'].$effortKey."'>".$effortValue.'</a>';
-                                                            echo '</li>';
-                                                        }
-                                                        @endphp
-                                                    </ul>
-                                                </div>
+                                                @if ($cardFields['effort'] && $row['storypoints'] != '' && $row['storypoints'] > 0)
+                                                    <x-tickets::chip-effort :ticket-id="$row['id']" :storypoints="$row['storypoints']" :efforts="$efforts" />
                                                 @endif
 
 
-                                                <div class="dropdown ticketDropdown priorityDropdown show">
-                                                    <a class="dropdown-toggle f-left  label-default priority priority-bg-{{ $row['priority'] }}" href="javascript:void(0);" role="button" id="priorityDropdownMenuLink{{ $row['id'] }}" data-toggle="dropdown" aria-haspopup="true" aria-expanded="false">
-                                                        <span class="text">@php if ($row['priority'] != '' && $row['priority'] > 0) { echo $priorities[$row['priority']] ?? __('label.priority_unkown'); } else { echo __('label.priority_unkown'); } @endphp</span>
-                                                        &nbsp;<i class="fa fa-caret-down" aria-hidden="true"></i>
-                                                    </a>
-                                                    <ul class="dropdown-menu" aria-labelledby="priorityDropdownMenuLink{{ $row['id'] }}">
-                                                        <li class="nav-header border">{!! __('dropdown.select_priority') !!}</li>
-                                                        @php
-                                                        foreach ($priorities as $priorityKey => $priorityValue) {
-                                                            echo "<li class='dropdown-item'>
-                                                                                <a href='javascript:void(0);' class='priority-bg-".$priorityKey."' data-value='".$row['id'].'_'.$priorityKey."' id='ticketPriorityChange".$row['id'].$priorityKey."'>".$priorityValue.'</a>';
-                                                            echo '</li>';
-                                                        }
-                                                        @endphp
-                                                    </ul>
-                                                </div>
+                                                @if ($cardFields['priority'])
+                                                <x-tickets::chip-priority :ticket-id="$row['id']" :priority="$row['priority']" :priorities="$priorities" />
+                                                @endif
 
 
-                                                <div class="dropdown ticketDropdown userDropdown noBg show right lastDropdown dropRight">
-                                                    <a class="dropdown-toggle f-left" href="javascript:void(0);" role="button" id="userDropdownMenuLink{{ $row['id'] }}" data-toggle="dropdown" aria-haspopup="true" aria-expanded="false">
-                                                        <span class="text" style="display:inline-flex; align-items:center;">
-                                                            @php
-                                                            if ($row['editorFirstname'] != '') {
-                                                                echo "<span id='userImage".$row['id']."'><img src='".BASE_URL.'/api/users?profileImage='.$row['editorId']."' width='25' style='vertical-align: middle;'/></span>";
-                                                            } else {
-                                                                echo "<span id='userImage".$row['id']."'><img src='".BASE_URL."/api/users?profileImage=false' width='25' style='vertical-align: middle;'/></span>";
-                                                            }
-
-                                                            if (! empty($row['collaboratorPreview'])) {
-                                                                echo "<span class='ticket-collaborators' style='display:inline-flex; align-items:center; margin-left:6px;'>";
-                                                                foreach ($row['collaboratorPreview'] as $index => $collaboratorId) {
-                                                                    $offset = $index > 0 ? 'margin-left:-8px;' : '';
-                                                                    echo "<span class='ticket-collaborator-avatar' title='".__('label.collaborators')."' style='display:inline-flex; width:18px; height:18px; border-radius:999px; border:2px solid var(--main-background-color, #fff); overflow:hidden; ".$offset."'><img src='".BASE_URL.'/api/users?profileImage='.$collaboratorId."' width='18' height='18' style='display:block; width:18px; height:18px;'/></span>";
-                                                                }
-                                                                if (($row['collaboratorOverflow'] ?? 0) > 0) {
-                                                                    echo "<span class='ticket-collaborator-more' title='".__('label.collaborators')."' style='display:inline-flex; align-items:center; justify-content:center; min-width:18px; height:18px; padding:0 4px; margin-left:4px; border-radius:999px; background:var(--accent-color, #e9ecef); color:var(--secondary-font-color, #333); font-size:10px; line-height:18px;'>+".(int) $row['collaboratorOverflow'].'</span>';
-                                                                }
-                                                                echo '</span>';
-                                                            }
-                                                            @endphp
-                                                        </span>
-                                                    </a>
-                                                    <ul class="dropdown-menu" aria-labelledby="userDropdownMenuLink{{ $row['id'] }}">
-                                                        <li class="nav-header border">{!! __('dropdown.choose_user') !!}</li>
-                                                        @php
-                                                        if (is_array($users)) {
-                                                            foreach ($users as $user) {
-                                                                echo "<li class='dropdown-item'>
-                                                                    <a href='javascript:void(0);' data-label='".sprintf(__('text.full_name'), $tpl->escape($user['firstname']), $tpl->escape($user['lastname']))."' data-value='".$row['id'].'_'.$user['id'].'_'.$user['profileId']."' id='userStatusChange".$row['id'].$user['id']."' ><img src='".BASE_URL.'/api/users?profileImage='.$user['id']."' width='25' style='vertical-align: middle; margin-right:5px;'/>".sprintf(__('text.full_name'), $tpl->escape($user['firstname']), $tpl->escape($user['lastname'])).'</a>';
-                                                                echo '</li>';
-                                                            }
-                                                        }
-                                                        @endphp
-                                                    </ul>
-                                                </div>
+                                                @if ($cardFields['assignee'])
+                                                <x-tickets::chip-user class="right lastDropdown dropRight" :float="true" :show-name="false" :compact="true" :ticket-id="$row['id']" :editor-id="$row['editorId']" :editor-name="$row['editorFirstname'] ?? ''" :users="$users" :collaborators="$row['collaboratorPreview'] ?? []" :collaborator-overflow="$row['collaboratorOverflow'] ?? 0" />
+                                                @endif
 
                                             </div>
                                             <div class="clearfix"></div>
+                                            @endif
 
                                             @if ($programBoard)
                                                 {{-- Cross-project board: columns are semantic stages, so give each card a
@@ -308,44 +243,41 @@
                                                 @php $rowProjectStatuses = $statusLabelsByProject[$row['projectId']] ?? []; @endphp
                                                 @php $rowProjectStatus = $rowProjectStatuses[$row['status']] ?? null; @endphp
                                                 <div style="margin-top:4px;">
-                                                    <div class="dropdown ticketDropdown statusDropdown colorized show" style="display:inline-block;">
-                                                        <a class="dropdown-toggle status {{ $rowProjectStatus['class'] ?? 'label-default' }} f-left" href="javascript:void(0);" role="button" id="statusDropdownMenuLink{{ $row['id'] }}" data-toggle="dropdown" aria-haspopup="true" aria-expanded="false">
-                                                            <span class="text">{{ $tpl->escape($rowProjectStatus['name'] ?? __('label.new')) }}</span>&nbsp;<i class="fa fa-caret-down" aria-hidden="true"></i>
-                                                        </a>
-                                                        <ul class="dropdown-menu" aria-labelledby="statusDropdownMenuLink{{ $row['id'] }}">
-                                                            <li class="nav-header border">{!! __('dropdown.choose_status') !!}</li>
-                                                            @php
-                                                            foreach ($rowProjectStatuses as $statusKey => $statusOption) {
-                                                                echo "<li class='dropdown-item'><a href='javascript:void(0);' class='".$statusOption['class']."' data-label='".$tpl->escape($statusOption['name'])."' data-value='".$row['id'].'_'.$statusKey.'_'.$statusOption['class']."' id='ticketStatusChange".$row['id'].$statusKey."'>".$tpl->escape($statusOption['name']).'</a></li>';
-                                                            }
-                                                            @endphp
-                                                        </ul>
-                                                    </div>
+                                                    <x-tickets::chip-status style="display:inline-block;" :ticket-id="$row['id']" :status="$row['status']" :labels="$rowProjectStatuses" />
                                                     <small class="tw-text-[var(--secondary-font-color)]">{{ $tpl->escape($row['projectName'] ?? '') }}</small>
                                                 </div>
                                             @endif
 
-                                            @if ($row['commentCount'] > 0 || $row['subtaskCount'] > 0 || $row['tags'] != '')
+                                            @php
+                                                $showComments = $cardFields['comments'] && $row['commentCount'] > 0;
+                                                $showSubtasks = $cardFields['subtasks'] && $row['subtaskCount'] > 0;
+                                                $showTags = $cardFields['tags'] && $row['tags'] != '';
+                                                $showSprint = $cardFields['sprint'] && ! empty($row['sprintName']);
+                                            @endphp
+                                            @if ($showComments || $showSubtasks || $showTags || $showSprint)
                                             <div class="row">
                                                 <div class="col-md-12 border-top" style="white-space: nowrap;">
-                                                    @if ($row['commentCount'] > 0)
+                                                    @if ($showSprint)
+                                                        <span title="{{ __('label.sprint') }}"><i class="fa fa-bars-progress" aria-hidden="true"></i> {{ $row['sprintName'] }}</span>&nbsp;
+                                                    @endif
+
+                                                    @if ($showComments)
                                                         <a href="#/tickets/showTicket/{{ $row['id'] }}"><span class="fa-regular fa-comments"></span> {{ $row['commentCount'] }}</a>&nbsp;
                                                     @endif
 
-                                                    @if ($row['subtaskCount'] > 0)
+                                                    @if ($showSubtasks)
                                                         <a id="subtaskLink_{{ $row['id'] }}" href="#/tickets/showTicket/{{ $row['id'] }}" class="subtaskLineLink"> <span class="fa fa-diagram-successor"></span> {{ $row['subtaskCount'] }}</a>&nbsp;
                                                     @endif
-                                                    @if ($row['tags'] != '')
+                                                    @if ($showTags)
                                                         @php $tagsArray = explode(',', $row['tags']); @endphp
-                                                        <a href="javascript:void(0);" class="dropdown-toggle" data-toggle="dropdown">
-                                                            <i class="fa fa-tags" aria-hidden="true"></i> {{ count($tagsArray) }}
-                                                        </a>
-                                                        <ul class="dropdown-menu ">
-                                                            <li style="padding:10px"><div class='tagsinput readonly'>
-                                                            @foreach ($tagsArray as $tag)
-                                                                <span class='tag'><span>{{ $tag }}</span></span>
-                                                            @endforeach
-                                                                </div></li></ul>
+                                                        <x-global::actions.dropdown variant="panel" as="span" class="dropdown" menu-as="ul">
+                                                            <x-slot:trigger><i class="fa fa-tags" aria-hidden="true"></i> {{ count($tagsArray) }}</x-slot:trigger>
+                                                            <li style="padding:10px"><div class="tagsinput readonly">
+                                                                @foreach ($tagsArray as $tag)
+                                                                    <span class="tag"><span>{{ $tag }}</span></span>
+                                                                @endforeach
+                                                            </div></li>
+                                                        </x-global::actions.dropdown>
                                                     @endif
 
                                                 </div>
@@ -382,16 +314,8 @@
     jQuery(document).ready(function(){
 
     @if (can('tickets.edit'))
-        leantime.ticketsController.initUserDropdown();
-        leantime.ticketsController.initMilestoneDropdown();
         leantime.ticketsController.initDueDateTimePickers();
-        leantime.ticketsController.initEffortDropdown();
-        leantime.ticketsController.initPriorityDropdown();
 
-        @if ($programBoard)
-            {{-- Per-card status dropdown (program board only): set the exact project status. --}}
-            leantime.ticketsController.initStatusDropdown();
-        @endif
 
 
         @if ($programBoard)
@@ -404,7 +328,7 @@
             }
         @else
             var ticketStatusList = [@foreach ($allTicketStates as $key => $statusRow)'{{ $key }}',@endforeach];
-            leantime.ticketsController.initTicketKanban(ticketStatusList);
+            leantime.ticketsController.initTicketKanban(ticketStatusList, { manualSort: {{ $isManualSort ? 'true' : 'false' }} });
         @endif
 
     @else
@@ -412,6 +336,121 @@
     @endif
 
     leantime.ticketsController.setUpKanbanColumns();
+
+
+    (function initKanbanHorizontalScrollSync() {
+        var header = document.querySelector('.kanban-column-headers');
+        var rows = document.querySelectorAll('.sortableTicketList.kanbanBoard .row-fluid');
+        var syncTargets = [];
+        if (header) { syncTargets.push(header); }
+        rows.forEach(function (r) { syncTargets.push(r); });
+
+        // Batch via requestAnimationFrame and skip no-op writes: setting
+        // scrollLeft on the other containers fires their own async scroll
+        // events, which can arrive after a simple boolean guard has already
+        // reset, causing a feedback loop that jitters during momentum
+        // scrolling. Comparing against the target's current scrollLeft
+        // before writing, and coalescing all pending syncs into a single
+        // rAF tick, makes this deterministic regardless of event ordering.
+        var pendingScrollLeft = null;
+        var pendingSource = null;
+        var rafScheduled = false;
+        var expected = new Map();
+
+        function flushSync() {
+            rafScheduled = false;
+            var scrollLeft = pendingScrollLeft;
+            var source = pendingSource;
+            syncTargets.forEach(function (el) {
+                if (el !== source && el.scrollLeft !== scrollLeft) {
+                    el.scrollLeft = scrollLeft;
+                    expected.set(el, el.scrollLeft);
+                }
+            });
+        }
+
+        syncTargets.forEach(function (el) {
+            el.addEventListener('scroll', function () {
+                if (!window.matchMedia('(min-width: 1200px)').matches) { return; }
+                var wasEcho = expected.has(el) && expected.get(el) === el.scrollLeft;
+                expected.delete(el);
+                if (wasEcho) { return; }
+                pendingScrollLeft = el.scrollLeft;
+                pendingSource = el;
+                if (!rafScheduled) {
+                    rafScheduled = true;
+                    window.requestAnimationFrame(flushSync);
+                }
+            });
+        });
+    })();
+
+    // Copilot review fix: the desktop-only overflow on .kanban-column-headers
+    // (needed for the scroll-sync above) also clips each column's
+    // "Edit label / Add column" dropdown menu, since Bootstrap 2's dropdown
+    // plugin just toggles an "open" class and positions the menu with
+    // ordinary `position: absolute` relative to the header -- which this
+    // element now clips. Watch for that class toggle and, only while open,
+    // switch the menu to `position: fixed` with live coordinates so it
+    // escapes the clipping scrollport; revert on close so normal layout
+    // (and the mobile/no-overflow case) is unaffected.
+    (function initKanbanHeaderDropdownEscape() {
+        var header = document.querySelector('.kanban-column-headers');
+        if (!header) return;
+
+        var containers = header.querySelectorAll('.inlineDropDownContainer');
+        containers.forEach(function (container) {
+            var menu = container.querySelector('.dropdown-menu');
+            if (!menu) return;
+
+            // position: fixed escapes the header's clipping scrollport, but
+            // its coordinates are only correct at the instant it is applied.
+            // If the page or the kanban board scrolls (or the window is
+            // resized) while the menu is open, it would otherwise stay
+            // frozen at its original spot instead of following the toggle
+            // button. Reposition on every scroll (capture: true, so it also
+            // catches scrolling on the header/row containers themselves,
+            // which don't bubble a window scroll event) and on resize while
+            // open, and stop listening as soon as it closes.
+            function reposition() {
+                var rect = container.getBoundingClientRect();
+                menu.style.position = 'fixed';
+                menu.style.top = rect.bottom + 'px';
+                menu.style.left = 'auto';
+                menu.style.right = (window.innerWidth - rect.right) + 'px';
+                menu.style.zIndex = '1051';
+            }
+
+            function reset() {
+                menu.style.position = '';
+                menu.style.top = '';
+                menu.style.left = '';
+                menu.style.right = '';
+                menu.style.zIndex = '';
+            }
+
+            function syncMenu() {
+                if (window.matchMedia('(min-width: 1200px)').matches) {
+                    reposition();
+                } else {
+                    reset();
+                }
+            }
+
+            var observer = new MutationObserver(function () {
+                if (container.classList.contains('open')) {
+                    syncMenu();
+                    window.addEventListener('scroll', syncMenu, true);
+                    window.addEventListener('resize', syncMenu);
+                } else {
+                    reset();
+                    window.removeEventListener('scroll', syncMenu, true);
+                    window.removeEventListener('resize', syncMenu);
+                }
+            });
+            observer.observe(container, { attributes: true, attributeFilter: ['class'] });
+        });
+    })();
 
         @if (isset($_GET['showTicketModal']))
             @php

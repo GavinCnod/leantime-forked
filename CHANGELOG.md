@@ -1,3 +1,225 @@
+# Version: 3.11.0
+
+## Highlights
+
+### Global search
+A single search now spans your whole workspace - to-dos, projects, documents, ideas, goals, blueprints, comments, files and people - so you can jump straight to anything from one place. (#3867)
+
+## New Features
+- **Work analytics tagging** - Generated tickets are tagged so analytics can distinguish automated work from real work. (#3859)
+- **Class-based analytics events** - A new event system provides consistent analytics across the core application. (#3853)
+
+## Bug Fixes
+- Kanban column headers now scroll in sync with the board body (#3800)
+- Improved readability of the My Tasks and Calendar dashboard widgets (#3863, #3866)
+- Permission denials are logged as audit entries instead of errors, the same notification is no longer queued twice, and a race when creating avatar files is fixed (#3869)
+- Recurring tasks no longer push their due dates far into the future when the scheduler resets them, and scheduled jobs wait until pending database updates have run (#3868)
+- More reliable permissions with a per-instance grant-map cache and reseeding of empty role tables (#3865)
+- The telemetry opt-out toggle works again and your choice now sticks (#3854)
+
+## Localization
+- Onboarding tour modals, plugin and news page headers, and login labels are now translatable (#3862, #3861)
+- Added missing fr-FR translation keys and removed duplicate en-US keys (#3861)
+
+## Dependency Updates
+- Bumped plugins with workspace lookup and StrategyPro schema updates (#3870)
+- Bumped plugins adding notes to global search, a search MCP tool and a recurring-task reset fix (#3871)
+- Bumped plugins with a billing failed-payment fix, origin tagging and ProjectWizard removal (#3860)
+- Bumped plugins for sign-up source attribution and Beta menu flags (#3858)
+- Bumped plugins for PostHog error tracking, signup type and health dedupe (#3857, #3856, #3855)
+
+---
+
+# Version: 3.10.4
+
+## New Features
+- **Task History tab** - Tasks have a History tab, and the email sender name is now configurable. (#3845)
+- **Customisable kanban cards** - Choose which fields appear on kanban cards and sort cards within columns. (#3846)
+
+## Improvements
+- **Smoother modals** - Closing a modal no longer reloads the whole page. If nothing changed it simply closes; if you saved something, the page content refreshes in place and keeps your scroll position. Set `LEAN_SOFT_RELOAD=false` to restore the old full reload. (#3848, #1809, #2969)
+- **Kanban column counts** - Column counts are always visible instead of only on hover. (#3840)
+
+## Bug Fixes
+- Report numbers render correctly without the PHP `intl` extension, which is now included in the Docker images (#3838, #3843)
+- Dropped to-dos land at the time they were dropped and stay visible in the calendar (#3842)
+- File browser redirects correctly after deleting a file, and failed-login logs record the client IP (#3844)
+- Idea tags, running the scheduler before install, Helm chart and documentation fixes (#3837)
+- Editor, embeds and touch/mobile fixes (#3836)
+- Kanban, task table and timeline fixes (#3835)
+
+## Localization
+- **French translation** - French is now complete and in sync with en-US (#3847)
+- Previously hardcoded English strings in widgets, tickets and the dashboard are now translatable (#3839)
+
+---
+
+# Version: 3.10.3
+
+## Upgrade Notes
+- **Set `LEAN_APP_URL`** - Password reset and invite emails now link only to a trusted app URL. If `LEAN_APP_URL` is not set, Leantime learns the URL the first time an owner or admin signs in (after 2FA). Until then, reset and invite emails are not sent, and admins see a banner explaining why. Setting `LEAN_APP_URL` is recommended. (#3826)
+- **Plugin cron jobs now run** - Console runs (`schedule:run`, `bin/leantime`) now load enabled plugins. Scheduled jobs from RecurringTasks, CalDAV, GoogleCalendar and others now actually run. Expect a catch-up on the first scheduler run after upgrading. (#3831)
+- **Moving tickets between projects** now clears a parent, milestone or sprint that belongs to the old project, and maps the status to the new project's equivalent. (#3832)
+- **API status validation** - When creating tickets via API/MCP, an unknown numeric status falls back to "New". Updates and patches with an unknown status are rejected. (#3832)
+
+## New Features
+- **Health endpoint** - `GET /health` for load balancers and uptime monitoring; it bypasses session and auth. (#3829)
+- **Calendar widget: hide completed** - Toggle to hide done tasks in the dashboard calendar widget. (#3829)
+- **Subtask hour totals** - Ticket subtask lists show logged-hour totals. (#3829)
+- **Task status summary** - New `tickets.getStatusSummary` JSON-RPC method and MCP tool. (#3832)
+- **API filters** - `tickets.getAll` supports `modifiedAfter`, `modifiedBefore` and `statusType`. (#3832)
+
+## Improvements
+- **Hours display** - Short durations are shown as hours and minutes (e.g. `1h 30m`). (#3829)
+- **CSV export** - Ticket descriptions are included, with spreadsheet formula injection neutralised. (#3829)
+- **API/MCP partial updates** - Fields left out of an update are preserved, including dates. Comment creation is validated server-side, with structured errors. (#3832)
+- **Inline PDFs** - PDF attachments open in the browser instead of downloading. (#3828)
+
+## Bug Fixes
+- Users added via the API/CLI without a password now receive an invite (#3822)
+- Timer stops when a ticket is moved to Done (#415)
+- iCal feed times are exported in UTC (#3114); calendar import is more tolerant, and feed URLs no longer appear in logs (#3165)
+- Ticket detail tabs work again (#3807)
+- Portfolio pages render again (#3819)
+- Delete confirmation text was missing (#3821)
+- Calendar widget month view (#2333)
+- Plugin scheduled jobs never ran from cron (#3831)
+- Assorted API/MCP fixes: parent tickets must be visible and in the same project; MCP tools check project access; Connector imports handle unknown statuses (#3832)
+
+## Security
+- Email links (password reset, invites) are built from a trusted app URL and no longer from the request's Host header (#3826)
+- Header theme CSS values are escaped (#3832)
+
+## Plugins
+Marketplace plugin updates released alongside 3.10.3 (compatibility and bug fixes, including recurring-task scheduling): RecurringTasks 1.3.1, AdvancedAuth 1.3.1, CustomFields 1.4.1, McpServer 1.1.1, Notes 1.4.5, PgmPro 1.5.1, StrategyPro 1.5.1, Whiteboardscanvas 1.4.1.
+Behaviour notes: CalDAV sync refuses accounts with 2FA enabled; the GoogleCalendar OAuth callback must be on the app domain; CustomFields management is admin-only.
+
+---
+
+# Version: 3.10.2
+
+This is a security release. All self-hosted installations should upgrade.
+
+## Security
+- **Authentication** - Password-reset tokens are now generated with a cryptographically secure generator and stored hashed; the session id rotates on login, 2FA and logout; other sessions end after a password change or reset; login, password-reset and 2FA-code attempts are rate limited. (#3810)
+- **OIDC** - ID tokens are now fully validated (audience, authorized party, expiry, issued-at, nonce), unverified email addresses are rejected and TLS certificates are verified. (#3810)
+- **API** - Stricter API request handling, 2FA enforced for browser sessions using the API, and users can no longer assign roles above their own (user creation, invites, edits, API keys, LDAP import). (#3808)
+- **Access Control** - Ticket, subtask, timesheet, sprint, reaction, program board and project operations are authorized against the project they belong to; read-only members can no longer edit. (#3809)
+- **Files & Outbound Requests** - Stricter file module authorization; outbound webhook and calendar requests pin the validated address, use timeouts and re-validate redirects; marketplace plugin archives are validated before installation. (#3812)
+- **CSRF Protection** - State-changing browser requests now verify their origin, and delete actions moved from links (GET) to POST. (#3811)
+- **Output Escaping** - Remaining raw template output is escaped and the HTML sanitizer strips htmx attributes and unsafe embeds. (#3813)
+
+## Bug Fixes
+- **LDAP** - Importing selected LDAP users works again. (#3808)
+- **Webhooks** - Slack, Mattermost, Zulip and Discord deliveries are only reported as sent on a successful response. (#3812)
+
+## Upgrade Notes
+- **Everyone is signed out once** after upgrading, and password-reset links issued before the upgrade stop working.
+- **Set `LEAN_APP_URL`** to your public URL. It is now strongly recommended, and required if a reverse proxy rewrites the Host header (otherwise browser form submissions are rejected by the new origin check).
+- **Trusted proxies** now default to private networks only (loopback, 10/8, 172.16/12, 192.168/16). If your proxy or CDN connects from a public address, list it in `LEAN_TRUSTED_PROXIES`.
+- **OIDC** now requires `email_verified` not to be false and verifies TLS. Use `LEAN_OIDC_REQUIRE_VERIFIED_EMAIL=false` for providers that mark users unverified, and `LEAN_OIDC_SKIP_TLS_VERIFY=true` only for self-signed test providers.
+- **Origin check** can be switched off in an emergency with `LEAN_CSRF_ORIGIN_CHECK=false`. Plugins that receive cross-site POST callbacks can register exempt paths.
+- **Roles**: admins can no longer edit or delete owner accounts, and users created by managers through the API are created as inactive invites.
+- **Plugins** that create or attach projects (e.g. ProjectWizard, StrategyPro, PgmPro) now require the user to have project create/edit rights.
+- New rate limits: `LEAN_RATELIMIT_PASSWORD_RESET` (default 5 per 10 minutes) and `LEAN_RATELIMIT_TWOFA` (default 5 per 5 minutes).
+
+## Dependency Updates
+- Dropped the unused Sentry webpack plugin and scoped the blocking npm audit to runtime dependencies. (#3815)
+
+---
+
+# Version: 3.10.1
+
+## New Features
+- **Personal Webhooks** - Added personal webhook delivery for notifications. (#3799)
+- **Beta Badge** - Added a Beta badge variant for navigation menu items. (#3777)
+
+## Bug Fixes
+- **Timezones** - The PHP process now always runs in UTC and the user's timezone is applied explicitly. This fixes timestamps (comments, history, audit, files, canvas items, wiki) being stored in the viewer's local time, due-date buckets and quick-add dates near midnight, and calendar "Invalid DateTime" errors. (#3802, #3803, #3804)
+- **Files** - Uploads in the same second no longer overwrite each other; non-Latin filenames upload and download correctly (UTF-8 `Content-Disposition`); no more double extensions in the file list. (#3802, #3803)
+- **Text overflow** - Long URLs and words wrap in comments, status updates and descriptions; the editor toolbar wraps instead of running into the ticket sidebar. (#3805)
+- **Timeline** - Long milestone labels no longer spill over their Gantt bars. (#3805)
+- **Ideas** - Idea board columns grow with their cards; fixed the current canvas id resolution. (#3805, #3796)
+- **User invites** - Inviting a user (admin screen, resend and onboarding) now reports when the invitation email could not be sent instead of claiming success. (#3805)
+- **Login** - A custom logo keeps its aspect ratio on the login page. (#3805)
+- **Tickets** - The ticket header shows the real last-updated date; due dates are localized in table and subtask views; priority/effort sorting fixed; "Related to" works on new to-dos. (#3802, #3805, #3787, #3788)
+- **JSON-RPC** - Methods with union-typed parameters can be called. (#3802)
+- **CSV export** - Exports plain text instead of HTML and formats due dates. (#3802, #3803)
+- **Translations** - The Khmer language file loads again; the dead calendar help link now points to the support site. (#3805)
+- **Goals** - Aligned the goal dialog with the task detail view. (#3776)
+- **Notifications** - Mattermost attachment fields are now sent as an array. (#3784)
+
+## Improvements
+- **Telegram** - Replaced the Telegram integration PNG logo with a crisp SVG. (#3786)
+
+## Security
+- **npm Advisories** - Cleared the newly reported high-severity npm advisories. (#3801)
+
+## Upgrade Notes
+- `LEAN_DEFAULT_TIMEZONE` is now only the default timezone for users who haven't set one; the server process always runs in UTC. Timestamps written before this release in a non-UTC timezone are not migrated and may display shifted by the old offset.
+
+---
+
+# Version: 3.10.0
+
+## Highlights
+
+### Telegram Messenger Integration
+Connect Leantime to Telegram to receive rich, auto-detected task notification cards directly in your chats, keeping your team informed without leaving their messenger. (#3726)
+
+### Redesigned Goals with Multi-Milestone Support
+The goal dialog has been rebuilt with a split layout, monitor/manage tabs, and inline updates, and a single goal can now link to many milestones with a new chip UI and milestone rollup progress. (#3739, #3688, #3687, #3690)
+
+## New Features
+- **Period-Based Status Reports** - Added period-based status report screens backed by a shared report engine and a period-aware actuals window for resources. (#3643, #3714)
+- **Mobile SSO** - Introduced a generic OIDC mobile SSO bridge with one-time-code to bearer-token exchange, a public `/status` discovery endpoint advertising auth methods, and AdvancedAuth gating. (#3637, #3662, #3664, #3711)
+- **User Capacity Fields** - Added weekly hours and employment type to user profiles for better resource planning. (#3653)
+- **Resources Contract** - Added a new Resources gateway surface with value objects, registry, and shared Blade primitives, including current-week actuals on the resource summary. (#3645, #3669)
+- **Canvas Events** - Added a CanvasItemUpdated event as a foundation for change propagation. (#3691)
+
+## Bug Fixes
+- **Routing** - Resolved plugin controllers whose folder name has an inner capital letter. (#3773)
+- **Ideas on Kanban** - Fixed the "Edit" option for Ideas not working in the Kanban view. (#3752)
+- **Sidebar Projects** - Admins and owners now see all projects they have access to, fixing an empty project sidebar. (#3710)
+- **Batch Fixes** - Resolved a set of five reported bugs across the app. (#3738, #3632, #3685, #3636, #3692, #3746)
+- **Upgrades** - The installer now self-heals a missing `zp_access_tokens` table and a stale session-cached db-version so updates can't get blocked. (#3745, #3735)
+- **Blueprints** - Restored board and item deletion by keeping the id on delete-confirm forms. (#3705)
+- **Files** - File names now display in full with a title tooltip instead of being truncated to 10 characters. (#3734)
+- **Reports** - The report deck no longer errors when a projectId is omitted, program supply now reflects capacity rather than booked hours, and fixed an HTML leak, decimal count, and empty burndown. (#3715, #3672, #3665)
+- **Telegram** - Fixed a status handling bug so "Done" (status 0) is evaluated correctly. (#3747)
+- **Editor** - Restored Backspace deletion of empty lines in the editor. (#3629)
+- **Timesheets** - A user's own general-work (no-project) time now appears in account reads. (#3642)
+- **Tickets** - Archived-project tickets are excluded from open ticket lists, status→Done history is logged with an accurate "last updated" time, and ticket parents are preserved on failed new-ticket submissions. (#3639, #3638, #3650, #3641)
+- **Onboarding** - First-login completion now persists even when the user can't create tickets. (#3684)
+- **Content Templates** - Fixed a slug bug, status label rendering, and typos. (#3644)
+- **Goals** - Fixed invalid Goal input markup by using proper name=value pairs. (#3634)
+
+## Improvements
+- **Unified UI** - Consolidated to one table design, one stat tile, and one period picker with report and button polish. (#3771)
+- **Navigation & Chrome** - Standardized on the floating pill horizontal tab group, added a glass pageheader and gradient tabs, a Tasks board summary, a reusable subject switcher, and a single document-page mode. (#3728, #3716, #3680, #3676, #3677, #3717)
+- **Stakeholder Report** - Refined the stakeholder report with a doc-shell header. (#3707)
+- **Performance** - Batched capacity analyzer ticket reads into a single query. (#3697)
+- **Assets** - CSS bundles are now cache-busted using the build mtime. (#3724)
+
+## Security
+- **JSON-RPC Authorization** - Closed an account-takeover chain: any authenticated user could call the onboarding service over JSON-RPC to set another account's password and role, activate it, then disable its 2FA. The onboarding and 2FA services are no longer RPC-reachable, and a sweep of the remaining unguarded `@api` methods closed marketplace license-key exposure, cross-user dashboard/widget writes, unauthorized ticket-dependency rewrites, mention forgery, and installer/scheduler/queue triggers. (#3797)
+- **Components** - Escaped the statTile `sub` slot by default; markup now has to opt in via HtmlString. (#3774)
+- **Open Redirects** - Closed open redirect vulnerabilities in the TwoFA verify and POST flows and the Login POST handler. (#3770, #3750, #3658)
+- **Cross-Site Scripting** - Escaped user-controlled group labels at the source and stripped markup from board/timeline tab aria-labels. (#3767, #3748, #3768)
+- **Blueprints** - Validated the import file path to prevent SSRF/LFI and guarded phar:// plugin probes against open_basedir violations. (#3656, #3693, #3762)
+- **Access Control** - Added a project ownership check to `getMilestone()` to prevent IDOR. (#3657)
+- **OIDC** - Hardened the mobile SSO flow with a lock-guarded one-time-code consume, TTL, throttling, and atomic consumption. (#3662, #3663)
+- **Invitations** - Stopped invite-email spam by sanitizing names and adding rate limits. (#3661)
+- **npm Advisories** - Cleared all nine high-severity npm advisories and a critical websocket-driver finding. (#3769, #3679, #3667)
+
+## Localization
+- **Indonesian** - Added an Indonesian (id-ID) translation. (#3764)
+
+## Dependency Updates
+- Bumped the plugins submodule to current main. (#3742, #3719)
+
+---
+
 # Version: 3.9.8
 
 ## Bug Fixes

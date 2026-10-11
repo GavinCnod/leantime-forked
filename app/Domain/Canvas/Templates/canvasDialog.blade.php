@@ -44,16 +44,26 @@
 
         @if(! empty($statusLabels))
             <label>{!! __('label.status') !!}</label>
-            <select name="status" style="width: 50%" id="statusCanvas">
-            </select><br /><br />
+            <x-global::forms.select name="status" style="width: 50%" id="statusCanvas" enhanced :search="false">
+                @foreach($statusLabels as $key => $data)
+                    @if($data['active'])
+                        <x-global::forms.select.option :value="$key" :selected="$canvasItem['status'] == $key" icon="fas {{ $data['icon'] }}">{{ $data['title'] }}</x-global::forms.select.option>
+                    @endif
+                @endforeach
+            </x-global::forms.select><br /><br />
         @else
             <input type="hidden" name="status" value="{{ $canvasItem['status'] ?? array_key_first($hiddenStatusLabels) }}" />
         @endif
 
         @if(! empty($relatesLabels))
             <label>{!! __('label.relates') !!}</label>
-            <select name="relates" style="width: 50%" id="relatesCanvas">
-            </select><br />
+            <x-global::forms.select name="relates" style="width: 50%" id="relatesCanvas" enhanced :search="false">
+                @foreach($relatesLabels as $key => $data)
+                    @if($data['active'])
+                        <x-global::forms.select.option :value="$key" :selected="$canvasItem['relates'] == $key" icon="fas {{ $data['icon'] }}">{{ $data['title'] }}</x-global::forms.select.option>
+                    @endif
+                @endforeach
+            </x-global::forms.select><br />
         @else
             <input type="hidden" name="relates" value="{{ $canvasItem['relates'] ?? array_key_first($hiddenRelatesLabels) }}" />
         @endif
@@ -139,14 +149,14 @@
 
                     <div class="row" id="existingMilestone" style="display:none;">
                         <div class="col-md-12">
-                            <select data-placeholder="{{ __('input.placeholders.filter_by_milestone') }}" name="existingMilestone" class="user-select">
+                            <x-global::forms.select data-placeholder="{{ __('input.placeholders.filter_by_milestone') }}" name="existingMilestone" class="user-select">
                                 <option value=""></option>
                                 @foreach($milestones as $milestoneRow)
                                     <option value="{{ $milestoneRow->id }}"
                                         @if(isset($searchCriteria['milestone']) && $searchCriteria['milestone'] == $milestoneRow->id) selected='selected' @endif
                                     >{{ $milestoneRow->headline }}</option>
                                 @endforeach
-                            </select>
+                            </x-global::forms.select>
                             <input type="hidden" name="type" value="milestone" />
                             <input type="hidden" name="{{ $canvasName }}canvasitemid" value="{{ $id }} " />
                             <x-global::forms.button tag="input" inputType="button" :labelText="__('buttons.save')" onclick="jQuery('#primaryCanvasSubmitButton').click()" contentRole="primary" />
@@ -162,7 +172,7 @@
                         {!! __('label.loading_milestone') !!}
                     </div>
                 </div>
-                <x-global::forms.button tag="a" link="{{ CURRENT_URL }}?removeMilestone={{ $canvasItem['milestoneId'] }}" class="{{ $canvasName }}CanvasModal delete formModal" state="danger" variant="outline"><i class="fa fa-close"></i> {!! __('links.remove') !!}</x-global::forms.button>
+                <x-global::forms.button tag="a" link="javascript:void(0);" data-post-field="removeMilestone" data-post-value="{{ $canvasItem['milestoneId'] }}" class="delete" state="danger" variant="outline"><i class="fa fa-close"></i> {!! __('links.remove') !!}</x-global::forms.button>
             @endif
         @endif
 
@@ -179,37 +189,7 @@
 <script type="text/javascript">
     jQuery(document).ready(function(){
 
-        @if(! empty($statusLabels))
-            new SlimSelect({
-                select: '#statusCanvas',
-                showSearch: false,
-                valuesUseText: false,
-                data: [
-                    @foreach($statusLabels as $key => $data)
-                        @if($data['active'])
-                            { innerHTML: '<i class="fas fa-fw {{ $data['icon'] }}"></i>&nbsp;{{ $data['title'] }}',
-                              text: "{{ $data['title'] }}", value: "{{ $key }}", selected: {{ $canvasItem['status'] == $key ? 'true' : 'false' }}},
-                        @endif
-                    @endforeach
-                ]
-            });
-        @endif
 
-        @if(! empty($relatesLabels))
-            new SlimSelect({
-                select: '#relatesCanvas',
-                showSearch: false,
-                valuesUseText: false,
-                data: [
-                    @foreach($relatesLabels as $key => $data)
-                        @if($data['active'])
-                            { innerHTML: '<i class="fas fa-fw {{ $data['icon'] }}"></i>&nbsp;{{ $data['title'] }}',
-                              text: "{{ $data['title'] }}", value: "{{ $key }}", selected: {{ $canvasItem['relates'] == $key ? 'true' : 'false' }}},
-                        @endif
-                    @endforeach
-                ]
-            });
-        @endif
 
         if (window.leantime && window.leantime.tiptapController) {
             leantime.tiptapController.initSimpleEditor();

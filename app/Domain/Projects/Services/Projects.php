@@ -14,7 +14,9 @@ use Leantime\Core\Domains\BaseService;
 use Leantime\Core\Events\EventDispatcher as EventCore;
 use Leantime\Core\Exceptions\AuthorizationException;
 use Leantime\Core\Exceptions\NotFoundException;
+use Leantime\Core\Http\TrustedAppUrl;
 use Leantime\Core\Language as LanguageCore;
+use Leantime\Core\Mailer;
 use Leantime\Core\Support\Avatarcreator;
 use Leantime\Core\Support\FromFormat;
 use Leantime\Core\Support\OutboundUrlGuard;
@@ -30,11 +32,16 @@ use Leantime\Domain\Menu\Repositories\Menu as MenuRepository;
 use Leantime\Domain\Notifications\Models\Notification;
 use Leantime\Domain\Notifications\Services\Messengers;
 use Leantime\Domain\Notifications\Services\Notifications as NotificationService;
+use Leantime\Domain\Notifications\Services\Webhooks;
+use Leantime\Domain\Projects\Events\ProjectArchived;
+use Leantime\Domain\Projects\Events\ProjectCreated;
+use Leantime\Domain\Projects\Events\ProjectMemberAdded;
 use Leantime\Domain\Projects\Permissions\ProjectsPermissions;
 use Leantime\Domain\Projects\Repositories\Projects as ProjectRepository;
 use Leantime\Domain\Queue\Repositories\Queue as QueueRepository;
 use Leantime\Domain\Setting\Repositories\Setting as SettingRepository;
 use Leantime\Domain\Tickets\Repositories\Tickets as TicketRepository;
+use Leantime\Domain\Users\Permissions\UsersPermissions;
 use Leantime\Domain\Users\Repositories\Users as UserRepository;
 use Leantime\Domain\Wiki\Repositories\Wiki;
 use SVG\SVG;
@@ -83,6 +90,7 @@ class Projects extends BaseService implements ChecksProjectAccess
         private CommentRepository $commentRepo,
         private ClientRepository $clientRepo,
         Client $httpClient,
+        private Webhooks $webhookService,
     ) {
         $this->httpClient = $httpClient;
     }
@@ -115,14 +123,27 @@ class Projects extends BaseService implements ChecksProjectAccess
     /**
      * Gets the project with the given ID.
      *
+     * Self-authorizing (MCP tools and other in-process callers do not pass the attribute gate):
+     * the caller must be able to view the project (role + membership), or hold the company-wide
+     * projects.edit capability (managers manage any project). Otherwise false — the same result
+     * as a missing project, so there is no existence oracle.
+     *
      * @param  int  $id  The ID of the project to retrieve.
-     * @return bool|array Returns the project data as an associative array if the project exists, otherwise returns false.
+     * @return bool|array Returns the project data as an associative array if the project exists and is visible, otherwise false.
      *
      * @api
      */
     #[RequiresPermission(ProjectsPermissions::VIEW, projectIdParam: 'id')]
     public function getProject(int $id): bool|array
     {
+        if ($id <= 0) {
+            return false;
+        }
+
+        if (! $this->can(ProjectsPermissions::VIEW, $id) && ! $this->can(ProjectsPermissions::EDIT, null, true)) {
+            return false;
+        }
+
         return $this->projectRepository->getProject($id);
     }
 
@@ -301,9 +322,17 @@ class Projects extends BaseService implements ChecksProjectAccess
      *
      * @mentions always bypass both layers.
      *
+     * Channels: queued email, project messengers, mobile push, in-app
+     * notifications and — last — queued rows for the personal webhooks of
+     * recipients who opted in (delivered later by the webhook queue).
+     *
      * @param  Notification  $notification  The notification object to send.
      *
-     * @api
+     * @internal Local-only: not exposed over JSON-RPC. This performs no authorization and
+     *           trusts every field of the caller-built Notification (project, author, subject,
+     *           message, link), fanning it out to email, messengers, push, in-app and personal
+     *           webhooks. It must only run as the last step after the calling service or
+     *           controller has already authorized the change being announced.
      */
     public function notifyProjectUsers(Notification $notification): void
     {
@@ -311,6 +340,12 @@ class Projects extends BaseService implements ChecksProjectAccess
         // Filter notifications (dispatch_filter returns mixed; the filter preserves the entity)
         /** @var Notification $notification */
         $notification = EventCore::dispatch_filter('notificationFilter', $notification);
+
+        // The link goes out by email, messenger and push: point it at the trusted app URL
+        // rather than the host of the request that triggered the notification.
+        if (is_array($notification->url) && isset($notification->url['url']) && is_string($notification->url['url'])) {
+            $notification->url['url'] = app()->make(TrustedAppUrl::class)->rebase($notification->url['url']);
+        }
 
         // Email
         $users = $this->getUsersToNotify($notification->projectId);
@@ -347,7 +382,8 @@ class Projects extends BaseService implements ChecksProjectAccess
 
         $emailMessage = $notification->message;
         if ($notification->url !== false) {
-            $emailMessage .= " <a href='".$notification->url['url']."'>".$notification->url['text'].'</a>';
+            $emailUrl = Mailer::notificationEmailUrl((string) $notification->url['url'], (string) $notification->module);
+            $emailMessage .= " <a href='".$emailUrl."'>".$notification->url['text'].'</a>';
         }
 
         // NEW Queuing messaging system
@@ -417,7 +453,8 @@ class Projects extends BaseService implements ChecksProjectAccess
                 $notification->module,
                 (int) $entityId,
                 $notification->authorId,
-                $notification->url['url']
+                $notification->url['url'],
+                (int) $notification->projectId
             );
         }
 
@@ -452,6 +489,18 @@ class Projects extends BaseService implements ChecksProjectAccess
          * @context domain.services.projects
          */
         self::dispatch_event('notifyProjectUsers', ['type' => 'projectUpdate', 'module' => $notification->module, 'moduleId' => $entityId, 'message' => $notification->message, 'subject' => $notification->subject, 'users' => array_values($filteredUsersToNotify), 'url' => $notification->url['url']], 'leantime.domain.projects.services.projects.notifyProjectUsers');
+
+        // Personal webhooks go last, to the same filtered recipients as email (relevance,
+        // category, mentions, collaborators). This only queues one row per recipient: the
+        // scheduler's WebhookQueue posts later, so no endpoint is contacted during this
+        // request. Queueing reads only the recipients' opt-in; Webhooks checks each queued
+        // recipient's opt-in, account and project access itself when the row is posted. The
+        // catch is a last guard so this step can never break the dispatch path.
+        try {
+            $this->webhookService->queueToUsers($notification, $users);
+        } catch (\Throwable $e) {
+            Log::warning('Personal webhook dispatch failed', ['exception' => get_class($e)]);
+        }
     }
 
     /**
@@ -513,7 +562,7 @@ class Projects extends BaseService implements ChecksProjectAccess
         // Check new format first
         $newKey = 'usersettings.'.$userId.'.projectNotificationLevels';
         $newSetting = $preloadedSettings[$newKey] ?? false;
-        if (! empty($newSetting) && $newSetting !== false) {
+        if (! empty($newSetting)) {
             $levels = json_decode($newSetting, true);
             if (is_array($levels) && isset($levels[$projectId])) {
                 $level = $levels[$projectId];
@@ -526,7 +575,7 @@ class Projects extends BaseService implements ChecksProjectAccess
         // Lazy migration: check old muted-projects format
         $oldKey = 'usersettings.'.$userId.'.projectMutedNotifications';
         $oldSetting = $preloadedSettings[$oldKey] ?? false;
-        if (! empty($oldSetting) && $oldSetting !== false) {
+        if (! empty($oldSetting)) {
             $mutedIds = json_decode($oldSetting, true);
             if (is_array($mutedIds) && in_array($projectId, $mutedIds)) {
                 return Notification::RELEVANCE_MUTED;
@@ -605,7 +654,7 @@ class Projects extends BaseService implements ChecksProjectAccess
 
         $companyDefault = $preloadedSettings['companysettings.defaultNotificationEventTypes'] ?? false;
         $companyEnabledTypes = null;
-        if (! empty($companyDefault) && $companyDefault !== false) {
+        if (! empty($companyDefault)) {
             $companyEnabledTypes = json_decode($companyDefault, true);
             if (! is_array($companyEnabledTypes)) {
                 $companyEnabledTypes = null;
@@ -616,7 +665,7 @@ class Projects extends BaseService implements ChecksProjectAccess
             $key = 'usersettings.'.$userId.'.notificationEventTypes';
             $setting = $preloadedSettings[$key] ?? false;
 
-            if (! empty($setting) && $setting !== false) {
+            if (! empty($setting)) {
                 $enabledTypes = json_decode($setting, true);
                 if (is_array($enabledTypes)) {
                     return in_array($category, $enabledTypes);
@@ -1128,10 +1177,14 @@ class Projects extends BaseService implements ChecksProjectAccess
      * @return string The stored project-role key, or an empty string when the user has no
      *                explicit role in the project (or is not assigned to it).
      *
+     * Non-admins may only resolve their OWN role (the userId is pinned to the session user);
+     * recursion-safe — a global role check only, never authorize()/can().
+     *
      * @api
      */
     public function getProjectRole($userId, $projectId): string
     {
+        $userId = $this->resolveScopedUserId($userId);
 
         $projectRole = $this->projectRepository->getUserProjectRelation($userId, $projectId)[0]['projectRole'] ?? '';
 
@@ -1164,6 +1217,34 @@ class Projects extends BaseService implements ChecksProjectAccess
         }
 
         return (string) $projectRole;
+    }
+
+    /**
+     * Ids of the projects a user can access, for scoping other queries.
+     *
+     * Same access rule as getProjectsUserHasAccessTo() (direct assignment, public project,
+     * client-shared project, or admin/owner) but returns only ids and, by default, only open
+     * projects. Non-admin callers are always pinned to the session user.
+     *
+     * @param  int|null  $userId  Optional. If omitted or 0, resolves to the session user.
+     * @param  string  $projectStatus  'open' (default), 'closed' or 'all'.
+     * @return int[] Accessible project ids; empty when the user can access nothing.
+     *
+     * @api
+     */
+    public function getAccessibleProjectIds(?int $userId = null, string $projectStatus = 'open'): array
+    {
+        if ($userId === null || $userId === 0) {
+            $userId = (int) session('userdata.id');
+        }
+
+        $userId = $this->resolveScopedUserId($userId);
+
+        if ($userId === 0) {
+            return [];
+        }
+
+        return $this->projectRepository->getAccessibleProjectIds($userId, $projectStatus);
     }
 
     /**
@@ -1612,10 +1693,29 @@ class Projects extends BaseService implements ChecksProjectAccess
     #[RequiresPermission(ProjectsPermissions::CREATE, global: true)]
     public function addProject(array $values): int|false
     {
+        // Mirrors the attribute in-body: MCP tools and other in-process callers bypass the gate.
+        $this->authorize(ProjectsPermissions::CREATE, null, true);
 
+        return $this->createProject($values);
+    }
+
+    /**
+     * Creates a project WITHOUT an authorization check.
+     *
+     * For system flows only — the onboarding default project (created for any newly signed-up
+     * user, whatever their role) and the CLI installer (no session). Never expose this over
+     * JSON-RPC or call it with request data; user-initiated creation goes through addProject().
+     *
+     * @param  array  $values  The project data (see addProject()).
+     * @return int|false The ID of the added project, or false if the project could not be added.
+     *
+     * @internal
+     */
+    public function createProject(array $values): int|false
+    {
         // A project may only be nested under a CONTAINER project (a program or a strategy),
         // never under another regular project. Validated here (not just in the controller)
-        // because this method is also reachable via JSON-RPC.
+        // because addProject() — reachable via JSON-RPC — delegates to this method.
         $parent = null;
         if (! empty($values['parent'])) {
             $parentProject = $this->projectRepository->getProject((int) $values['parent']);
@@ -1644,7 +1744,13 @@ class Projects extends BaseService implements ChecksProjectAccess
             $values['end'] = format($values['end'], fromFormat: FromFormat::UserDateEndOfDay)->isoDateTime();
         }
 
-        return $this->projectRepository->addProject($values);
+        $projectId = $this->projectRepository->addProject($values);
+
+        if ($projectId !== false && $projectId > 0) {
+            ProjectCreated::dispatch(projectId: $projectId, type: $values['type']);
+        }
+
+        return $projectId;
     }
 
     /**
@@ -1770,7 +1876,7 @@ class Projects extends BaseService implements ChecksProjectAccess
                 'projectId' => $newProjectId,
                 'editorId' => $ticket->editorId,
                 'userId' => session('userdata.id'),
-                'date' => date('Y-m-d H:i:s'),
+                'date' => dtHelper()->dbNow()->formatDateTimeForDb(),
                 'dateToFinish' => $dateToFinishValue,
                 'status' => $ticket->status,
                 'storypoints' => $ticket->storypoints,
@@ -1980,9 +2086,87 @@ class Projects extends BaseService implements ChecksProjectAccess
     #[RequiresPermission(ProjectsPermissions::EDIT, global: true)]
     public function patch($id, $params): bool
     {
+        // Mirrors the attribute in-body: MCP tools and other in-process callers bypass the gate.
+        $this->authorize(ProjectsPermissions::EDIT, null, true);
+
         $params = $this->rejectCyclicParent((int) $id, $params);
 
-        return $this->projectRepository->patch($id, $params);
+        // The repository reports success for zero affected rows, so only a project that
+        // existed before the write can transition into archived.
+        $previousProject = array_key_exists('state', $params)
+            ? $this->projectRepository->getProject((int) $id)
+            : false;
+
+        $patched = $this->projectRepository->patch($id, $params);
+
+        if ($patched && is_array($previousProject)) {
+            $this->dispatchArchivedOnTransition((int) $id, $previousProject['state'] ?? null, $params['state']);
+        }
+
+        return $patched;
+    }
+
+    /** Settings key recording the onboarding default project created for a user. */
+    public const ONBOARDING_PROJECT_SETTING = 'user.%d.onboardingProjectId';
+
+    /** Fields the first-login onboarding steps may change on a project. */
+    private const ONBOARDING_PATCHABLE_FIELDS = ['name', 'details'];
+
+    /**
+     * Patch the name/details of a project from the first-login onboarding wizard.
+     *
+     * Unlike patch() this does not require the company-wide projects.edit capability, because the
+     * wizard is shown to any newly signed-up user. It is NOT a bypass: the caller must either hold
+     * projects.edit, or the project must be the onboarding default project that was created for
+     * the session user (recorded at creation time) AND the user must still be assigned to it.
+     * Only `name` and `details` are written. A denial is logged and returns false so onboarding
+     * never traps the user.
+     *
+     * @param  int  $projectId  The project to patch (the session's current project in the wizard).
+     * @param  array<string, mixed>  $params  Fields to update; anything but name/details is dropped.
+     * @return bool True when the project was patched.
+     *
+     * @internal Onboarding wizard only. Not exposed over JSON-RPC.
+     */
+    public function patchOnboardingProject(int $projectId, array $params): bool
+    {
+        $params = array_intersect_key($params, array_flip(self::ONBOARDING_PATCHABLE_FIELDS));
+
+        if ($projectId <= 0 || $params === []) {
+            return false;
+        }
+
+        if (! $this->userMayPatchOnboardingProject($projectId)) {
+            Log::info('Onboarding project patch denied for project '.$projectId.' (user '.(session('userdata.id') ?? 'guest').')');
+
+            return false;
+        }
+
+        return $this->projectRepository->patch($projectId, $params);
+    }
+
+    /**
+     * Whether the session user may change $projectId through the onboarding wizard: company-wide
+     * project editors always; otherwise only the user's own onboarding default project, while
+     * they are still assigned to it.
+     *
+     * @param  int  $projectId  The project the wizard wants to change.
+     */
+    private function userMayPatchOnboardingProject(int $projectId): bool
+    {
+        if ($this->can(ProjectsPermissions::EDIT, null, true)) {
+            return true;
+        }
+
+        $userId = $this->currentUserId();
+        if ($userId === null || $userId <= 0) {
+            return false;
+        }
+
+        $onboardingProjectId = (int) $this->settingsRepo->getSetting(sprintf(self::ONBOARDING_PROJECT_SETTING, $userId));
+
+        return $onboardingProjectId === $projectId
+            && $this->isUserAssignedToProject($userId, $projectId);
     }
 
     /**
@@ -2106,6 +2290,7 @@ class Projects extends BaseService implements ChecksProjectAccess
      *
      * @api
      */
+    #[RequiresPermission(ProjectsPermissions::EDIT, global: true)]
     public function getAllProjects()
     {
         return $this->projectRepository->getAll();
@@ -2114,25 +2299,55 @@ class Projects extends BaseService implements ChecksProjectAccess
     /**
      * Gets all strategy projects.
      *
-     * @return array All strategies with their details
+     * Admins/owners see every strategy; everyone else only the ones they can access.
+     *
+     * @return array Strategies with their details
      *
      * @api
      */
     public function getAllStrategies(): array
     {
-        return $this->projectRepository->getProjectsByType('strategy');
+        return $this->filterToAccessibleProjects($this->projectRepository->getProjectsByType('strategy'));
     }
 
     /**
      * Gets all program projects.
      *
-     * @return array All programs with their details
+     * Admins/owners see every program; everyone else only the ones they can access.
+     *
+     * @return array Programs with their details
      *
      * @api
      */
     public function getAllPrograms(): array
     {
-        return $this->projectRepository->getProjectsByType('program');
+        return $this->filterToAccessibleProjects($this->projectRepository->getProjectsByType('program'));
+    }
+
+    /**
+     * Reduce a project list to the projects the session user has access to. Admins/owners
+     * (who access every project) get the list unchanged.
+     *
+     * @param  array|false  $projects  Project rows (each with an `id`).
+     * @return array The visible project rows, re-indexed.
+     */
+    private function filterToAccessibleProjects(array|false $projects): array
+    {
+        if (! is_array($projects)) {
+            return [];
+        }
+
+        if (Auth::userIsAtLeast(Roles::$admin)) {
+            return $projects;
+        }
+
+        $accessibleProjects = $this->getProjectsUserHasAccessTo() ?: [];
+        $accessibleIds = array_flip(array_map('intval', array_column($accessibleProjects, 'id')));
+
+        return array_values(array_filter(
+            $projects,
+            static fn ($project) => isset($accessibleIds[(int) ($project['id'] ?? 0)])
+        ));
     }
 
     /**
@@ -2365,7 +2580,20 @@ class Projects extends BaseService implements ChecksProjectAccess
     #[RequiresPermission(ProjectsPermissions::EDIT, global: true)]
     public function editUserProjectRelations($id, $projects): bool
     {
-        return $this->projectRepository->editUserProjectRelations($id, $projects);
+        $previousProjectIds = array_map(
+            static fn (array $relation): int => (int) $relation['projectId'],
+            $this->projectRepository->getUserProjectRelation((int) $id)
+        );
+
+        $result = $this->projectRepository->editUserProjectRelations($id, $projects);
+
+        foreach (array_unique(array_map('intval', (array) $projects)) as $projectId) {
+            if ($projectId > 0 && ! in_array($projectId, $previousProjectIds, true)) {
+                ProjectMemberAdded::dispatch(projectId: $projectId, userId: (int) $id);
+            }
+        }
+
+        return $result;
     }
 
     /**
@@ -2434,6 +2662,8 @@ class Projects extends BaseService implements ChecksProjectAccess
 
         $this->projectRepository->addProjectRelation($userId, $projectId, $projectRole);
 
+        ProjectMemberAdded::dispatch(projectId: $projectId, userId: $userId);
+
         return true;
     }
 
@@ -2453,6 +2683,8 @@ class Projects extends BaseService implements ChecksProjectAccess
     /**
      * Retrieves the project relations for a given user.
      *
+     * Non-admins may only read their OWN relations (the userId is pinned to the session user).
+     *
      * @param  int  $userId  The user ID
      * @param  int|null  $projectId  Optional project ID filter
      * @return array The project relations
@@ -2461,6 +2693,8 @@ class Projects extends BaseService implements ChecksProjectAccess
      */
     public function getUserProjectRelation(int $userId, ?int $projectId = null): array
     {
+        $userId = $this->resolveScopedUserId($userId);
+
         return $this->projectRepository->getUserProjectRelation($userId, $projectId);
     }
 
@@ -2554,19 +2788,44 @@ class Projects extends BaseService implements ChecksProjectAccess
     #[RequiresPermission(ProjectsPermissions::EDIT, global: true)]
     public function editProject($values, $id)
     {
+        // Mirrors the attribute in-body: MCP tools and other in-process callers bypass the gate.
+        $this->authorize(ProjectsPermissions::EDIT, null, true);
+
         $values = $this->rejectCyclicParent((int) $id, $values);
+
+        $previousProject = $this->projectRepository->getProject((int) $id);
 
         // Preserve existing type if not provided
         if (! isset($values['type'])) {
-            $currentProject = $this->getProject($id);
-            if ($currentProject) {
-                $values['type'] = $currentProject['type'] ?? 'project';
-            } else {
-                $values['type'] = 'project';
-            }
+            $values['type'] = is_array($previousProject) ? ($previousProject['type'] ?? 'project') : 'project';
         }
 
         $this->projectRepository->editProject($values, $id);
+
+        $this->dispatchArchivedOnTransition(
+            (int) $id,
+            is_array($previousProject) ? ($previousProject['state'] ?? null) : null,
+            $values['state'] ?? null
+        );
+    }
+
+    /**
+     * Fire {@see ProjectArchived} when a write moved a project INTO the closed/archived state (-1)
+     * from any other state. Re-saving an already closed project does not fire.
+     *
+     * @param  int  $projectId  The project that was written.
+     * @param  mixed  $previousState  The state before the write.
+     * @param  mixed  $newState  The state that was written.
+     */
+    private function dispatchArchivedOnTransition(int $projectId, mixed $previousState, mixed $newState): void
+    {
+        $isClosedState = static fn (mixed $state): bool => is_numeric($state) && (int) $state === -1;
+
+        if (! $isClosedState($newState) || $isClosedState($previousState)) {
+            return;
+        }
+
+        ProjectArchived::dispatch(projectId: $projectId);
     }
 
     /**
@@ -2648,7 +2907,18 @@ class Projects extends BaseService implements ChecksProjectAccess
             'projectRoles' => $projectRoles,
         ];
 
+        $previousMembers = $this->projectRepository->getUsersAssignedToProject($projectId, true);
+        $previousUserIds = is_array($previousMembers)
+            ? array_map(static fn (array $member): int => (int) $member['id'], $previousMembers)
+            : [];
+
         $this->projectRepository->editProjectRelations($values, $projectId);
+
+        foreach (array_unique(array_map('intval', $assignedUsers)) as $userId) {
+            if ($userId > 0 && ! in_array($userId, $previousUserIds, true)) {
+                ProjectMemberAdded::dispatch(projectId: $projectId, userId: $userId);
+            }
+        }
     }
 
     /**
@@ -2670,11 +2940,18 @@ class Projects extends BaseService implements ChecksProjectAccess
             if (is_numeric($status) && ! empty($projectList)) {
                 $projects = explode('&', $projectList);
 
-                if (is_array($projects) === true) {
-                    foreach ($projects as $key => $projectString) {
-                        $id = substr($projectString, 7);
+                foreach ($projects as $key => $projectString) {
+                    $id = substr($projectString, 7);
 
-                        $this->projectRepository->patch($id, ['sortIndex' => $key * 100, 'state' => $status]);
+                    // Only a move into the closed column can archive; skip the lookup otherwise.
+                    $previousState = (int) $status === -1
+                        ? ($this->projectRepository->getProject((int) $id)['state'] ?? null)
+                        : null;
+
+                    $this->projectRepository->patch($id, ['sortIndex' => $key * 100, 'state' => $status]);
+
+                    if ((int) $status === -1) {
+                        $this->dispatchArchivedOnTransition((int) $id, $previousState, $status);
                     }
                 }
             }
@@ -2819,6 +3096,9 @@ class Projects extends BaseService implements ChecksProjectAccess
     /**
      * Retrieves the projects for a client manager.
      *
+     * Non-admins are pinned to their own user id AND their own session client — a caller can
+     * never list another client's projects by passing a foreign clientId.
+     *
      * @param  int  $userId  The ID of the user.
      * @param  int  $clientId  The ID of the client.
      * @return array The projects for the client manager.
@@ -2828,6 +3108,10 @@ class Projects extends BaseService implements ChecksProjectAccess
     public function getClientManagerProjects(int $userId, int $clientId): array
     {
         $userId = $this->resolveScopedUserId($userId);
+
+        if (! Auth::userIsAtLeast(Roles::$admin)) {
+            $clientId = (int) session('userdata.clientId');
+        }
 
         $clientProjects = $this->projectRepository->getClientProjects($clientId);
         $userProjects = $this->projectRepository->getUserProjects($userId);
@@ -2960,6 +3244,7 @@ class Projects extends BaseService implements ChecksProjectAccess
      *
      * @api
      */
+    #[RequiresPermission(UsersPermissions::VIEW, global: true)]
     public function getAllUsers(bool $activeOnly = false): array
     {
         return $this->userRepo->getAll($activeOnly);
@@ -2974,6 +3259,7 @@ class Projects extends BaseService implements ChecksProjectAccess
      *
      * @api
      */
+    #[RequiresPermission(UsersPermissions::VIEW, global: true)]
     public function getEmployees(): array
     {
         return $this->userRepo->getEmployees();
@@ -3017,19 +3303,21 @@ class Projects extends BaseService implements ChecksProjectAccess
      * @param  string  $projectName  The project name (used in the message body).
      * @param  string  $authorName  The display name of the user who created the project.
      *
-     * @api
+     * @internal Not exposed over JSON-RPC (called by the NewProject controller after creation);
+     *           a caller must not be able to send forged notification emails.
      */
     public function notifyProjectCreated(int $projectId, string $projectName, string $authorName): void
     {
         $users = $this->getUsersAssignedToProject($projectId);
 
         $actualLink = BASE_URL.'/projects/showProject/'.$projectId;
+        // The message is an HTML email body: user-controlled names must be escaped.
         $message = sprintf(
             $this->language->__('email_notifications.project_created_message'),
             $actualLink,
             $projectId,
-            strip_tags($projectName),
-            $authorName
+            e(strip_tags($projectName)),
+            e(strip_tags($authorName))
         );
 
         $to = [];
@@ -3078,16 +3366,14 @@ class Projects extends BaseService implements ChecksProjectAccess
         $projectResults = [];
         $i = 0;
 
-        if (is_array($allProjects)) {
-            foreach ($allProjects as $project) {
-                if (! array_key_exists($project['clientId'], $clients)) {
-                    $clients[$project['clientId']] = ['name' => $project['clientName'], 'id' => $project['clientId']];
-                }
+        foreach ($allProjects as $project) {
+            if (! array_key_exists($project['clientId'], $clients)) {
+                $clients[$project['clientId']] = ['name' => $project['clientName'], 'id' => $project['clientId']];
+            }
 
-                if (empty($clientId) || $project['clientId'] == $clientId) {
-                    $projectResults[$i] = $project;
-                    $i++;
-                }
+            if (empty($clientId) || $project['clientId'] == $clientId) {
+                $projectResults[$i] = $project;
+                $i++;
             }
         }
 

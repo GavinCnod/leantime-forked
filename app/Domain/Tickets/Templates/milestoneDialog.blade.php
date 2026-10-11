@@ -26,10 +26,10 @@
 <form class="formModal" method="post" action="{{ BASE_URL }}/tickets/editMilestone/{{ $currentMilestone->id }}" style="min-width: 250px;">
 
     <label>{!! __('label.milestone_title') !!}</label>
-    <x-global::forms.text-input name="headline" value="{{ $currentMilestone->headline }}" placeholder="{{ __('label.milestone_title') }}" /><br />
+    <x-global::forms.text-input width="full" name="headline" value="{{ $currentMilestone->headline }}" placeholder="{{ __('label.milestone_title') }}" /><br />
 
     <label class="control-label">{!! __('label.project') !!}</label>
-    <select name="projectId" class="tw-w-full">
+    <x-global::forms.select width="full" name="projectId">
         @foreach ($allAssignedprojects as $project)
             @if (empty($project['type']) || $project['type'] == 'project')
             <option value="{{ $project['id'] }}"
@@ -41,10 +41,10 @@
             >{{ $project['name'] }}</option>
             @endif
         @endforeach
-    </select>
+    </x-global::forms.select>
 
     <label>{!! __('label.todo_status') !!}</label>
-    <select id="status-select" name="status" class="span11"
+    <x-global::forms.select width="full" id="status-select" name="status"
             data-placeholder="{{ isset($statusLabels[$currentMilestone->status]) ? $statusLabels[$currentMilestone->status]['name'] : '' }}">
 
         @foreach ($statusLabels as $key => $label)
@@ -52,10 +52,10 @@
                 @if ($currentMilestone->status == $key) selected='selected' @endif
             >{{ $label['name'] }}</option>
         @endforeach
-    </select>
+    </x-global::forms.select>
 
     <label>{!! __('label.dependent_on') !!}</label>
-    <select name="dependentMilestone"  class="span11">
+    <x-global::forms.select width="full" name="dependentMilestone">
         <option value="">{!! __('label.no_dependency') !!}</option>
         @foreach ($milestones as $milestoneRow)
             @if ($milestoneRow->id !== $currentMilestone->id)
@@ -65,27 +65,27 @@
             @endif
         @endforeach
 
-    </select>
+    </x-global::forms.select>
 
     <label>{!! __('label.owner') !!}</label>
-    <select data-placeholder="{{ __('input.placeholders.filter_by_user') }}"
-            name="editorId" class="user-select span11">
+    <x-global::forms.select width="full" data-placeholder="{{ __('input.placeholders.filter_by_user') }}"
+            name="editorId" class="user-select">
         <option value="">{!! __('dropdown.not_assigned') !!}</option>
         @foreach ($users as $userRow)
             <option value="{{ $userRow['id'] }}"
                 @if ($currentMilestone->editorId == $userRow['id']) selected='selected' @endif
             >{{ $userRow['firstname'] }} {{ $userRow['lastname'] }}</option>
         @endforeach
-    </select>
+    </x-global::forms.select>
 
     <label>{!! __('label.color') !!}</label>
-    <input type="text" name="tags" autocomplete="off" value="{{ $currentMilestone->tags }}" placeholder="{{ __('input.placeholders.pick_a_color') }}" class="simpleColorPicker"/><br />
+    <input type="text" name="tags" autocomplete="off" value="{{ $currentMilestone->tags }}" placeholder="{{ __('input.placeholders.pick_a_color') }}" class="field-width-full simpleColorPicker"/><br />
 
     <label>{!! __('label.planned_start_date') !!}</label>
-    <input type="text" name="editFrom" autocomplete="off" value="{{ format($currentMilestone->editFrom)->date() }}" placeholder="{{ __('language.dateformat') }}" id="milestoneEditFrom" /><br />
+    <input type="text" name="editFrom" class="field-width-sm" autocomplete="off" value="{{ format($currentMilestone->editFrom)->date() }}" placeholder="{{ __('language.dateformat') }}" id="milestoneEditFrom" /><br />
 
     <label>{!! __('label.planned_end_date') !!}</label>
-    <input type="text" name="editTo" autocomplete="off" value="{{ format($currentMilestone->editTo)->date() }}"  placeholder="{{ __('language.dateformat') }}" id="milestoneEditTo" /><br />
+    <input type="text" name="editTo" class="field-width-sm" autocomplete="off" value="{{ format($currentMilestone->editTo)->date() }}"  placeholder="{{ __('language.dateformat') }}" id="milestoneEditTo" /><br />
 
     <label>{!! __('label.outcome_impact') !!}</label>
     <textarea name="outcomeImpact" rows="3" class="tw-w-full"

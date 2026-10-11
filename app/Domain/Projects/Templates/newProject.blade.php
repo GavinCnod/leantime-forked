@@ -20,7 +20,7 @@
         <div class="tabbedwidget tab-primary projectTabs">
 
             <ul>
-                <li><a href="#projectdetails">{!! __('tabs.projectdetails') !!}</a></li>
+                <li><a href="#projectdetails"><span class="fa fa-leaf"></span> {!! __('tabs.projectdetails') !!}</a></li>
             </ul>
 
             <div id="projectdetails">
@@ -33,7 +33,7 @@
                                 <div class="col-md-12">
 
                                     <div class="form-group">
-                                        <x-global::forms.text-input variant="headline" name="name" id="name" style="width:99%" value="{{ $project['name'] }}" placeholder="{{ __('input.placeholders.enter_title_of_project') }}" />
+                                        <x-global::forms.text-input width="full" variant="headline" name="name" id="name" value="{{ $project['name'] }}" placeholder="{{ __('input.placeholders.enter_title_of_project') }}" />
                                     </div>
                                     <input type="hidden" name="projectState"  id="projectState" value="0" />
 
@@ -67,13 +67,13 @@
                             @if ($projectTypes && count($projectTypes) > 1)
                                 <h4 class="widgettitle title-light"><i class="fa-regular fa-rectangle-list"></i> Project Type</h4>
                                 <p>The type of the project. This will determine which features are available.</p>
-                                <select name="type">
+                                <x-global::forms.select enhanced name="type">
                                     @foreach ($projectTypes as $key => $type)
                                         <option value="{{ $key }}"
                                             @if ($project['type'] == $key) selected='selected' @endif
                                         >{!! __($key) !!}</option>
                                     @endforeach
-                                </select>
+                                </x-global::forms.select>
                                 <br /><br />
                             @endif
 
@@ -85,14 +85,14 @@
                                 <div>
                                     <label>{!! __('label.project_start') !!}</label>
                                     <div class="">
-                                        <input type="text" class="dates dateFrom" style="width:100px;" name="start" autocomplete="off"
-                                               value="{{ $project['start'] }}" placeholder="{{ __('language.dateformat') }}"/>
+                                        <input type="text" class="field-width-sm dates dateFrom" name="start" autocomplete="off"
+                                               value="{{ $project['start'] }}" placeholder="{{ __('language.dateformat') }}" />
 
                                     </div>
                                     <label>{!! __('label.project_end') !!}</label>
                                     <div class="">
-                                        <input type="text" class="dates dateTo" style="width:100px;" name="end" autocomplete="off"
-                                               value="{{ $project['end'] }}" placeholder="{{ __('language.dateformat') }}"/>
+                                        <input type="text" class="field-width-sm dates dateTo" name="end" autocomplete="off"
+                                               value="{{ $project['end'] }}" placeholder="{{ __('language.dateformat') }}" />
 
                                     </div>
                                 </div>
@@ -104,7 +104,7 @@
                                 <div class="">
                                     <h4 class="widgettitle title-light"><span
                                             class="fa fa-building"></span>{!! __('label.client_product') !!}</h4>
-                                    <select name="clientId" id="clientId">
+                                    <x-global::forms.select enhanced name="clientId" id="clientId" aria-label="{{ __('label.client_product') }}">
 
                                         @foreach ($clients as $row)
                                             <option value="{{ $row['id'] }}"
@@ -112,7 +112,7 @@
                                             >{{ $row['name'] }}</option>
                                         @endforeach
 
-                                    </select>
+                                    </x-global::forms.select>
                                     @if ($login::userIsAtLeast('manager'))
                                         <br /><a href="{{ BASE_URL }}/clients/newClient" target="_blank">{!! __('label.client_not_listed') !!}</a>
                                     @endif
@@ -128,11 +128,11 @@
                                     {!! __('text.who_can_access') !!}
                                     <br /><br />
 
-                                    <select name="globalProjectUserAccess" style="max-width:300px;">
+                                    <x-global::forms.select enhanced name="globalProjectUserAccess" aria-label="{{ __('labels.defaultaccess') }}">
                                         <option value="restricted" {{ $project['psettings'] == 'restricted' ? "selected='selected'" : '' }}>{!! __('labels.only_chose') !!}</option>
                                         <option value="clients" {{ $project['psettings'] == 'clients' ? "selected='selected'" : '' }}>{!! __('labels.everyone_in_client') !!}</option>
                                         <option value="all" {{ $project['psettings'] == 'all' ? "selected='selected'" : '' }}>{!! __('labels.everyone_in_org') !!}</option>
-                                    </select>
+                                    </x-global::forms.select>
 
                                 </div>
                             </div>
@@ -151,7 +151,6 @@
 <script type="text/javascript">
     jQuery(document).ready(function() {
 
-        jQuery("#projectdetails select").chosen();
         leantime.dateController.initDateRangePicker(".dateFrom", ".dateTo", 2);
 
         leantime.projectsController.initProjectTabs();

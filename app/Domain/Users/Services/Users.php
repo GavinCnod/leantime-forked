@@ -6,8 +6,12 @@ use Illuminate\Contracts\Container\BindingResolutionException;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\RateLimiter;
 use Leantime\Core\Auth\Permissions\RequiresPermission;
+use Leantime\Core\Auth\RoleCeiling;
 use Leantime\Core\Configuration\Environment;
 use Leantime\Core\Domains\BaseService;
+use Leantime\Core\Exceptions\AuthorizationException;
+use Leantime\Core\Exceptions\ValidationException;
+use Leantime\Core\Http\TrustedAppUrl;
 use Leantime\Core\Language as LanguageCore;
 use Leantime\Core\Mailer as MailerCore;
 use Leantime\Core\Support\Avatarcreator;
@@ -20,9 +24,14 @@ use Leantime\Domain\Clients\Repositories\Clients as ClientRepository;
 use Leantime\Domain\Files\Services\Files;
 use Leantime\Domain\Ldap\Services\Ldap as LdapService;
 use Leantime\Domain\Notifications\Models\Notification;
+use Leantime\Domain\Notifications\Services\Webhooks;
 use Leantime\Domain\Projects\Repositories\Projects as ProjectRepository;
 use Leantime\Domain\Projects\Services\Projects as ProjectService;
 use Leantime\Domain\Setting\Services\Setting as SettingService;
+use Leantime\Domain\Users\Events\AppearanceUpdated;
+use Leantime\Domain\Users\Events\InviteSent;
+use Leantime\Domain\Users\Events\UserCreated;
+use Leantime\Domain\Users\Exceptions\WebhookSettingNotSavedException;
 use Leantime\Domain\Users\Permissions\UsersPermissions;
 use Leantime\Domain\Users\Repositories\Users as UserRepository;
 use Ramsey\Uuid\Uuid;
@@ -89,11 +98,28 @@ class Users extends BaseService
     }
 
     /**
+     * Updates another user's account.
+     *
+     * Role ceiling: the caller may not edit an account whose current role is above their own,
+     * nor assign a role above their own.
+     *
+     * @param  array  $values  The user values to store.
+     * @param  int|string  $id  The id of the user being edited.
+     * @return bool True on success.
+     *
+     * @throws AuthorizationException When the role ceiling is violated.
+     *
      * @api
      */
     #[RequiresPermission(UsersPermissions::EDIT, global: true)]
     public function editUser($values, $id): bool
     {
+        $this->assertUserManageable((int) $id);
+
+        if (array_key_exists('role', $values)) {
+            $this->assertRoleAssignable($values['role']);
+        }
+
         if (isset($values['firstname'])) {
             $values['firstname'] = NameSanitizer::clean($values['firstname']);
         }
@@ -363,12 +389,45 @@ class Users extends BaseService
      *                      when the invite rate limit is exhausted
      *
      * @throws BindingResolutionException
+     * @throws AuthorizationException When the requested role is above the caller's role.
      *
      * @api
      */
     #[RequiresPermission(UsersPermissions::CREATE, global: true)]
     public function createUserInvite(array $values): false|string
     {
+        $invite = $this->createUserInviteWithStatus($values);
+
+        return $invite === false ? false : $invite['userId'];
+    }
+
+    /**
+     * Creates an invited user and sends the invitation, reporting whether the email went out.
+     *
+     * The user exists even when the email fails (e.g. bad SMTP settings); the admin can fix the
+     * mail settings and resend, so the caller must be able to tell them (#1795).
+     *
+     * Requires users.create here, not only at the entry points, because other services (e.g. the
+     * onboarding invite step) call it directly. Role ceiling: the requested role may not exceed the
+     * caller's own role. Callers below admin can only invite into their own client.
+     *
+     * @param  array  $values  The new user's values.
+     * @return false|array{userId: string, emailSent: bool} False when the user wasn't created.
+     *
+     * @throws AuthorizationException When the caller may not create users or the requested role
+     *                                is above the caller's role.
+     */
+    public function createUserInviteWithStatus(array $values): false|array
+    {
+        $this->authorize(UsersPermissions::CREATE, forceGlobal: true);
+        $this->assertRoleAssignable($values['role'] ?? '');
+
+        if ($this->callerIsBelowAdmin()) {
+            $values['clientId'] = session('userdata.clientId') ?? '';
+        }
+
+        $values['source'] = $this->allowedAccountSource($values['source'] ?? '');
+
         if ($this->invitesRateLimited()) {
             return false;
         }
@@ -390,19 +449,45 @@ class Users extends BaseService
             return false;
         }
 
-        $this->sendUserInvite($inviteCode, $values['user']);
+        UserCreated::dispatch(userId: (int) $result, role: (int) Roles::getRoleLevel($values['role'] ?? ''), source: 'invite');
 
-        return $result;
+        $emailSent = $this->sendUserInvite($inviteCode, $values['user']);
+
+        if ($emailSent) {
+            InviteSent::dispatch(userId: (int) $result);
+        }
+
+        return ['userId' => $result, 'emailSent' => $emailSent];
     }
 
-    public function sendUserInvite(string $inviteCode, string $user)
+    /**
+     * Sends the invitation email with the account-setup link to a user.
+     *
+     * The link uses the trusted application URL ({@see TrustedAppUrl}); when none is known the
+     * email is not sent and false is returned.
+     *
+     * @param  string  $inviteCode  The invite/password-reset code for the setup link.
+     * @param  string  $user  The recipient's email address (username).
+     * @return bool True when the email was sent, false when delivery failed.
+     *
+     * @throws BindingResolutionException
+     */
+    public function sendUserInvite(string $inviteCode, string $user): bool
     {
+        // The invite link sets the account's password, so it is only ever built from a trusted
+        // app URL, never from the request host.
+        $trustedAppUrl = app()->make(TrustedAppUrl::class)->get();
+        if ($trustedAppUrl === null) {
+            Log::warning('Invitation email not sent: the application URL is unknown. Set LEAN_APP_URL to your public URL (e.g. https://pm.example.com).');
+
+            return false;
+        }
 
         $mailer = app()->make(MailerCore::class);
         $mailer->setContext('new_user');
 
         $mailer->setSubject($this->language->__('email_notifications.new_user_subject'));
-        $actual_link = BASE_URL.'/auth/userInvite/'.$inviteCode;
+        $actual_link = $trustedAppUrl.'/auth/userInvite/'.$inviteCode;
 
         // The inviter identifies themselves in the body only (sanitized name + verified email);
         // the From header stays a fixed 'Leantime' so user content never reaches mail headers.
@@ -430,7 +515,7 @@ class Users extends BaseService
 
         $to = [$user];
 
-        $mailer->sendMail($to, 'Leantime');
+        return $mailer->sendMail($to, 'Leantime');
     }
 
     /**
@@ -481,26 +566,43 @@ class Users extends BaseService
     /**
      * addUser - simple service wrapper to create a new user
      *
+     * Role ceiling: the requested role may not exceed the caller's own role. Callers below admin
+     * (e.g. managers, who hold users.create) cannot create active accounts with a password they
+     * chose: their request is turned into an invitation, scoped to their own client. The reserved
+     * 'api' source is never accepted here (see allowedAccountSource()). A request without a
+     * password is also turned into an invitation: the user sets their own password from the
+     * invite link.
+     *
      * TODO: Should accept userModel
      *
      * @param  array  $values  basic user values
      * @return bool|int returns new user id on success, false on failure
+     *
+     * @throws AuthorizationException When the requested role is above the caller's role.
+     * @throws ValidationException When no username (email) is given.
      *
      * @api
      */
     #[RequiresPermission(UsersPermissions::CREATE, global: true)]
     public function addUser(array $values): bool|int
     {
+        $username = trim((string) ($values['username'] ?? $values['user'] ?? ''));
+        if ($username === '') {
+            throw ValidationException::withMessages(['username' => ['A username (email) is required to create a user.']]);
+        }
+
+        $password = (string) ($values['password'] ?? '');
+
         $values = [
             'firstname' => NameSanitizer::clean($values['firstname'] ?? ''),
             'lastname' => NameSanitizer::clean($values['lastname'] ?? ''),
             'phone' => $values['phone'] ?? '',
-            'user' => $values['username'] ?? $values['user'],
-            'role' => $values['role'],
+            'user' => $username,
+            'role' => $values['role'] ?? '',
             'notifications' => $values['notifications'] ?? 1,
             'clientId' => $values['clientId'] ?? '',
-            'password' => $values['password'],
-            'source' => $values['source'] ?? '',
+            'password' => $password,
+            'source' => $this->allowedAccountSource($values['source'] ?? ''),
             'pwReset' => $values['pwReset'] ?? '',
             'status' => $values['status'] ?? '',
             'createdOn' => $values['createdOn'] ?? '',
@@ -509,7 +611,22 @@ class Users extends BaseService
             'department' => $values['department'] ?? '',
         ];
 
-        return $this->userRepo->addUser($values);
+        $this->assertRoleAssignable($values['role']);
+
+        $mustInvite = $this->callerIsBelowAdmin() || $password === '';
+        if ($mustInvite) {
+            $invite = $this->createUserInviteWithStatus($values);
+
+            return $invite === false ? false : (int) $invite['userId'];
+        }
+
+        $newUserId = $this->userRepo->addUser($values);
+
+        if ($newUserId !== false) {
+            UserCreated::dispatch(userId: (int) $newUserId, role: (int) Roles::getRoleLevel($values['role']), source: 'admin');
+        }
+
+        return $newUserId;
     }
 
     /**
@@ -533,10 +650,13 @@ class Users extends BaseService
      * Patch specific fields on a user record.
      *
      * Only admins/owners can patch other users. Regular users may only patch
-     * their own record and only non-privileged fields.
+     * their own record and only non-privileged fields. Role ceiling: privileged patches may not
+     * target an account with a higher role than the caller's, nor set a role above it.
      *
      * @param  int  $id  The user ID
      * @param  array  $params  The fields to update
+     *
+     * @throws AuthorizationException When the role ceiling is violated.
      *
      * @api
      */
@@ -559,8 +679,15 @@ class Users extends BaseService
         ];
 
         if ($this->can(UsersPermissions::EDIT, forceGlobal: true)) {
-            // users.edit holders (admin+) can patch any user, but only whitelisted fields
+            // users.edit holders (admin+) can patch any user at or below their own role, but
+            // only whitelisted fields
             $filteredParams = array_intersect_key($params, array_flip($adminPatchableFields));
+
+            $this->assertUserManageable($id);
+
+            if (array_key_exists('role', $filteredParams)) {
+                $this->assertRoleAssignable($filteredParams['role']);
+            }
         } elseif ($id === $currentUserId) {
             // Regular users can only patch their own profile with limited fields
             $filteredParams = array_intersect_key($params, array_flip($selfPatchableFields));
@@ -734,7 +861,11 @@ class Users extends BaseService
      * @param  int  $id  The id of the user to delete.
      * @return bool True if the user was deleted successfully, false otherwise.
      *
-     * @throws \Exception If the user is not authorized to delete the user.
+     * Role ceiling: an account whose role is above the caller's own (e.g. an owner, for an admin)
+     * cannot be deleted.
+     *
+     * @throws AuthorizationException If the caller may not delete users or the account's role is
+     *                                above the caller's.
      *
      * @api
      */
@@ -745,6 +876,7 @@ class Users extends BaseService
         // attribute defers (entityScoped), so this in-method check is the single source of
         // truth and throws AuthorizationException (RPC -32001 / 403) when denied.
         $this->authorize(UsersPermissions::DELETE, forceGlobal: true);
+        $this->assertUserManageable($id);
 
         $this->userRepo->deleteUser($id);
         $this->projectRepository->deleteAllProjectRelations($id);
@@ -828,7 +960,7 @@ class Users extends BaseService
 
         $timezone = $this->settingsService->getSetting('usersettings.'.$userId.'.timezone');
         if (! $timezone) {
-            $timezone = date_default_timezone_get();
+            $timezone = app()->make(\Leantime\Core\Configuration\Environment::class)->defaultTimezone;
         }
 
         $messagesfrequency = $this->settingsService->getSetting('usersettings.'.$row['id'].'.messageFrequency');
@@ -895,7 +1027,7 @@ class Users extends BaseService
                 'workStart' => null,
                 'lunch' => null,
                 'workEnd' => null,
-                'timezone' => date_default_timezone_get(),
+                'timezone' => app()->make(\Leantime\Core\Configuration\Environment::class)->defaultTimezone,
             ];
         }
 
@@ -909,7 +1041,7 @@ class Users extends BaseService
 
         $timezone = $this->settingsService->getSetting('usersettings.'.$userId.'.timezone');
         if (! $timezone) {
-            $timezone = date_default_timezone_get();
+            $timezone = app()->make(\Leantime\Core\Configuration\Environment::class)->defaultTimezone;
         }
 
         return [
@@ -923,7 +1055,9 @@ class Users extends BaseService
     /**
      * Gathers the notification preferences for the "edit own profile" screen,
      * applying company defaults and the per-project notification levels
-     * (including the lazy migration from the legacy muted-projects format).
+     * (including the lazy migration from the legacy muted-projects format),
+     * plus the personal webhook endpoint (webhookUrl) and its opt-in
+     * (webhookEnabled, only true while a URL is stored).
      *
      * @param  int  $userId  The id of the user whose preferences are loaded.
      * @return array<string, mixed> Template-ready notification preference data.
@@ -961,6 +1095,8 @@ class Users extends BaseService
             $companyDefaultRelevance = Notification::RELEVANCE_ALL;
         }
 
+        $webhook = Webhooks::decodeSetting($this->settingsService->getSetting(Webhooks::settingKey($userId)));
+
         return [
             'notificationCategories' => Notification::NOTIFICATION_CATEGORIES,
             'enabledEventTypes' => $enabledEventTypes,
@@ -968,6 +1104,8 @@ class Users extends BaseService
             'companyDefaultRelevance' => $companyDefaultRelevance,
             'relevanceLevels' => Notification::RELEVANCE_LEVELS,
             'userProjects' => $userProjects,
+            'webhookUrl' => $webhook['url'],
+            'webhookEnabled' => $webhook['enabled'],
         ];
     }
 
@@ -1099,6 +1237,13 @@ class Users extends BaseService
         $postColorScheme = htmlentities($post['colorscheme'] ?? 'themeDefault');
         $themeFont = htmlentities($post['themeFont'] ?? '');
 
+        $previousAppearance = [
+            (string) $this->settingsService->getSetting('usersettings.'.$userId.'.theme', ''),
+            (string) $this->settingsService->getSetting('usersettings.'.$userId.'.colorMode', ''),
+            (string) $this->settingsService->getSetting('usersettings.'.$userId.'.colorScheme', ''),
+            (string) $this->settingsService->getSetting('usersettings.'.$userId.'.themeFont', ''),
+        ];
+
         $this->settingsService->saveSetting('usersettings.'.$userId.'.theme', $postTheme);
         $this->settingsService->saveSetting('usersettings.'.$userId.'.colorMode', $postColorMode);
         $this->settingsService->saveSetting('usersettings.'.$userId.'.colorScheme', $postColorScheme);
@@ -1109,6 +1254,16 @@ class Users extends BaseService
         $this->themeCore->setColorMode($postColorMode);
         $this->themeCore->setColorScheme($postColorScheme);
         $this->themeCore->setFont($themeFont);
+
+        if ($previousAppearance !== [$postTheme, $postColorMode, $postColorScheme, $themeFont]) {
+            AppearanceUpdated::dispatch(
+                userId: $userId,
+                theme: $postTheme,
+                colorMode: $postColorMode,
+                colorScheme: $postColorScheme,
+                font: $themeFont,
+            );
+        }
     }
 
     /**
@@ -1155,8 +1310,24 @@ class Users extends BaseService
      * per-project notification levels (validated against the known relevance
      * levels). Cleans up the legacy muted-projects format when present.
      *
+     * Also stores the personal webhook: webhookUrl (https only, validated
+     * before anything is written) and the webhookEnabled checkbox. An empty
+     * URL disables the webhook; unchecking the box keeps the URL on file.
+     * Both go into one setting (Webhooks::settingKey()), written before any
+     * other preference and verified, so a failed save never leaves an old URL
+     * or opt-in live behind a success message.
+     *
+     * Omitting the webhookUrl key leaves the stored webhook unchanged, and any
+     * webhookEnabled sent without it is ignored. Sending webhookUrl, even as an
+     * empty string, sets the URL and the opt-in together, with a missing
+     * webhookEnabled meaning unchecked. API clients that change only the opt-in
+     * must therefore send the current URL as well.
+     *
      * @param  int  $userId  The id of the user being edited.
      * @param  array<string, mixed>  $post  Raw request input.
+     *
+     * @throws ValidationException When webhookUrl is not an acceptable endpoint; nothing is saved.
+     * @throws WebhookSettingNotSavedException When the webhook setting could not be persisted; nothing is saved.
      *
      * @api
      */
@@ -1164,6 +1335,37 @@ class Users extends BaseService
     {
         // Self-service: pin to the authenticated user (ignore any caller-supplied id — prevents RPC IDOR).
         $userId = (int) session('userdata.id');
+
+        // A payload without webhookUrl (API clients predating the webhook) leaves the webhook as it is.
+        if (array_key_exists('webhookUrl', $post)) {
+            // Validate the webhook first so a rejected URL leaves every preference untouched.
+            $webhookUrl = is_string($post['webhookUrl']) ? trim($post['webhookUrl']) : null;
+            if ($webhookUrl === null || ($webhookUrl !== '' && ! Webhooks::isValidEndpointUrl($webhookUrl))) {
+                throw ValidationException::withMessages(['webhookUrl' => ['notification.invalid_webhook_url']]);
+            }
+            $webhookEnabled = $webhookUrl !== '' && filter_var($post['webhookEnabled'] ?? false, FILTER_VALIDATE_BOOLEAN);
+
+            // Persist the webhook first: if it can't be saved, fail before any other preference is touched.
+            $webhookSettingKey = Webhooks::settingKey($userId);
+            $webhookSetting = Webhooks::encodeSetting($webhookUrl, $webhookEnabled);
+            $webhookSaveException = null;
+            try {
+                // updateOrInsert also reports false when the row already held this exact value, so a
+                // false result only counts as a failure when reading the setting back shows otherwise.
+                $webhookSaved = $this->settingsService->saveSetting($webhookSettingKey, $webhookSetting)
+                    || $this->settingsService->getSetting($webhookSettingKey) === $webhookSetting;
+            } catch (\Throwable $e) {
+                $webhookSaved = false;
+                $webhookSaveException = get_class($e);
+            }
+
+            if (! $webhookSaved) {
+                // Class name only: the setting value and DB exception messages carry the URL and its secret.
+                Log::error('Personal webhook setting could not be saved', ['userId' => $userId, 'exception' => $webhookSaveException]);
+
+                throw new WebhookSettingNotSavedException;
+            }
+        }
 
         $row = $this->getUser($userId);
 
@@ -1411,6 +1613,7 @@ class Users extends BaseService
      *   - 'sent'             invitation sent
      *   - 'too_soon'         another invite was sent within the 240s resend cooldown
      *   - 'too_many_invites' the hourly/daily invite cap was reached
+     *   - 'invite_email_failed' the invitation email could not be sent
      *
      * @param  int  $id  The id of the user to re-invite.
      * @param  array<string, mixed>  $row  The current stored user row.
@@ -1439,12 +1642,16 @@ class Users extends BaseService
             $this->patchUser($id, ['pwReset' => $pwReset]);
         }
 
-        $this->sendUserInvite(
+        $emailSent = $this->sendUserInvite(
             inviteCode: $pwReset,
             user: $row['username']
         );
 
-        return 'sent';
+        if ($emailSent) {
+            InviteSent::dispatch(userId: $id);
+        }
+
+        return $emailSent ? 'sent' : 'invite_email_failed';
     }
 
     /**
@@ -1459,8 +1666,10 @@ class Users extends BaseService
      *   - 'enter_email'    email was empty
      *   - 'no_valid_email' email is not a valid address
      *   - 'user_exists'    email already belongs to another account
+     *   - 'role_not_allowed' the requested role is above the inviting user's own role
      *   - 'invite_failed'  invite could not be created (rate limit reached OR db failure — the
      *                      two are indistinguishable here, so the mapped message stays generic)
+     *   - 'invite_email_failed' the user was created but the invitation email could not be sent
      *
      * @param  array<string, mixed>  $post  Raw request input.
      * @param  int|string|null  $sessionClientId  The session user's client id (used for managers).
@@ -1469,7 +1678,9 @@ class Users extends BaseService
      *
      * @throws BindingResolutionException
      *
-     * @api
+     * @internal Not exposed over JSON-RPC: the manager flag and client id are supplied by the
+     *           NewUser controller from the session. The role ceiling is enforced here (and in
+     *           createUserInviteWithStatus()).
      */
     #[RequiresPermission(UsersPermissions::CREATE, global: true)]
     public function inviteNewUser(array $post, int|string|null $sessionClientId, bool $isManager): string
@@ -1497,22 +1708,27 @@ class Users extends BaseService
             return 'no_valid_email';
         }
 
+        if (! $this->roleCeiling()->canAssign($values['role'])) {
+            return 'role_not_allowed';
+        }
+
         if ($this->usernameExist($values['user'])) {
             return 'user_exists';
         }
 
-        $userId = $this->createUserInvite($values);
+        $invite = $this->createUserInviteWithStatus($values);
 
-        if ($userId === false) {
+        if ($invite === false) {
             return 'invite_failed';
         }
 
         $projects = $post['projects'] ?? null;
         if (is_array($projects) && count($projects) > 0) {
-            $this->reconcileProjectRelations((int) $userId, $projects);
+            $this->reconcileProjectRelations((int) $invite['userId'], $projects);
         }
 
-        return 'success';
+        // The user exists either way; only report full success if the invitation email left.
+        return $invite['emailSent'] ? 'success' : 'invite_email_failed';
     }
 
     /**
@@ -1542,7 +1758,10 @@ class Users extends BaseService
      * Imports/updates the LDAP users selected from the staged member list.
      *
      * @param  array<int, array<string, mixed>>  $stagedUsers  The full staged member list.
-     * @param  array<int, string>  $selectedUsernames  The usernames the admin selected for import.
+     * @param  array<int, string>  $selectedUsernames  The `user` values (emails) the admin selected for import.
+     *
+     * @throws AuthorizationException When a selected user's role, or the role of the existing
+     *                                account it would update, is above the caller's role.
      *
      * @api
      */
@@ -1551,11 +1770,114 @@ class Users extends BaseService
     {
         $users = [];
         foreach ($stagedUsers as $user) {
-            if (array_search($user['username'], $selectedUsernames)) {
+            // Staged rows come from Ldap::getSingleUser(); the import dialog posts each row's `user`
+            // (the email) as the selection value.
+            $email = $user['user'] ?? null;
+            if (is_string($email) && in_array($email, $selectedUsernames, true)) {
                 $users[] = $user;
             }
         }
 
+        // Role ceiling, checked for the whole batch before anything is written: the imported role
+        // and the existing account it would update (matched the same way upsertUsers() does).
+        foreach ($users as $user) {
+            $this->assertRoleAssignable($user['role'] ?? '');
+
+            $existingUser = $this->userRepo->getUserByEmail((string) $user['user']);
+            if (is_array($existingUser)) {
+                $this->assertRoleAssignable($existingUser['role'] ?? '');
+            }
+        }
+
         app()->make(LdapService::class)->upsertUsers($users);
+    }
+
+    /**
+     * The roles the current user may assign (their own role and below), for role dropdowns.
+     *
+     * @return array<int, string> Role names keyed by role level.
+     *
+     * @api
+     */
+    public function getAssignableRoles(): array
+    {
+        return $this->roleCeiling()->assignableRoles();
+    }
+
+    /**
+     * Role ceiling: throws unless the current user may assign $role (at or below their own role).
+     *
+     * @param  mixed  $role  Requested role key or name.
+     *
+     * @throws AuthorizationException
+     */
+    private function assertRoleAssignable(mixed $role): void
+    {
+        if ($this->roleCeiling()->canAssign($role)) {
+            return;
+        }
+
+        throw new AuthorizationException('You cannot assign a role higher than your own.');
+    }
+
+    /**
+     * Role ceiling: throws when the account $userId currently holds a role above the caller's, so
+     * e.g. an admin cannot edit (and take over) an owner account. Unknown ids pass; the update
+     * itself then affects nothing.
+     *
+     * @param  int  $userId  The account being modified.
+     *
+     * @throws AuthorizationException
+     */
+    private function assertUserManageable(int $userId): void
+    {
+        $targetUser = $this->userRepo->getUser($userId);
+
+        if (! is_array($targetUser)) {
+            return;
+        }
+
+        if ($this->roleCeiling()->canAssign($targetUser['role'] ?? '')) {
+            return;
+        }
+
+        throw new AuthorizationException('You cannot edit a user with a higher role than your own.');
+    }
+
+    /**
+     * The account `source` a caller may set when creating a user. 'api' is reserved for API keys
+     * (created through the Api service only) because it makes the account authenticate as a
+     * service account. Callers below admin cannot set a source at all.
+     *
+     * @param  mixed  $requestedSource  Caller-supplied source.
+     * @return string The source to store.
+     */
+    private function allowedAccountSource(mixed $requestedSource): string
+    {
+        if (! is_string($requestedSource) || strtolower(trim($requestedSource)) === 'api') {
+            return '';
+        }
+
+        if ($this->callerIsBelowAdmin()) {
+            return '';
+        }
+
+        return $requestedSource;
+    }
+
+    /**
+     * Whether an authenticated caller ranks below admin (e.g. a manager holding users.create).
+     */
+    private function callerIsBelowAdmin(): bool
+    {
+        return $this->roleCeiling()->callerIsBelow(Roles::$admin);
+    }
+
+    /**
+     * The shared role ceiling policy.
+     */
+    private function roleCeiling(): RoleCeiling
+    {
+        return app(RoleCeiling::class);
     }
 }

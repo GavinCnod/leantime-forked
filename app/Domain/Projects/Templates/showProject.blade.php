@@ -96,7 +96,7 @@
                                             @php
                                             } else {
                                             @endphp
-                                                <select name="userProjectRole-{{ $assignedUser['id'] }}">
+                                                <x-global::forms.select name="userProjectRole-{{ $assignedUser['id'] }}">
                                                     <option value="inherit">Inherit</option>
                                                     <option value="{{ array_search($roles::$readonly, $roles::getRoles()) }}"
                                                         @if ($assignedUser['projectRole'] == array_search($roles::$readonly, $roles::getRoles())) selected='selected' @endif
@@ -111,7 +111,7 @@
                                                     <option value="{{ array_search($roles::$manager, $roles::getRoles()) }}"
                                                         @if ($assignedUser['projectRole'] == array_search($roles::$manager, $roles::getRoles())) selected='selected' @endif
                                                     >{!! __('label.roles.'.$roles::$manager) !!}</option>
-                                                </select>
+                                                </x-global::forms.select>
                                             @php } @endphp
                                             <div class="clearall"></div>
                                         </div>
@@ -121,7 +121,7 @@
                              </div>
 
 
-                `           <div class="row">
+                            <div class="row">
                                 <div class="col-md-12">
                                     <h4 class="widgettitle title-light">
                                         <span class="fa fa-user-friends "></span>{!! __('headlines.assign_users_to_project') !!}
@@ -144,7 +144,7 @@
                                                     <x-global::forms.text-input readonly disabled value="{{ __('label.roles.'.$roles::getRoles()[$row['role']]) }}" />
                                                 @else
                                                     @php $assignedUserMatch = collect($project['assignedUsers'])->where('id', $row['id'])->first(); @endphp
-                                                    <select name="userProjectRole-{{ $row['id'] }}">
+                                                    <x-global::forms.select name="userProjectRole-{{ $row['id'] }}">
                                                         <option value="inherit">Inherit</option>
                                                         <option value="{{ array_search($roles::$readonly, $roles::getRoles()) }}"
                                                         @if ($assignedUserMatch && $assignedUserMatch['projectRole'] == array_search($roles::$readonly, $roles::getRoles())) selected='selected' @endif
@@ -159,7 +159,7 @@
                                                         <option value="{{ array_search($roles::$manager, $roles::getRoles()) }}"
                                                             @if ($assignedUserMatch && $assignedUserMatch['projectRole'] == array_search($roles::$manager, $roles::getRoles())) selected='selected' @endif
                                                         >{!! __('label.roles.'.$roles::$manager) !!}</option>
-                                                    </select>
+                                                    </x-global::forms.select>
                                                 @endif
                                                 <div class="clearall"></div>
                                             </div>
@@ -278,7 +278,7 @@
                 <h4 class="widgettitle title-light"><span class="fa fa-leaf"></span>Telegram</h4>
                 <div class="row">
                     <div class="col-md-3">
-                        <img src="{{ BASE_URL }}/dist/images/telegram-logo.png" width="130" alt="Telegram logo" />
+                        <img src="{{ BASE_URL }}/dist/images/telegram-logo.svg" width="130" alt="Telegram logo" />
                     </div>
 
                     <div class="col-md-5">
@@ -350,32 +350,32 @@
                                         </div>
                                         <div class="col-md-2">
                                             <label>{!! __('label.color') !!}</label>
-                                            <select name="labelClass-{{ $key }}" id="labelClass-{{ $key }}" class="colorChosen">
-                                                <option value="label-purple" class="label-purple" {{ $ticketStatus['class'] == 'label-purple' ? 'selected="selected"' : '' }}><span class="label-purple">{!! __('label.purple') !!}</span></option>
-                                                <option value="label-pink" class="label-pink" {{ $ticketStatus['class'] == 'label-pink' ? 'selected="selected"' : '' }}><span class="label-pink">{!! __('label.pink') !!}</span></option>
-                                                <option value="label-darker-blue" class="label-darker-blue" {{ $ticketStatus['class'] == 'label-darker-blue' ? 'selected="selected"' : '' }}><span class="label-darker-blue">{!! __('label.darker-blue') !!}</span></option>
-                                                <option value="label-info" class="label-info" {{ $ticketStatus['class'] == 'label-info' ? 'selected="selected"' : '' }}><span class="label-info">{!! __('label.dark-blue') !!}</span></option>
-                                                <option value="label-blue" class="label-blue"  {{ $ticketStatus['class'] == 'label-blue' ? 'selected="selected"' : '' }}><span class="label-blue">{!! __('label.blue') !!}</span></option>
-                                                <option value="label-dark-green" class="label-dark-green" {{ $ticketStatus['class'] == 'label-dark-green' ? 'selected="selected"' : '' }}><span class="label-dark-green">{!! __('label.dark-green') !!}</span></option>
-                                                <option value="label-success" class="label-success" {{ $ticketStatus['class'] == 'label-success' ? 'selected="selected"' : '' }}><span class="label-success">{!! __('label.green') !!}</span></option>
-                                                <option value="label-warning" class="label-warning" {{ $ticketStatus['class'] == 'label-warning' ? 'selected="selected"' : '' }}><span class="label-warning">{!! __('label.yellow') !!}</span></option>
-                                                <option value="label-brown" class="label-brown" {{ $ticketStatus['class'] == 'label-brown' ? 'selected="selected"' : '' }}><span class="label-brown">{!! __('label.brown') !!}</span></option>
-                                                <option value="label-danger" class="label-danger" {{ $ticketStatus['class'] == 'label-danger' ? 'selected="selected"' : '' }}><span class="label-danger">{!! __('label.dark-red') !!}</span></option>
-                                                <option value="label-important" class="label-important" {{ $ticketStatus['class'] == 'label-important' ? 'selected="selected"' : '' }}><span class="label-important">{!! __('label.red') !!}</span></option>
-                                                <option value="label-default" class="label-default" {{ $ticketStatus['class'] == 'label-default' ? 'selected="selected"' : '' }}><span class="label-default">{!! __('label.grey') !!}</span></option>
+                                            <x-global::forms.select name="labelClass-{{ $key }}" id="labelClass-{{ $key }}" class="colorChosen" enhanced :search="false">
+                                                <x-global::forms.select.option value="label-purple" color-class="label-purple" :selected="$ticketStatus['class'] == 'label-purple'">{!! __('label.purple') !!}</x-global::forms.select.option>
+                                                <x-global::forms.select.option value="label-pink" color-class="label-pink" :selected="$ticketStatus['class'] == 'label-pink'">{!! __('label.pink') !!}</x-global::forms.select.option>
+                                                <x-global::forms.select.option value="label-darker-blue" color-class="label-darker-blue" :selected="$ticketStatus['class'] == 'label-darker-blue'">{!! __('label.darker-blue') !!}</x-global::forms.select.option>
+                                                <x-global::forms.select.option value="label-info" color-class="label-info" :selected="$ticketStatus['class'] == 'label-info'">{!! __('label.dark-blue') !!}</x-global::forms.select.option>
+                                                <x-global::forms.select.option value="label-blue" color-class="label-blue" :selected="$ticketStatus['class'] == 'label-blue'">{!! __('label.blue') !!}</x-global::forms.select.option>
+                                                <x-global::forms.select.option value="label-dark-green" color-class="label-dark-green" :selected="$ticketStatus['class'] == 'label-dark-green'">{!! __('label.dark-green') !!}</x-global::forms.select.option>
+                                                <x-global::forms.select.option value="label-success" color-class="label-success" :selected="$ticketStatus['class'] == 'label-success'">{!! __('label.green') !!}</x-global::forms.select.option>
+                                                <x-global::forms.select.option value="label-warning" color-class="label-warning" :selected="$ticketStatus['class'] == 'label-warning'">{!! __('label.yellow') !!}</x-global::forms.select.option>
+                                                <x-global::forms.select.option value="label-brown" color-class="label-brown" :selected="$ticketStatus['class'] == 'label-brown'">{!! __('label.brown') !!}</x-global::forms.select.option>
+                                                <x-global::forms.select.option value="label-danger" color-class="label-danger" :selected="$ticketStatus['class'] == 'label-danger'">{!! __('label.dark-red') !!}</x-global::forms.select.option>
+                                                <x-global::forms.select.option value="label-important" color-class="label-important" :selected="$ticketStatus['class'] == 'label-important'">{!! __('label.red') !!}</x-global::forms.select.option>
+                                                <x-global::forms.select.option value="label-default" color-class="label-default" :selected="$ticketStatus['class'] == 'label-default'">{!! __('label.grey') !!}</x-global::forms.select.option>
 
 
 
-                                            </select>
+                                            </x-global::forms.select>
                                         </div>
                                         <div class="col-md-2">
                                             <label>{!! __('label.reportType') !!}</label>
-                                            <select name="labelType-{{ $key }}" id="labelType-{{ $key }}">
+                                            <x-global::forms.select name="labelType-{{ $key }}" id="labelType-{{ $key }}">
                                                 <option value="NEW" {{ ($ticketStatus['statusType'] == 'NEW') ? 'selected="selected"' : '' }}>{!! __('status.new') !!}</option>
                                                 <option value="INPROGRESS" {{ ($ticketStatus['statusType'] == 'INPROGRESS') ? 'selected="selected"' : '' }}>{!! __('status.in_progress') !!}</option>
                                                 <option value="DONE" {{ ($ticketStatus['statusType'] == 'DONE') ? 'selected="selected"' : '' }}>{!! __('status.done') !!}</option>
                                                 <option value="NONE" {{ ($ticketStatus['statusType'] == 'NONE') ? 'selected="selected"' : '' }}>{!! __('status.dont_report') !!}</option>
-                                            </select>
+                                            </x-global::forms.select>
                                         </div>
                                         <div class="col-md-2">
                                             <label for="">{!! __('label.showInKanban') !!}</label>
@@ -411,7 +411,7 @@
 
 
 <!-- New Status Template -->
-<div class="newStatusTpl" style="display:none;">
+<template class="newStatusTpl">
     <div class="ticketBox">
     <div class="row statusList" id="todostatus-XXNEWKEYXX">
         <input type="hidden" name="labelKeys[]" id="labelKey-XXNEWKEYXX" class='labelKey' value="XXNEWKEYXX"/>
@@ -430,29 +430,29 @@
         </div>
         <div class="col-md-2">
             <label>{!! __('label.color') !!}</label>
-            <select name="labelClass-XXNEWKEYXX" id="labelClass-XXNEWKEYXX" class="colorChosen">
-                <option value="label-blue" class="label-blue"><span class="label-blue">{!! __('label.blue') !!}</span></option>
-                <option value="label-info" class="label-info"><span class="label-info">{!! __('label.dark-blue') !!}</span></option>
-                <option value="label-darker-blue" class="label-darker-blue"><span class="label-darker-blue">{!! __('label.darker-blue') !!}</span></option>
-                <option value="label-warning" class="label-warning"><span class="label-warning">{!! __('label.yellow') !!}</span></option>
-                <option value="label-success" class="label-success"><span class="label-success">{!! __('label.green') !!}</span></option>
-                <option value="label-dark-green" class="label-dark-green"><span class="label-dark-green">{!! __('label.dark-green') !!}</span></option>
-                <option value="label-important" class="label-important"><span class="label-important">{!! __('label.red') !!}</span></option>
-                <option value="label-danger" class="label-danger"><span class="label-danger">{!! __('label.dark-red') !!}</span></option>
-                <option value="label-pink" class="label-pink"><span class="label-pink">{!! __('label.pink') !!}</span></option>
-                <option value="label-purple" class="label-purple"><span class="label-purple">{!! __('label.purple') !!}</span></option>
-                <option value="label-brown" class="label-brown"><span class="label-brown">{!! __('label.brown') !!}</span></option>
-                <option value="label-default" class="label-default"><span class="label-default">{!! __('label.grey') !!}</span></option>
-            </select>
+            <x-global::forms.select name="labelClass-XXNEWKEYXX" id="labelClass-XXNEWKEYXX" class="colorChosen" enhanced :search="false">
+                <x-global::forms.select.option value="label-blue" color-class="label-blue">{!! __('label.blue') !!}</x-global::forms.select.option>
+                <x-global::forms.select.option value="label-info" color-class="label-info">{!! __('label.dark-blue') !!}</x-global::forms.select.option>
+                <x-global::forms.select.option value="label-darker-blue" color-class="label-darker-blue">{!! __('label.darker-blue') !!}</x-global::forms.select.option>
+                <x-global::forms.select.option value="label-warning" color-class="label-warning">{!! __('label.yellow') !!}</x-global::forms.select.option>
+                <x-global::forms.select.option value="label-success" color-class="label-success">{!! __('label.green') !!}</x-global::forms.select.option>
+                <x-global::forms.select.option value="label-dark-green" color-class="label-dark-green">{!! __('label.dark-green') !!}</x-global::forms.select.option>
+                <x-global::forms.select.option value="label-important" color-class="label-important">{!! __('label.red') !!}</x-global::forms.select.option>
+                <x-global::forms.select.option value="label-danger" color-class="label-danger">{!! __('label.dark-red') !!}</x-global::forms.select.option>
+                <x-global::forms.select.option value="label-pink" color-class="label-pink">{!! __('label.pink') !!}</x-global::forms.select.option>
+                <x-global::forms.select.option value="label-purple" color-class="label-purple">{!! __('label.purple') !!}</x-global::forms.select.option>
+                <x-global::forms.select.option value="label-brown" color-class="label-brown">{!! __('label.brown') !!}</x-global::forms.select.option>
+                <x-global::forms.select.option value="label-default" color-class="label-default">{!! __('label.grey') !!}</x-global::forms.select.option>
+            </x-global::forms.select>
         </div>
         <div class="col-md-2">
             <label>{!! __('label.reportType') !!}</label>
-            <select name="labelType-XXNEWKEYXX" id="labelType-XXNEWKEYXX">
+            <x-global::forms.select name="labelType-XXNEWKEYXX" id="labelType-XXNEWKEYXX">
                 <option value="NEW">{!! __('status.new') !!}</option>
                 <option value="INPROGRESS">{!! __('status.in_progress') !!}</option>
                 <option value="DONE">{!! __('status.done') !!}</option>
                 <option value="NONE">{!! __('status.dont_report') !!}</option>
-            </select>
+            </x-global::forms.select>
         </div>
         <div class="col-md-2">
             <label for="">{!! __('label.showInKanban') !!}</label>
@@ -464,13 +464,12 @@
         </div>
     </div>
 </div>
-</div>
+</template>
 
 @once @push('scripts')
 <script type='text/javascript'>
 
     jQuery(document).ready(function() {
-        jQuery("#projectdetails select").chosen();
 
         @if (isset($_GET['integrationSuccess']))
             window.history.pushState({},document.title, '{{ BASE_URL }}/projects/showProject/{{ (int) $project['id'] }}');
@@ -497,7 +496,6 @@
         leantime.projectsController.initProjectTabs();
         leantime.projectsController.initDuplicateProjectModal();
         leantime.projectsController.initTodoStatusSortable("#todoStatusList");
-        leantime.projectsController.initSelectFields();
         leantime.usersController.initUserEditModal();
 
         if (window.leantime && window.leantime.tiptapController) {

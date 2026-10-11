@@ -10,9 +10,9 @@
                 </div>
                 <!-- Status -->
                 <div class="form-group tw-flex tw-w-3/5">
-                    <label class="control-label tw-mx-m tw-w-[100px]">{!! __('label.todo_status') !!}</label>
+                    <label class="control-label tw-mx-m tw-w-[100px] tw-shrink-0">{!! __('label.todo_status') !!}</label>
                     <div class="">
-                        <select
+                        <x-global::forms.select enhanced
                             id="status-select"
                             class=""
                             name="status"
@@ -23,46 +23,46 @@
                                     @if ($ticket->status == $key) selected='selected' @endif
                                 >{{ $label['name'] }}</option>
                             @endforeach
-                        </select>
+                        </x-global::forms.select>
                     </div>
                 </div>
 
                 <!-- Priority -->
                 <div class="form-group tw-flex tw-w-3/5">
-                    <label class="control-label tw-mx-m tw-w-[100px]">{!! __('label.priority') !!}</label>
+                    <label class="control-label tw-mx-m tw-w-[100px] tw-shrink-0">{!! __('label.priority') !!}</label>
                     <div class="">
-                        <select id='priority' name='priority' class="">
+                        <x-global::forms.select enhanced id='priority' name='priority' class="">
                             <option value="">{!! __('label.priority_not_defined') !!}</option>
                             @foreach ($priorities as $priorityKey => $priorityValue)
                                 <option value="{{ $priorityKey }}"
                                     @if ($priorityKey == $ticket->priority) selected='selected' @endif
                                 >{{ $priorityValue }}</option>
                             @endforeach
-                        </select>
+                        </x-global::forms.select>
                     </div>
                 </div>
 
                 <!-- Effort -->
                 <div class="form-group tw-flex tw-w-3/5">
-                    <label class="control-label tw-mx-m tw-w-[100px]">{!! __('label.effort') !!}</label>
+                    <label class="control-label tw-mx-m tw-w-[100px] tw-shrink-0">{!! __('label.effort') !!}</label>
                     <div class="">
-                        <select id='storypoints' name='storypoints' class="">
+                        <x-global::forms.select enhanced id='storypoints' name='storypoints' class="">
                             <option value="">{!! __('label.effort_not_defined') !!}</option>
                             @foreach ($efforts as $effortKey => $effortValue)
                                 <option value="{{ $effortKey }}"
                                     @if ($effortKey == $ticket->storypoints) selected='selected' @endif
                                 >{{ $effortValue }}</option>
                             @endforeach
-                        </select>
+                        </x-global::forms.select>
                     </div>
                 </div>
 
                 <!-- Editor -->
                 <div class="form-group tw-flex tw-w-3/5">
-                    <label class="control-label tw-mx-m tw-w-[100px]">{!! __('label.editor') !!}</label>
+                    <label class="control-label tw-mx-m tw-w-[100px] tw-shrink-0">{!! __('label.editor') !!}</label>
                     <div class="">
 
-                        <select data-placeholder="{{ __('label.filter_by_user') }}" style="width:175px;"
+                        <x-global::forms.select enhanced data-placeholder="{{ __('label.filter_by_user') }}"
                                 name="editorId" id="editorId" class="user-select tw-mr-sm">
                             <option value="">{!! __('label.not_assigned_to_user') !!}</option>
                             @foreach ($users as $userRow)
@@ -70,21 +70,23 @@
                                     @if ($ticket->editorId == $userRow['id']) selected='selected' @endif
                                 >{{ $userRow['firstname'] . ' ' . $userRow['lastname'] }}</option>
                             @endforeach
-                        </select>&nbsp;
+                        </x-global::forms.select>&nbsp;
                     </div>
                     <div style="padding-top:6px;">
                         @if ($login::userIsAtLeast($roles::$editor))
-                           <a href="javascript:void(0);" onclick="jQuery('#editorId').val({{ session('userdata.id') }}).trigger('chosen:updated');">{!! __('label.assign_to_me') !!}</a>
+                           <a href="javascript:void(0);" onclick="leantime.selectController.setValue(document.getElementById('editorId'), '{{ (int) session('userdata.id') }}');">{!! __('label.assign_to_me') !!}</a>
                         @endif
                     </div>
                 </div>
 
                 <!-- Collaborators -->
                 <div class="form-group tw-flex tw-w-3/5">
-                    <label class="control-label tw-mx-m tw-w-[100px]">{!! __('label.collaborators') !!}</label>
+                    <label class="control-label tw-mx-m tw-w-[100px] tw-shrink-0">{!! __('label.collaborators') !!}</label>
                     <div class="">
-                        <select data-placeholder="{{ __('label.filter_by_user') }}"
-                                style="width:175px;"
+                        {{-- An empty multi-select posts nothing; this keeps "collaborators" in the
+                             request so clearing them all still clears them (omitted = preserved). --}}
+                        <input type="hidden" name="collaborators[]" value="" />
+                        <x-global::forms.select enhanced data-placeholder="{{ __('label.filter_by_user') }}"
                                 name="collaborators[]"
                                 id="collaborators"
                                 class="user-select tw-mr-sm"
@@ -96,19 +98,19 @@
                                     {{ $userRow['firstname'] . ' ' . $userRow['lastname'] }}
                                 </option>
                             @endforeach
-                        </select>
+                        </x-global::forms.select>
                     </div>
                 </div>
 
                 <!-- Due Date -->
                 <div class="form-group tw-flex tw-w-3/5">
-                    <label class="control-label tw-mx-m tw-w-[100px]">{!! __('label.due_date') !!}</label>
+                    <label class="control-label tw-mx-m tw-w-[100px] tw-shrink-0">{!! __('label.due_date') !!}</label>
                     <div class="">
-                        <input type="text" class="dates" style="width:110px;" id="deadline" autocomplete="off"
+                        <input type="text" class="field-width-sm dates" id="deadline" autocomplete="off"
                                value="{{ format($ticket->dateToFinish)->date() }}"
                                name="dateToFinish" placeholder="{{ __('language.dateformat') }}"/>
 
-                        <input type="time" class="timepicker tw-mr-sm" style="width:120px;" id="dueTime" autocomplete="off"
+                        <input type="time" class="field-width-sm timepicker tw-mr-sm" id="dueTime" autocomplete="off"
                                value="{{ format($ticket->dateToFinish)->time24() }}"
                                name="timeToFinish"/>
                     </div>
@@ -118,7 +120,7 @@
                 </div>
 
                 <div class="form-group tw-flex tw-w-3/5">
-                    <label class="control-label tw-mx-m tw-w-[100px]">{!! __('label.tags') !!}</label>
+                    <label class="control-label tw-mx-m tw-w-[100px] tw-shrink-0">{!! __('label.tags') !!}</label>
                     <div class="">
                         <input type="text" value="{{ $ticket->tags }}" name="tags" id="tags" />
                     </div>
@@ -160,7 +162,7 @@
                 indicator=".subtaskIndicator"
             />
             <div class="htmx-indicator subtaskIndicator">
-                Loading Subtasks ...<br /><br />
+                {{ __('label.loadingSubtasks', 'Loading Subtasks ...') }}<br /><br />
             </div>
 
         <h4 class="widgettitle title-light"><span
@@ -194,20 +196,20 @@
                     <div class="form-group">
                         <label class="control-label">{!! __('label.todo_type') !!}</label>
                         <div class="">
-                            <select id='type' name='type' class="span11">
+                            <x-global::forms.select width="full" enhanced id='type' name='type'>
                                 @foreach ($ticketTypes as $types)
                                     <option value="{{ strtolower($types) }}"
                                         @if (strtolower($types) == strtolower($ticket->type ?? '')) selected='selected' @endif
                                     >{!! __('label.' . strtolower($types)) !!}</option>
                                 @endforeach
-                            </select><br/>
+                            </x-global::forms.select><br/>
                         </div>
                     </div>
 
                     <!-- Project -->
                     <div class="form-group">
                         <label class="control-label">{!! __('label.project') !!}</label>
-                        <select name="projectId" class="tw-w-full">
+                        <x-global::forms.select width="full" enhanced name="projectId">
                             @foreach ($allAssignedprojects as $project)
                                 <option value="{{ $project['id'] }}"
                                     @if ($ticket->projectId == $project['id'])
@@ -217,7 +219,7 @@
                                     @endif
                                 >{{ $tpl->escape($project['name']) }}</option>
                             @endforeach
-                        </select>
+                        </x-global::forms.select>
                     </div>
 
                     <!-- Milestones -->
@@ -225,14 +227,14 @@
                         <label class="control-label">{!! __('label.milestone') !!}</label>
                         <div class="">
                             <div class="form-group">
-                                <select  name="milestoneid"  class="span11" >
+                                <x-global::forms.select width="full" enhanced name="milestoneid" aria-label="{{ __('label.milestone') }}">
                                     <option value="">{!! __('label.not_assigned_to_milestone') !!}</option>
                                     @foreach ($milestones as $milestoneRow)
                                         <option value="{{ $milestoneRow->id }}"
                                             @if ($ticket->milestoneid == $milestoneRow->id) selected='selected' @endif
                                         >{{ $tpl->escape($milestoneRow->headline) }}</option>
                                     @endforeach
-                                </select>
+                                </x-global::forms.select>
                             </div>
                         </div>
                     </div>
@@ -242,7 +244,7 @@
                         <label class="control-label">{!! __('label.sprint') !!}</label>
                         <div class="">
 
-                            <select id="sprint-select" class="span11" name="sprint"
+                            <x-global::forms.select width="full" enhanced id="sprint-select" name="sprint"
                                     data-placeholder="{{ $ticket->sprint }}">
                                 <option value="">{!! __('label.backlog') !!}</option>
                                 @if ($sprints)
@@ -252,7 +254,7 @@
                                         >{{ $sprintRow->name }}@if (! empty($sprintRow->isInherited)) — {{ __('label.program_sprint') }} @endif</option>
                                     @endforeach
                                 @endif
-                            </select>
+                            </x-global::forms.select>
                         </div>
                     </div>
 
@@ -261,7 +263,7 @@
                         <label class="control-label">{!! __('label.related_to') !!}</label>
                         <div class="">
                             <div class="form-group">
-                                <select  name="dependingTicketId"  class="span11" >
+                                <x-global::forms.select width="full" enhanced name="dependingTicketId" aria-label="{{ __('label.related_to') }}">
                                     <option value="">{!! __('label.not_related') !!}</option>
                                     @if (is_array($ticketParents))
                                         @foreach ($ticketParents as $ticketRow)
@@ -270,7 +272,7 @@
                                             >{{ $tpl->escape($ticketRow->headline) }}</option>
                                         @endforeach
                                     @endif
-                                </select>
+                                </x-global::forms.select>
                             </div>
                         </div>
                     </div>
@@ -296,9 +298,9 @@
                     <div class="form-group">
                         <label class=" control-label">{!! __('label.working_date_from') !!}</label>
                         <div class="">
-                            <input type="text" class="editFrom" style="width:100px;" name="editFrom" autocomplete="off"
+                            <input type="text" class="field-width-sm editFrom" name="editFrom" autocomplete="off"
                                    value="{{ format($ticket->editFrom)->date() }}" placeholder="{{ __('language.dateformat') }}"/>
-                            <input type="time" class="timepicker" style="width:120px;" id="timeFrom" autocomplete="off"
+                            <input type="time" class="field-width-sm timepicker" id="timeFrom" autocomplete="off"
                                    value="{{ format($ticket->editFrom)->time24() }}"
                                    name="timeFrom"/>
                         </div>
@@ -307,9 +309,9 @@
                     <div class="form-group">
                         <label class=" control-label">{!! __('label.working_date_to') !!}</label>
                         <div class="">
-                            <input type="text" class="editTo" style="width:100px;" name="editTo" autocomplete="off"
+                            <input type="text" class="field-width-sm editTo" name="editTo" autocomplete="off"
                                    value="{{ format($ticket->editTo)->date() }}" placeholder="{{ __('language.dateformat') }}"/>
-                            <input type="time" class="timepicker" style="width:120px;" id="timeTo" autocomplete="off"
+                            <input type="time" class="field-width-sm timepicker" id="timeTo" autocomplete="off"
                                    value="{{ format($ticket->editTo)->time24() }}"
                                    name="timeTo"/>
                         </div>

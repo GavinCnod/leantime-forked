@@ -12,7 +12,11 @@ use Leantime\Core\Domains\BaseService;
 use Leantime\Core\Exceptions\AuthorizationException;
 use Leantime\Core\Exceptions\MissingParameterException;
 use Leantime\Domain\Tickets\Models\Tickets;
+use Leantime\Domain\Tickets\Permissions\TicketsPermissions;
 use Leantime\Domain\Tickets\Repositories\Tickets as TicketRepository;
+use Leantime\Domain\Timesheets\Events\TimeEntryCreated;
+use Leantime\Domain\Timesheets\Events\TimerStarted;
+use Leantime\Domain\Timesheets\Events\TimerStopped;
 use Leantime\Domain\Timesheets\Permissions\TimesheetsPermissions;
 use Leantime\Domain\Timesheets\Repositories\Timesheets as TimesheetRepository;
 use Leantime\Domain\Users\Repositories\Users;
@@ -32,9 +36,11 @@ use Leantime\Domain\Users\Repositories\Users;
  * manager-less user editing a peer's entry is a silent no-op, not a 403. Reads soft-deny (return
  * the neutral empty value) for the unauthorized/cross-user case.
  *
- * NOTE: the ticket-hours aggregate reads (getLoggedHoursForTicketByDate / getSumLoggedHoursForTicket
- * / getRemainingHours) are intentionally UNGATED — they render on the ticket view (ShowTicket,
- * reachable by readonly users) and expose only a ticket's total logged hours, not per-user data.
+ * NOTE: the ticket-hours reads (getLoggedHoursForTicketByDate / getSumLoggedHoursForTicket /
+ * getRemainingHours / getUsersTicketHours) carry NO timesheets.* role gate — they render on the
+ * ticket view (ShowTicket, reachable by readonly users). They are scoped instead by
+ * {@see authorizeTicketView()}: tickets.view on the ticket's REAL project, so a caller-supplied
+ * ticket id cannot read hours across projects the caller is not a member of.
  */
 class Timesheets extends BaseService
 {
@@ -93,21 +99,86 @@ class Timesheets extends BaseService
     }
 
     /**
+     * Start the session user's timer on a ticket.
+     *
+     * Besides the (global) timesheets.create capability, the ticket must exist and the caller must
+     * be able to view its real project — time cannot be tracked on another project's tickets.
+     *
+     * @param  int  $ticketId  The ticket to clock in on.
+     * @return mixed The repository result (true on success).
+     *
+     * @throws AuthorizationException When the ticket is unknown or not accessible.
+     *
      * @api
      */
-    #[RequiresPermission(TimesheetsPermissions::CREATE, global: true)]
+    #[RequiresPermission(TimesheetsPermissions::CREATE, global: true, entityScoped: true)]
     public function punchIn(int $ticketId): mixed
     {
-        return $this->timesheetsRepo->punchIn($ticketId);
+        $this->authorize(TimesheetsPermissions::CREATE);
+        $this->authorizeTicketForTimeEntry($ticketId);
+
+        $started = $this->timesheetsRepo->punchIn($ticketId);
+
+        if ($started) {
+            TimerStarted::dispatch(ticketId: $ticketId);
+        }
+
+        return $started;
     }
 
     /**
+     * Stop the session user's timer on a ticket and book the elapsed time.
+     *
+     * The ticket's project is re-checked at stop time: if the caller can no longer access the
+     * ticket (access revoked while the timer ran, or a timer started before the start-time check
+     * existed), the timer is discarded and no time is booked.
+     *
+     * @param  int  $ticketId  The ticket the timer runs on.
+     * @param  bool  $automatic  True when the timer is stopped by the system (the ticket was completed),
+     *                           not by the user; reported on {@see TimerStopped}.
+     * @return float|false|int Hours booked, or false when nothing was booked.
+     *
      * @api
      */
     #[RequiresPermission(TimesheetsPermissions::CREATE, global: true)]
-    public function punchOut(int $ticketId): float|false|int
+    public function punchOut(int $ticketId, bool $automatic = false): float|false|int
     {
-        return $this->timesheetsRepo->punchOut($ticketId);
+        if (! $this->canBookTimeOnTicket($ticketId)) {
+            $this->timesheetsRepo->discardPunch($ticketId);
+
+            return false;
+        }
+
+        $hoursBooked = $this->timesheetsRepo->punchOut($ticketId);
+
+        if ($hoursBooked !== false) {
+            TimerStopped::dispatch(ticketId: $ticketId, hours: (float) $hoursBooked, automatic: $automatic);
+        }
+
+        return $hoursBooked;
+    }
+
+    /**
+     * Whether time may still be booked on $ticketId: the base timesheets.create capability AND
+     * access to the ticket's project. Re-checked at stop time because direct callers (HTMX
+     * stopwatch, MCP tools) do not pass the attribute gate and either right may have been
+     * revoked while the timer ran.
+     *
+     * @param  int  $ticketId  The ticket the time would be booked on.
+     */
+    private function canBookTimeOnTicket(int $ticketId): bool
+    {
+        if (! $this->can(TimesheetsPermissions::CREATE)) {
+            return false;
+        }
+
+        try {
+            $this->authorizeTicketForTimeEntry($ticketId);
+        } catch (AuthorizationException) {
+            return false;
+        }
+
+        return true;
     }
 
     /**
@@ -128,7 +199,7 @@ class Timesheets extends BaseService
             return false;
         }
 
-        return $this->timesheetsRepo->punchOut($clockedStatus['id']);
+        return $this->punchOut((int) $clockedStatus['id']);
     }
 
     /**
@@ -147,6 +218,7 @@ class Timesheets extends BaseService
         // Editor+ to log any time; non-managers are pinned to their own account (cannot log for
         // another user — that needs timesheets.manage).
         $this->authorize(TimesheetsPermissions::CREATE);
+        $projectId = $this->authorizeTicketForTimeEntry($ticketId);
         if (! $this->can(TimesheetsPermissions::MANAGE)) {
             $params['userId'] = $this->currentUserId();
         }
@@ -193,7 +265,8 @@ class Timesheets extends BaseService
         $loggingUser = $this->userRepo->getUser($values['userId']);
         $values['rate'] = $loggingUser['wage'];
 
-        $this->timesheetsRepo->addTime($values);
+        $isNewEntry = $this->timesheetsRepo->addTime($values);
+        $this->dispatchTimeEntryCreated($isNewEntry, $ticketId, $values['hours'], $projectId);
 
         return true;
     }
@@ -219,6 +292,7 @@ class Timesheets extends BaseService
     {
         // Editor+ to log any time; non-managers are pinned to their own account.
         $this->authorize(TimesheetsPermissions::CREATE);
+        $projectId = $this->authorizeTicketForTimeEntry($ticketId);
         if (! $this->can(TimesheetsPermissions::MANAGE)) {
             $params['userId'] = $this->currentUserId();
         }
@@ -264,9 +338,28 @@ class Timesheets extends BaseService
         $loggingUser = $this->userRepo->getUser($values['userId']);
         $values['rate'] = $loggingUser['wage'];
 
-        $this->timesheetsRepo->upsertTimesheetEntry($values);
+        $isNewEntry = $this->timesheetsRepo->upsertTimesheetEntry($values);
+        $this->dispatchTimeEntryCreated($isNewEntry, $ticketId, $values['hours'], $projectId);
 
         return true;
+    }
+
+    /**
+     * Fire {@see TimeEntryCreated} for a write that inserted a NEW timesheet row with hours.
+     * Hours added onto (or overwriting) an existing row, and empty entries, do not fire.
+     *
+     * @param  bool  $isNewEntry  Whether the repository inserted a new row.
+     * @param  int|null  $ticketId  The ticket the time was booked on.
+     * @param  mixed  $hours  The booked hours (as submitted).
+     * @param  int|null  $projectId  The ticket's project.
+     */
+    private function dispatchTimeEntryCreated(bool $isNewEntry, ?int $ticketId, mixed $hours, ?int $projectId): void
+    {
+        if (! $isNewEntry || ! is_numeric($hours) || (float) $hours <= 0) {
+            return;
+        }
+
+        TimeEntryCreated::dispatch(ticketId: $ticketId, hours: (float) $hours, projectId: $projectId);
     }
 
     /**
@@ -343,13 +436,15 @@ class Timesheets extends BaseService
     public function addTime(array $values): void
     {
         $this->authorize(TimesheetsPermissions::CREATE);
+        $projectId = $this->authorizeTicketForTimeEntry($values['ticket'] ?? null);
 
         // Non-managers can only add time entries for themselves.
         if (! $this->can(TimesheetsPermissions::MANAGE)) {
             $values['userId'] = $this->currentUserId();
         }
 
-        $this->timesheetsRepo->addTime($values);
+        $isNewEntry = $this->timesheetsRepo->addTime($values);
+        $this->dispatchTimeEntryCreated($isNewEntry, (int) $values['ticket'], $values['hours'] ?? null, $projectId);
     }
 
     /**
@@ -367,13 +462,24 @@ class Timesheets extends BaseService
     {
         $this->authorize(TimesheetsPermissions::EDIT);
 
+        // The write sets ticketId from the payload, so the (possibly new) ticket must be accessible.
+        $this->authorizeTicketForTimeEntry($values['ticket'] ?? null);
+
         $currentUserId = $this->currentUserId();
 
         // Editing an existing entry that belongs to ANOTHER user requires timesheets.manage.
         if (isset($values['id'])) {
             $existing = $this->timesheetsRepo->getTimesheet($values['id']);
 
-            if ($existing && (int) $existing['userId'] !== $currentUserId && ! $this->can(TimesheetsPermissions::MANAGE)) {
+            if (! $existing) {
+                return;
+            }
+
+            // The entry's CURRENT ticket must be accessible too — otherwise an entry booked on
+            // another project's ticket could be rewritten (or moved) by id.
+            $this->authorizeTicketForTimeEntry($existing['ticketId'] ?? null);
+
+            if ((int) $existing['userId'] !== $currentUserId && ! $this->can(TimesheetsPermissions::MANAGE)) {
                 return;
             }
         }
@@ -430,7 +536,11 @@ class Timesheets extends BaseService
             }
 
             if ($isNewEntryRow) {
-                $ticketId = (int) $postData['ticketId'];
+                // Only a canonical integer id counts; anything else ('12abc', ' 12', '+12') is "no ticket".
+                $rawNewTicketId = $postData['ticketId'] ?? '';
+                $ticketId = (is_int($rawNewTicketId) || is_string($rawNewTicketId)) && ctype_digit((string) $rawNewTicketId)
+                    ? (int) $rawNewTicketId
+                    : 0;
                 $kind = $postData['kindId'];
 
                 if ($ticketId == 0 && $hours > 0) {
@@ -453,8 +563,14 @@ class Timesheets extends BaseService
                 continue;
             }
 
+            // Only canonical positive integer ticket ids are logged: a malformed key such as
+            // '12abc' must not be silently cast onto ticket 12. Placeholder rows have nothing to log.
+            if (! ctype_digit((string) $ticketId) || (int) $ticketId <= 0) {
+                continue;
+            }
+
             try {
-                $this->upsertTime($ticketId, $values);
+                $this->upsertTime((int) $ticketId, $values);
                 $notifications[] = ['type' => 'success', 'message' => 'Timesheet saved successfully'];
             } catch (\Exception $e) {
                 $notifications[] = ['type' => 'error', 'message' => 'Error logging time: '.$e->getMessage()];
@@ -470,7 +586,57 @@ class Timesheets extends BaseService
      */
     public function getLoggedHoursForTicketByDate(int $ticketId): array
     {
+        $this->authorizeTicketView($ticketId);
+
         return $this->timesheetsRepo->getLoggedHoursForTicket($ticketId);
+    }
+
+    /**
+     * Authorizes a time-entry WRITE against the real project of the ticket it is booked on.
+     *
+     * The timesheets.* capabilities are GLOBAL (they carry no project membership), so on their
+     * own they would let a caller book time onto any ticket id in any project. This loads the
+     * ticket server-side and requires tickets.view (role + membership) in ITS project.
+     *
+     * @param  mixed  $ticketId  The ticket id from the payload.
+     * @return int The ticket's project id.
+     *
+     * @throws AuthorizationException When the id is invalid, the ticket is unknown, or not accessible.
+     */
+    private function authorizeTicketForTimeEntry(mixed $ticketId): int
+    {
+        $ticketId = is_int($ticketId) || is_string($ticketId) ? filter_var($ticketId, FILTER_VALIDATE_INT) : false;
+        if ($ticketId === false || $ticketId <= 0) {
+            throw new AuthorizationException;
+        }
+
+        $ticket = $this->ticketRepo->getTicket($ticketId);
+        if (! $ticket || empty($ticket->projectId)) {
+            throw new AuthorizationException;
+        }
+
+        $this->authorize(TicketsPermissions::VIEW, (int) $ticket->projectId);
+
+        return (int) $ticket->projectId;
+    }
+
+    /**
+     * Authorizes VIEW on the real project of a ticket before exposing its hours.
+     *
+     * The hour lookups are keyed by a caller-supplied ticket id, so without this any
+     * authenticated caller could read logged/remaining hours across every project.
+     *
+     * @throws AuthorizationException
+     */
+    private function authorizeTicketView(int $ticketId): void
+    {
+        $ticket = $this->ticketRepo->getTicket($ticketId);
+
+        if (! $ticket) {
+            throw new AuthorizationException;
+        }
+
+        $this->authorize(TicketsPermissions::VIEW, (int) $ticket->projectId);
     }
 
     /**
@@ -508,7 +674,8 @@ class Timesheets extends BaseService
             $planHours = $ticketOrId->planHours;
         } else {
             $ticketId = $ticketOrId;
-            // Fetch plan hours from repository
+            // Authorize BEFORE touching the ticket's plan hours: the id is caller-supplied.
+            $this->authorizeTicketView($ticketId);
             $planHours = $this->timesheetsRepo->getTicketPlanHours($ticketId);
         }
 
@@ -531,6 +698,8 @@ class Timesheets extends BaseService
     #[RequiresPermission(TimesheetsPermissions::VIEW, global: true, entityScoped: true)]
     public function getUsersTicketHours(int $ticketId, int $userId): mixed
     {
+        $this->authorizeTicketView($ticketId);
+
         // Own hours render on the ticket page for any role with ticket access; ANOTHER user's
         // hours require timesheets.manage (soft-deny to 0, no cross-user leak).
         if ($userId !== $this->currentUserId() && ! $this->can(TimesheetsPermissions::MANAGE)) {

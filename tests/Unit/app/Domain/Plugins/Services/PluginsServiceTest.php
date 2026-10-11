@@ -152,4 +152,46 @@ class PluginsServiceTest extends TestCase
 
         $service->performPluginAction('explode', 5);
     }
+
+    /**
+     * #3594: compiled Blade views are keyed on the source mtime, which a phar plugin does not
+     * change across releases, so an upgraded plugin kept running its old templates. Any plugin
+     * change must drop the compiled views (and only the compiled .php files).
+     */
+    public function test_clear_cache_removes_compiled_views(): void
+    {
+        $compiledDir = sys_get_temp_dir().'/lt-compiled-views-'.uniqid();
+        mkdir($compiledDir);
+        file_put_contents($compiledDir.'/abc123.php', '<?php // compiled');
+        file_put_contents($compiledDir.'/.gitignore', '*');
+        config(['view.compiled' => $compiledDir]);
+        $this->app->instance(\Leantime\Core\Auth\Permissions\PermissionService::class, $this->make(\Leantime\Core\Auth\Permissions\PermissionService::class, ['flushCache' => null]));
+
+        $this->make(\Leantime\Domain\Plugins\Services\Plugins::class)->clearCache();
+
+        $this->assertFileDoesNotExist($compiledDir.'/abc123.php');
+        $this->assertFileExists($compiledDir.'/.gitignore');
+
+        @unlink($compiledDir.'/.gitignore');
+        @rmdir($compiledDir);
+    }
+
+    /**
+     * The role->permission grant map lives on the instance cache store (it comes from the
+     * instance's own database), so a plugin change must flush it through the permission engine
+     * rather than forgetting keys on the shared installation store.
+     */
+    public function test_clear_cache_flushes_the_permission_engine_cache(): void
+    {
+        $flushed = 0;
+        $this->app->instance(\Leantime\Core\Auth\Permissions\PermissionService::class, $this->make(\Leantime\Core\Auth\Permissions\PermissionService::class, [
+            'flushCache' => function () use (&$flushed): void {
+                $flushed++;
+            },
+        ]));
+
+        $this->make(\Leantime\Domain\Plugins\Services\Plugins::class)->clearCache();
+
+        $this->assertSame(1, $flushed);
+    }
 }

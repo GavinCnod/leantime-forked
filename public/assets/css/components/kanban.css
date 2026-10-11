@@ -317,35 +317,6 @@
     color: var(--grey);
 }
 
-/* ============================================
-   COLUMN COUNT HOVER REVEAL
-   Progressive disclosure - reduce visual noise
-   ============================================ */
-
-/* Hide column counts by default - show on hover */
-.widgettitle .count {
-    opacity: 0;
-    transition: opacity 200ms ease-out;
-}
-
-/* Show on hover/focus */
-.widgettitle:hover .count,
-.widgettitle:focus-within .count {
-    opacity: 1;
-}
-
-/* Mobile: Count visible when header is tapped (toggled class) */
-.widgettitle.count-visible .count {
-    opacity: 1;
-}
-
-/* Mobile: Visual indicator that header is interactive */
-@media (max-width: 768px) {
-    .widgettitle {
-        cursor: pointer;
-    }
-}
-
 .sortableTicketList li{
     list-style:none;
 }
@@ -1232,6 +1203,29 @@ body .maincontent .priority-text-5 a:link {
     /* Add left margin to align with kanban content when groupBy is active */
     margin-left: 158px; /* Matches sidebar width (150px) + margin (8px) */
     transition: margin-left 300ms ease-out;
+}
+
+/* Desktop (>=1200px, matching mobile.css): header gets its own horizontal scroller, synced to the
+   board body via JS (see showKanban.blade.php). On mobile, #1364's fix
+   makes .kanban-board-wrapper the single scroller instead, so this must
+   not apply there or the two scroll mechanisms fight each other. */
+@media (min-width: 1200px) {
+    .kanban-column-headers {
+        width: 100%;
+        max-width: 100%;
+        overflow-x: auto;
+        overflow-y: hidden;
+    }
+
+    /* When grouped, the header is shifted right by the sidebar width, so
+       its own width must shrink by the same amount to match the actual
+       scrollport of .kanban-swimlane-content -- otherwise their max
+       scrollLeft values differ and the sync script clamps short of the
+       true right edge. */
+    .kanban-column-headers.groupby-active {
+        width: calc(100% - 158px);
+        max-width: calc(100% - 158px);
+    }
 }
 
 /* Mobile: Always expanded, stack vertically */

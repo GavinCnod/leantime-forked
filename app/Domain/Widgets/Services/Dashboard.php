@@ -3,9 +3,12 @@
 namespace Leantime\Domain\Widgets\Services;
 
 use Illuminate\Support\Facades\Log;
+use Leantime\Core\Domains\BaseService;
+use Leantime\Core\Exceptions\ValidationException;
 use Leantime\Domain\Projects\Services\Projects as ProjectService;
 use Leantime\Domain\Reports\Services\Reports as ReportService;
 use Leantime\Domain\Setting\Services\Setting as SettingService;
+use Leantime\Domain\Tickets\Permissions\TicketsPermissions;
 use Leantime\Domain\Tickets\Services\Tickets as TicketService;
 use Leantime\Domain\Users\Services\Users as UserService;
 
@@ -17,7 +20,7 @@ use Leantime\Domain\Users\Services\Users as UserService;
  * domain delegate all data access, grouping, ordering and orchestration to this
  * service so they can stay thin.
  */
-class Dashboard
+class Dashboard extends BaseService
 {
     /**
      * Constructs the dashboard service.
@@ -81,6 +84,8 @@ class Dashboard
      */
     public function getWelcomeWidgetData(int $userId): array
     {
+        // Self-service: pin to the authenticated user (ignore any caller-supplied id — prevents RPC IDOR).
+        $userId = (int) session('userdata.id');
         $currentUser = $this->usersService->getUser($userId);
 
         // Check for new widgets to show settings indicator
@@ -96,11 +101,7 @@ class Dashboard
             types: ['task', 'story', 'bug']
         );
 
-        $closedTicketsCount = 0;
-        $closedTickets = $this->ticketsService->getRecentlyCompletedTicketsByUser($userId, null);
-        if (is_array($closedTickets)) {
-            $closedTicketsCount = count($closedTickets);
-        }
+        $closedTicketsCount = count($this->ticketsService->getRecentlyCompletedTicketsByUser($userId, null));
 
         $ticketsInGoals = 0;
         $goalTickets = $this->ticketsService->goalsRelatedToWork($userId, null);
@@ -115,9 +116,6 @@ class Dashboard
         $doneToday = count($todaysTasks['doneTasks'] ?? []);
 
         $allAssignedProjects = $this->projectsService->getProjectsAssignedToUser($userId, 'open');
-        if (! is_array($allAssignedProjects)) {
-            $allAssignedProjects = [];
-        }
 
         return [
             'currentUser' => $currentUser,
@@ -145,6 +143,8 @@ class Dashboard
      */
     public function getToDoWidgetData(int $userId, array $params): array
     {
+        // Self-service: pin to the authenticated user (ignore any caller-supplied id — prevents RPC IDOR).
+        $userId = (int) session('userdata.id');
         $tplVars = $this->ticketsService->getToDoWidgetHierarchicalAssignments($params);
 
         $tplVars['hasMoreTickets'] = $this->hasMoreTickets($tplVars['tickets'] ?? [], (int) $params['limit']);
@@ -168,6 +168,8 @@ class Dashboard
      */
     public function getToDoWidgetLoadMoreData(int $userId, array $params, int $pageSize): array
     {
+        // Self-service: pin to the authenticated user (ignore any caller-supplied id — prevents RPC IDOR).
+        $userId = (int) session('userdata.id');
         $params['limit'] = $params['limit'] + $pageSize;
         $params['offset'] = 0;
 
@@ -212,6 +214,8 @@ class Dashboard
      */
     public function getUserSorting(int $userId): array
     {
+        // Self-service: pin to the authenticated user (ignore any caller-supplied id — prevents RPC IDOR).
+        $userId = (int) session('userdata.id');
         $sorting = $this->settingsService->getSetting($this->sortingKey($userId));
 
         if ($sorting) {
@@ -240,6 +244,8 @@ class Dashboard
      */
     public function saveTodoSorting(int $userId, mixed $rawItems, array $groupChanges, string $groupBy): array
     {
+        // Self-service: pin to the authenticated user (ignore any caller-supplied id — prevents RPC IDOR).
+        $userId = (int) session('userdata.id');
         $successCount = 0;
         $errorCount = 0;
 
@@ -296,6 +302,8 @@ class Dashboard
      */
     public function toggleTaskCollapse(int $userId, string $taskId): string
     {
+        // Self-service: pin to the authenticated user (ignore any caller-supplied id — prevents RPC IDOR).
+        $userId = (int) session('userdata.id');
         $toggleKey = "user.{$userId}.taskCollapsed.{$taskId}";
 
         $currentState = $this->settingsService->getSetting($toggleKey, 'open');
@@ -317,6 +325,8 @@ class Dashboard
     public function addTodo(array $params): array|bool|int
     {
         $params['dateToFinish'] = $this->resolveQuickAddDueDate($params);
+
+        $params['origin'] = 'todo_widget';
 
         return $this->ticketsService->quickAddTicket($params);
     }
@@ -361,12 +371,12 @@ class Dashboard
 
         if ($group === 'thisWeek') {
             // Due this week - set to end of week (Friday)
-            return date('Y-m-d', strtotime('next friday'));
+            return dtHelper()->userNow()->next(\Carbon\CarbonInterface::FRIDAY)->format('Y-m-d');
         }
 
         if ($group === 'overdue') {
             // Overdue - set to today
-            return date('Y-m-d');
+            return dtHelper()->userNow()->format('Y-m-d');
         }
 
         // For 'later' group (or no group), leave date empty
@@ -468,11 +478,11 @@ class Dashboard
         switch ($groupKey) {
             case 'overdue':
                 // Set due date to yesterday to make it overdue
-                return ['dateToFinish' => date('Y-m-d', strtotime('yesterday'))];
+                return ['dateToFinish' => dtHelper()->userNow()->subDay()->format('Y-m-d')];
 
             case 'thisWeek':
                 // Set due date to end of current week (Friday)
-                return ['dateToFinish' => date('Y-m-d', strtotime('next friday'))];
+                return ['dateToFinish' => dtHelper()->userNow()->next(\Carbon\CarbonInterface::FRIDAY)->format('Y-m-d')];
 
             case 'later':
                 // Clear due date for "later" group
@@ -537,8 +547,32 @@ class Dashboard
                 return false;
             }
 
-            // If user can view the ticket, they can update it
-            return true;
+            // Viewing is not enough: the sorting/grouping paths PATCH the ticket, so the
+            // caller needs EDIT in the ticket's real project (a read-only member can view).
+            return $this->can(TicketsPermissions::EDIT, (int) $ticket->projectId);
+        } catch (\Exception $e) {
+            Log::error("Permission check failed for task {$taskId}: ".$e->getMessage());
+
+            return false;
+        }
+    }
+
+    /**
+     * Whether the current user may view the given ticket (VIEW in its real project).
+     *
+     * @param  int  $taskId  The ticket id.
+     * @return bool True when the ticket exists and the caller may view it.
+     */
+    private function canUserViewTask(int $taskId): bool
+    {
+        try {
+            $ticket = $this->ticketsService->getTicket($taskId);
+
+            if (! $ticket) {
+                return false;
+            }
+
+            return $this->can(TicketsPermissions::VIEW, (int) $ticket->projectId);
         } catch (\Exception $e) {
             Log::error("Permission check failed for task {$taskId}: ".$e->getMessage());
 
@@ -556,7 +590,7 @@ class Dashboard
         // Create a map of ticket IDs to their parent IDs
         $parentMap = [];
         foreach ($sorting as $item) {
-            if (isset($item['id']) && isset($item['parentId']) && $item['parentId'] !== null) {
+            if (isset($item['id']) && isset($item['parentId'])) {
                 $parentMap[$item['id']]['parentId'] = $item['parentId'];
                 $parentMap[$item['id']]['parentType'] = $item['parentType'];
             } elseif (isset($item['id'])) {
@@ -573,13 +607,31 @@ class Dashboard
                 continue;
             }
 
-            $parentId = $parent['parentId'];
+            // Only rewrite dependencies on tickets the caller may edit — the item list is
+            // caller-supplied, so without this any ticket id could be re-parented.
+            if (! $this->canUserUpdateTask((int) $ticketId)) {
+                continue;
+            }
 
-            // For tickets with parents, set the dependingTicketId
+            $parentId = (int) $parent['parentId'];
+
+            // The parent id is caller-supplied too: linking to a ticket the caller cannot view
+            // would expose that parent's headline through the dependency join on later reads.
+            if ($parentId > 0 && ! $this->canUserViewTask($parentId)) {
+                continue;
+            }
+
+            // For tickets with parents, set the dependingTicketId. A parent in another project (the
+            // widget lists tickets of every project) is rejected by the ticket service; skip that
+            // nesting instead of aborting the rest of the hierarchy update.
             if ($parentId > 0) {
-                $this->ticketsService->patch($ticketId, [
-                    'dependingTicketId' => $parentId,
-                ]);
+                try {
+                    $this->ticketsService->patch($ticketId, [
+                        'dependingTicketId' => $parentId,
+                    ]);
+                } catch (ValidationException) {
+                    continue;
+                }
             } else {
                 // For tickets without parents, clear the dependingTicketId
                 $this->ticketsService->patch($ticketId, [

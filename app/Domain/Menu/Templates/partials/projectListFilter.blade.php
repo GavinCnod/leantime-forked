@@ -5,13 +5,13 @@
           hx-swap="outerHTML"
           hx-trigger="change">
         <i class="fas fa-filter"></i>
-        <select data-placeholder="" title=""
+        <x-global::forms.select data-placeholder="" title=""
                 hx-post="{{ BASE_URL }}/hx/menu/projectSelector/update-menu"
                 hx-target="#mainProjectSelector"
                 hx-swap="outerHTML"
                 hx-indicator=".htmx-indicator, .htmx-loaded-content"
                 name="client">
-            <option value="" data-placeholder="true">All Clients</option>
+            <option value="" data-placeholder="true">{{ __('label.allClients', 'All Clients') }}</option>
             @foreach ($clients as $client)
                 @if($client['id'] > 0)
                     <option value='{{ $client['id'] }}'
@@ -21,9 +21,9 @@
                    >{{ $client['name'] }}</option>
                 @endif
             @endforeach
-        </select>
+        </x-global::forms.select>
         <i class="fa-solid fa-diagram-project"></i>
-        <select data-placeholder="" name="groupBy"
+        <x-global::forms.select data-placeholder="" name="groupBy"
                 hx-post="{{ BASE_URL }}/hx/menu/projectSelector/update-menu"
                 hx-target="#mainProjectSelector"
                 hx-indicator=".htmx-indicator, .htmx-loaded-content"
@@ -36,7 +36,7 @@
                 >{{ $group }}</option>
 
             @endforeach
-        </select>
+        </x-global::forms.select>
         <input type="hidden" name="activeTab" value="" />
 
     </form>

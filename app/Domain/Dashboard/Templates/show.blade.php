@@ -25,44 +25,30 @@
             <div class="maincontentinner tw-z-20">
 
                 @if ($login::userIsAtLeast($roles::$admin))
-                    <div class="pull-right dropdownWrapper">
-                        <a
-                            class="dropdown-toggle btn round-button"
-                            data-toggle="dropdown"
-                            data-tippy-content="{{ __('label.edit_project') }}"
-                            href="{{ BASE_URL }}/projects/showProject/{{ $project['id'] }}"
-                        ><i class="fa fa-ellipsis"></i></a>
-                        <ul class="dropdown-menu">
+                    <x-global::actions.dropdown variant="panel" menu-as="ul" class="pull-right dropdownWrapper">
+                        <x-slot:trigger class="btn round-button" data-tippy-content="{{ __('label.edit_project') }}" href="{{ BASE_URL }}/projects/showProject/{{ $project['id'] }}"><i class="fa fa-ellipsis"></i></x-slot:trigger>
                             <li class="dropdown-item">
                                 <a
                                     href="{{ BASE_URL }}/projects/showProject/{{ $project['id'] }}"
 
-                                ><i class="fa fa-edit"></i> Edit Project</a>
+                                ><i class="fa fa-edit"></i> {{ __('label.edit_project', 'Edit Project') }}</a>
                             </li>
                             <li class="dropdown-item">
                                 <a
                                     href="{{ BASE_URL }}/projects/delProject/{{ $project['id'] }}"
                                     class="delete"
 
-                                ><i class="fa fa-trash"></i> Delete Project</a>
+                                ><i class="fa fa-trash"></i> {{ __('label.deleteProject', 'Delete Project') }}</a>
                             </li>
 
-                        </ul>
-                    </div>
+                    </x-global::actions.dropdown>
                 @endif
 
-                <div class="pull-right dropdownWrapper tw-mr-[5px]">
-                    <a
-                        class="dropdown-toggle btn round-button"
-                        data-toggle="dropdown"
-                        data-tippy-content="{{ __('label.copy_url_tooltip') }}"
-                        href="{{ BASE_URL }}/projects/changeCurrentProject/{{ $project['id'] }}"
-                    ><i class="fa fa-link"></i></a>
-                    <div class="dropdown-menu padding-md">
-                        <x-global::forms.text-input id="projectUrl" value="{{ BASE_URL }}/projects/changeCurrentProject/{{ $project['id'] }}" />
-                        <x-global::forms.button contentRole="primary" onclick="leantime.snippets.copyUrl('projectUrl')">{{ __('links.copy_url') }}</x-global::forms.button>
-                    </div>
-                </div>
+                <x-global::actions.dropdown variant="panel" menu-class="padding-md" keep-open class="pull-right dropdownWrapper tw-mr-[5px]">
+                    <x-slot:trigger class="btn round-button" data-tippy-content="{{ __('label.copy_url_tooltip') }}" href="{{ BASE_URL }}/projects/changeCurrentProject/{{ $project['id'] }}"><i class="fa fa-link"></i></x-slot:trigger>
+                    <x-global::forms.text-input id="projectUrl" value="{{ BASE_URL }}/projects/changeCurrentProject/{{ $project['id'] }}" />
+                    <x-global::forms.button contentRole="primary" onclick="leantime.snippets.copyUrl('projectUrl')">{{ __('links.copy_url') }}</x-global::forms.button>
+                </x-global::actions.dropdown>
 
                 <a
                     href="javascript:void(0);"
@@ -112,10 +98,10 @@
                     @endif
 
                     @foreach($tickets as $row)
-                        <li class="ui-state-default" id="ticket_{!! $row['id'] !!}">
-                            <div class="ticketBox fixed priority-border-{!! $row['priority'] !!}" data-val="{!! $row['id'] !!}">
+                        <li class="ui-state-default" id="ticket_{{ $row['id'] }}">
+                            <div class="ticketBox fixed priority-border-{{ $row['priority'] }}" data-val="{{ $row['id'] }}">
                                 <div class="row">
-                                    <div class="col-md-12 timerContainer tw-py-[5px] tw-px-[15px]" id="timerContainer-{!! $row['id'] !!}">
+                                    <div class="col-md-12 timerContainer tw-py-[5px] tw-px-[15px]" id="timerContainer-{{ $row['id'] }}">
                                         @if($row['dependingTicketId'] > 0)
                                         <a href="#/tickets/showTicket/{{  $row['dependingTicketId'] }}">
                                             {{ $row['parentHeadline'] }}
@@ -147,103 +133,11 @@
                                     </div>
                                     <div class="col-md-8 tw-mt-[3px]">
                                         <div class="right">
-                                            <div class="dropdown ticketDropdown effortDropdown show">
-                                                <a
-                                                    class="dropdown-toggle f-left label-default effort"
-                                                    href="javascript:void(0);"
-                                                    role="button"
-                                                    id="effortDropdownMenuLink{{ $row['id'] }}"
-                                                    data-toggle="dropdown"
-                                                    aria-haspopup="true"
-                                                    aria-expanded="false"
-                                                ><span class="text">
-                                                     {{ $row['storypoints'] != '' && $row['storypoints'] > 0
-                                                            ? ($efforts[''.$row['storypoints'].''] ?? $row['storypoints'])
-                                                            : __('label.story_points_unkown')
-                                                        }}
-                                                </span>&nbsp;<i class="fa fa-caret-down" aria-hidden="true"></i></a>
+                                            <x-tickets::chip-effort :ticket-id="$row['id']" :storypoints="$row['storypoints']" :efforts="$efforts" />
 
-                                                <ul class="dropdown-menu" aria-labelledby="effortDropdownMenuLink{{ $row['id'] }}">
-                                                    <li class="nav-header border">{{ __('dropdown.how_big_todo') }}</li>
-                                                    @foreach ($efforts as $effortKey => $effortValue)
-                                                        <li class="dropdown-item">
-                                                            <a
-                                                                href="javascript:void(0)"
-                                                                data-value="{{ $row['id'] }}_{{ $effortKey}}"
-                                                                id="ticketEffortChange_{{ $row['id'] . $effortKey }}"
-                                                            >{{ $effortValue }}</a>
-                                                        </li>
-                                                    @endforeach
-                                                </ul>
-                                            </div>
+                                            <x-tickets::chip-milestone :ticket-id="$row['id']" :milestone-id="$row['milestoneid']" :headline="$row['milestoneHeadline'] ?? ''" :color="$row['milestoneColor'] ?? ''" :milestones="$milestones" />
 
-                                            <div class="dropdown ticketDropdown milestoneDropdown colorized show">
-                                                <a
-                                                    style="background-color:{{ __($row['milestoneColor']) }}"
-                                                    class="dropdown-toggle f-left label-default milestone"
-                                                    href="javascript:void(0);"
-                                                    role="button"
-                                                    id="milestoneDropdownMenuLink{{ $row['id'] }}"
-                                                    data-toggle="dropdown"
-                                                    aria-haspopup="true"
-                                                    aria-expanded="false"
-                                                ><span class="text">
-                                                    {{ $row['milestoneid'] != '' && $row['milestoneid'] != 0
-                                                        ? $row['milestoneHeadline']
-                                                        : __('label.no_milestone')
-                                                    }}
-                                                </span>&nbsp;<i class="fa fa-caret-down" aria-hidden="true"></i></a>
-
-                                                <ul class="dropdown-menu" aria-labeledby="milestoneDropdownMenuLink{{ $row['id'] }}">
-                                                    <li class="nav-header border">{{ __('dropdown.choose_milestone') }}</li>
-                                                    <li class="dropdown-item">
-                                                        <a
-                                                            href="javascript:void(0);"
-                                                            data-label="{{ __('label.no_milestone') }}"
-                                                            data-value="{{ $row['id'] }}_0_#b0b0b0"
-                                                            class="tw-bg-[#b0b0b0]"
-                                                        >{{ __('label.no_milestone') }}</a>
-                                                    </li>
-                                                    @foreach ($milestones as $milestone)
-                                                        <li class="dropdown-item">
-                                                            <a
-                                                                href="javascript:void(0);"
-                                                                data-label="{{ $milestone->headline }}"
-                                                                data-value="{{ $row['id'] }}_{!! $milestone->id !!}_{{ $milestone->tags }}"
-                                                                id="ticketMilestoneChange_{{ $row['id'] . $milestone->id }}"
-                                                                style="background-color:{{ $milestone->tags }}"
-                                                            >{{ $milestone->headline }}</a>
-                                                        </li>
-                                                    @endforeach
-                                                </ul>
-                                            </div>
-
-                                            <div class="dropdown ticketDropdown statusDropdown colorized show">
-                                                <a
-                                                    class="dropdown-toggle f-left status {!! $statusLabels[$row['status']]['class'] !!}"
-                                                    href="javascript:void(0);"
-                                                    role="button"
-                                                    id="statusDropdownMenuLink{{ $row['id'] }}"
-                                                    data-toggle="dropdown"
-                                                    aria-haspopup="true"
-                                                    aria-expanded="false"
-                                                ><span class="text">{!! $statusLabels[$row['status']]['name'] !!}</span>&nbsp;<i class="fa fa-caret-down" aria-hidden="true"></i></a>
-
-                                                <ul class="dropdown-menu" aria-labelledby="statusDropdownMenuLink{!! $row['id'] !!}">
-                                                    <li class="nav-header border">{{ __('dropdown.choose_status') }}</li>
-                                                    @foreach ($statusLabels as $key => $label)
-                                                        <li class="dropdown-item">
-                                                            <a
-                                                                href="javascript:void(0);"
-                                                                class="{!! $label['class'] !!}"
-                                                                data-label="{{ $label['name'] }}"
-                                                                data-value="{{ $row['id'] }}_{{ $key }}_{!! $label['class'] !!}"
-                                                                id="ticketStatusChange{{ $row['id'] . $key }}"
-                                                            >{{ $label['name'] }}</a>
-                                                        </li>
-                                                    @endforeach
-                                                </ul>
-                                            </div>
+                                            <x-tickets::chip-status :ticket-id="$row['id']" :status="$row['status']" :labels="$statusLabels" />
                                         </div>
                                     </div>
                                 </div>
@@ -326,11 +220,11 @@
                             <div id="comment0" class="commentBox tw-hidden">
                                 <label for="projectStatus tw-inline">{{ __('label.project_status_is') }}</label>
 
-                                <select name="status" id="projectStatus" class="tw-ml-0 tw-mb-[10px]">
+                                <x-global::forms.select name="status" id="projectStatus" class="tw-ml-0 tw-mb-[10px]">
                                     <option value="green">{{ __('label.project_status_green') }}</option>
                                     <option value="yellow">{{ __('label.project_status_yellow') }}</option>
                                     <option value="red">{{ __('label.project_status_red') }}</option>
-                                </select>
+                                </x-global::forms.select>
 
                                 <div class="commentReply">
                                     <textarea rows="5" cols="50" class="tiptapSimple tw-w-full" name="text"></textarea>
@@ -372,30 +266,24 @@
                                                 ) }}
                                             </strong>
                                                 @if ($login::userIsAtLeast($roles::$editor))
-                                                    <div class="inlineDropDownContainer tw-float-right tw-ml-[10px]">
-                                                        <a href="javascript:void(0)" class="dropdown-toggle" data-toggle="dropdown">
-                                                            <i class="fa fa-ellipsis-v"></i>
-                                                        </a>
+                                                    <x-global::actions.dropdown class="tw-float-right tw-ml-[10px]">
+                                                        @if ($row['userId'] == session("userdata.id"))
+                                                            <li>
+                                                                <a href="javascript:void(0);" class="deleteComment" data-post-field="delComment" data-post-value="{{ $row['id'] }}">
+                                                                    <span class="fa fa-trash"></span> {{ __('links.delete') }}
+                                                                </a>
+                                                            </li>
+                                                        @endif
 
-                                                        <ul class="dropdown-menu">
-                                                            @if ($row['userId'] == session("userdata.id"))
-                                                                <li>
-                                                                    <a href="{!! $delUrlBase . $row['id'] !!}" class="deleteComment">
-                                                                        <span class="fa fa-trash"></span> {{ __('links.delete') }}
-                                                                    </a>
-                                                                </li>
-                                                            @endif
-
-                                                            @isset($ticket->id)
-                                                                <li>
-                                                                    <a
-                                                                        href="javascript:void(0);"
-                                                                        onclick="leantime.ticketsController.addCommentTimesheetContent({!! $row['id'] !!}, {!! $ticket->id !!})"
-                                                                    >{{ __('links.add_to_timesheets') }}</a>
-                                                                </li>
-                                                            @endif
-                                                        </ul>
-                                                    </div>
+                                                        @isset($ticket->id)
+                                                            <li>
+                                                                <a
+                                                                    href="javascript:void(0);"
+                                                                    onclick="leantime.ticketsController.addCommentTimesheetContent({{ $row['id'] }}, {{ $ticket->id }})"
+                                                                >{{ __('links.add_to_timesheets') }}</a>
+                                                            </li>
+                                                        @endif
+                                                    </x-global::actions.dropdown>
                                                 @endif
 
                                             <div class="text" id="commentText-{{ $row['id'] }}">{!! $tpl->escapeMinimal($row['text']) !!}</div>
@@ -415,7 +303,7 @@
                                             @if ($login::userIsAtLeast($roles::$commenter))
                                                 <a
                                                     href="javascript:void(0);"
-                                                    onclick="leantime.commentsController.toggleCommentBoxes({!! $row['id'] !!});"
+                                                    onclick="leantime.commentsController.toggleCommentBoxes({{ $row['id'] }});"
                                                 ><span class="fa fa-reply"></span> {{ __('links.reply') }}
                                                 </a>
                                             @endif
@@ -480,7 +368,7 @@
                                     @break
                                 @endif
 
-                                <li class="ui-state-default" id="milestone_{!! $row->id !!}">
+                                <li class="ui-state-default" id="milestone_{{ $row->id }}">
 
                                     <div hx-trigger="load"
                                          hx-indicator=".htmx-indicator"
@@ -542,9 +430,6 @@
 
         @if ($login::userIsAtLeast($roles::$editor))
             leantime.dashboardController.prepareHiddenDueDate();
-            leantime.ticketsController.initEffortDropdown();
-            leantime.ticketsController.initMilestoneDropdown();
-            leantime.ticketsController.initStatusDropdown();
             leantime.usersController.initUserEditModal();
         @else
             leantime.authController.makeInputReadonly(".maincontentinner");

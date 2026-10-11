@@ -17,13 +17,13 @@ $currentPay = $userHours * $userInfo['wage'];
 
                     <label for="kind">{!! __('label.timesheet_kind') !!}</label>
                     <span class="field">
-                    <select id="kind" name="kind">
+                    <x-global::forms.select enhanced id="kind" name="kind">
                     @foreach ($kind as $key => $row)
                         <option value="{{ $key }}"
                             @if ($row == $values['kind']) selected="selected" @endif
                         >{!! __(strtolower($row)) !!}</option>
                     @endforeach
-                    </select>
+                    </x-global::forms.select>
                     </span>
 
                     <label for="timesheetdate">{!! __('label.date') !!}:</label>
@@ -31,7 +31,7 @@ $currentPay = $userHours * $userInfo['wage'];
 
                     <label for="hours">{!! __('label.hours') !!}</label>
                     <span class="field">
-                        <x-global::forms.text-input id="hours" name="hours" value="{{ $values['hours'] }}" size="7" variant="small" />
+                        <x-global::forms.text-input id="hours" name="hours" value="{{ $values['hours'] }}" size="7" width="sm" />
                     </span>
                     <label for="description">{!! __('label.description') !!}</label>
                     <span class="field">
@@ -53,6 +53,14 @@ $currentPay = $userHours * $userInfo['wage'];
                     {!! __('label.booked_hours') !!}: {{ $timesheetsAllHours }}<br />
                     {!! __('label.actual_hours_remaining') !!}: {{ $remainingHours }}<br />
                 </p>
+                {{-- Parent + direct subtasks (#1798). Subtask time is logged on the subtask, so no double counting. --}}
+                @if (! empty($subtaskHours['subtaskCount']))
+                    <p>
+                        <strong>{{ sprintf(__('label.including_subtasks'), $subtaskHours['subtaskCount']) }}</strong><br />
+                        {!! __('label.planned_hours') !!}: {{ round((float) $ticket->planHours + $subtaskHours['planHours'], 2) }}<br />
+                        {!! __('label.booked_hours') !!}: {{ round((float) $timesheetsAllHours + $subtaskHours['loggedHours'], 2) }}<br />
+                    </p>
+                @endif
             </div>
         </div>
 

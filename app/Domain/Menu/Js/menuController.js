@@ -32,9 +32,7 @@ leantime.menuController = (function () {
 
     var initProjectSelector = function () {
 
-        jQuery(".project-select").chosen();
-
-        jQuery(document).on('click', '.projectselector.dropdown-menu', function (e) {
+        jQuery(document).off('click.projectSelector').on('click.projectSelector', '.projectselector.dropdown-menu', function (e) {
             e.stopPropagation();
         });
 

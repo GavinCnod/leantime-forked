@@ -3,8 +3,11 @@
 namespace Leantime\Domain\Plugins\Services;
 
 use Exception;
+use GuzzleHttp\Psr7\Uri;
+use GuzzleHttp\Psr7\UriResolver;
 use Illuminate\Contracts\Container\BindingResolutionException;
 use Illuminate\Http\Client\RequestException;
+use Illuminate\Http\Client\Response;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\File;
 use Illuminate\Support\Facades\Http;
@@ -15,6 +18,9 @@ use Leantime\Core\Configuration\AppSettings;
 use Leantime\Core\Configuration\Environment as EnvironmentCore;
 use Leantime\Core\Events\DispatchesEvents;
 use Leantime\Domain\Notifications\Services\Notifications;
+use Leantime\Domain\Plugins\Events\PluginDisabled;
+use Leantime\Domain\Plugins\Events\PluginEnabled;
+use Leantime\Domain\Plugins\Events\PluginInstalled;
 use Leantime\Domain\Plugins\Models\InstalledPlugin;
 use Leantime\Domain\Plugins\Models\MarketplacePlugin;
 use Leantime\Domain\Plugins\Permissions\PluginsPermissions;
@@ -82,6 +88,9 @@ class Plugins
 
     private int $timeout = 60;
 
+    /** Redirect hops followed when downloading a marketplace archive. */
+    private const MAX_DOWNLOAD_REDIRECTS = 5;
+
     /**
      * @return void
      *
@@ -93,6 +102,7 @@ class Plugins
         private SettingsService $settingsService,
         private UsersService $usersService,
         private AppSettings $appSettings,
+        private PluginArchive $pluginArchive,
     ) {
         $this->marketplaceUrl = rtrim($config->marketplaceUrl, '/');
         // $this->marketplaceUrl = 'https://marketplace.leantime.test';
@@ -113,15 +123,28 @@ class Plugins
      *
      * @api
      */
+    #[RequiresPermission(PluginsPermissions::MANAGE, global: true)]
     public function getAllPlugins(bool $enabledOnly = false): false|array
     {
-        $installedPluginsById = [];
-
         try {
             $installedPlugins = $this->pluginRepository->getAllPlugins($enabledOnly);
         } catch (\Exception $e) {
             $installedPlugins = [];
         }
+
+        return $this->buildPluginList($installedPlugins, $enabledOnly);
+    }
+
+    /**
+     * Decorates installed plugins with marketplace data and adds the system plugins from config.
+     *
+     * @param  array<InstalledPlugin>  $installedPlugins  Plugins read from the database.
+     * @param  bool  $enabledOnly  Whether only enabled plugins were requested (passed to the filter).
+     * @return array<InstalledPlugin> Plugins keyed by folder name.
+     */
+    private function buildPluginList(array $installedPlugins, bool $enabledOnly): array
+    {
+        $installedPluginsById = [];
 
         // Build array with pluginId as $key
         foreach ($installedPlugins as &$plugin) {
@@ -172,7 +195,7 @@ class Plugins
          *
          * @var array $allPlugins
          */
-        $allPlugins = self::dispatch_filter('beforeReturnAllPlugins', $installedPluginsById, ['enabledOnly' => $enabledOnly]);
+        $allPlugins = self::dispatch_filter('beforeReturnAllPlugins', $installedPluginsById, ['enabledOnly' => $enabledOnly], 'getAllPlugins');
 
         return $allPlugins;
     }
@@ -196,13 +219,22 @@ class Plugins
     }
 
     /**
+     * Returns the enabled plugins (database plus system plugins from config), cached.
+     *
+     * A failing plugin-table query is never cached as "no plugins": the next call retries. Web
+     * requests keep running without user plugins in that case; callers that must not silently run
+     * without them (the console scheduler) pass $failOnDatabaseError to get the exception instead.
+     *
+     * @param  bool  $failOnDatabaseError  Rethrow a failing plugin-table query instead of falling back.
      * @return array|false|mixed
      *
      * @throws BindingResolutionException
+     * @throws \Exception When the plugin table cannot be read and $failOnDatabaseError is true.
      *
      * @api
      */
-    public function getEnabledPlugins(): mixed
+    #[RequiresPermission(PluginsPermissions::MANAGE, global: true)]
+    public function getEnabledPlugins(bool $failOnDatabaseError = false): mixed
     {
 
         if (Cache::store('installation')->has('plugins.enabledPlugins') && $this->config->debug === false) {
@@ -211,7 +243,22 @@ class Plugins
             return $enabledPlugins;
         }
 
-        Cache::store('installation')->set('plugins.enabledPlugins', $this->getAllPlugins(enabledOnly: true));
+        try {
+            $installedPlugins = $this->pluginRepository->getAllPlugins(true);
+        } catch (\Exception $e) {
+            if ($failOnDatabaseError) {
+                throw $e;
+            }
+
+            Log::error('Could not read enabled plugins, continuing without user plugins: '.$e->getMessage());
+
+            return self::dispatch_filter(
+                hook: 'beforeReturnCachedPlugins',
+                payload: $this->buildPluginList([], true),
+                available_params: ['enabledOnly' => true]);
+        }
+
+        Cache::store('installation')->set('plugins.enabledPlugins', $this->buildPluginList($installedPlugins, true));
 
         /**
          * Filters session array of enabled plugins before returning
@@ -319,7 +366,13 @@ class Plugins
             }
         }
 
-        return $this->pluginRepository->addPlugin($plugin);
+        $added = $this->pluginRepository->addPlugin($plugin);
+
+        if ($added !== false) {
+            PluginInstalled::dispatch(plugin: (string) $plugin->foldername, format: (string) $plugin->format);
+        }
+
+        return $added;
     }
 
     /**
@@ -332,15 +385,17 @@ class Plugins
 
         $pluginModel = $this->pluginRepository->getPlugin($id);
 
-        if ($pluginModel->format !== 'phar') {
-            return $this->pluginRepository->enablePlugin($id);
+        if ($pluginModel->format === 'phar' && ! $this->validLicense($pluginModel)) {
+            return false;
         }
 
-        if ($this->validLicense($pluginModel)) {
-            return $this->pluginRepository->enablePlugin($id);
+        $enabled = $this->pluginRepository->enablePlugin($id);
+
+        if ($enabled) {
+            PluginEnabled::dispatch(plugin: (string) $pluginModel->foldername);
         }
 
-        return false;
+        return $enabled;
 
     }
 
@@ -360,6 +415,10 @@ class Plugins
 
             $this->deactivate($pluginModel);
 
+        }
+
+        if ($result) {
+            PluginDisabled::dispatch(plugin: (string) $pluginModel->foldername);
         }
 
         return $result;
@@ -677,6 +736,9 @@ class Plugins
     /**
      * Installs a marketplace plugin by downloading, extracting, and registering it in the plugin repository.
      *
+     * The archive is downloaded over verified TLS and checked by {@see PluginArchive} (safe entries,
+     * then the phar signature in a staging directory) before it replaces the installed version.
+     *
      * @param  MarketplacePlugin  $plugin  The marketplace plugin to be installed, including its identifier and license key.
      * @param  string  $version  The version of the plugin to be installed.
      *
@@ -689,12 +751,22 @@ class Plugins
 
         $this->clearCache();
 
-        $response = $this->httpClient()->withHeaders([
-            'X-License-Key' => $plugin->license,
-            'X-Instance-Id' => $this->settingsService->getCompanyId(),
-            'X-User-Count' => $this->usersService->getNumberOfUsers(activeOnly: true, includeApi: false),
-            'X-Leantime-Version' => $this->appSettings->appVersion,
-        ])->get("{$this->marketplaceUrl}/ltmp-api/download/{$plugin->identifier}/{$version}");
+        // The archive is code this server will run, so it is only ever fetched over verified
+        // HTTPS (unlike the other marketplace calls made through httpClient()): the marketplace
+        // URL must be https and redirects may not leave https (downloadMarketplaceArchive()).
+        if (strtolower((string) parse_url($this->marketplaceUrl, PHP_URL_SCHEME)) !== 'https') {
+            throw new \Exception(__('notification.plugin_cant_download'));
+        }
+
+        $response = $this->downloadMarketplaceArchive(
+            "{$this->marketplaceUrl}/ltmp-api/download/{$plugin->identifier}/{$version}",
+            [
+                'X-License-Key' => $plugin->license,
+                'X-Instance-Id' => $this->settingsService->getCompanyId(),
+                'X-User-Count' => $this->usersService->getNumberOfUsers(activeOnly: true, includeApi: false),
+                'X-Leantime-Version' => $this->appSettings->appVersion,
+            ]
+        );
 
         if (! $response->ok()) {
             throw new RequestException($response);
@@ -705,53 +777,30 @@ class Plugins
         }
 
         $filename = $response->header('Content-Disposition');
-        $filename = substr($filename, strpos($filename, 'filename=') + 9);
+        $filename = trim(substr($filename, strpos($filename, 'filename=') + 9), " \"'");
         $foldername = Str::studly(basename($filename, '.zip'));
-        $filename = Str::finish($foldername, '.zip');
 
-        if (
-            ! file_put_contents(
-                $temporaryFile = Str::finish(sys_get_temp_dir(), '/').$filename,
-                $response->body()
-            )
-        ) {
+        // The folder name ends up in filesystem paths; only accept a plain identifier.
+        if (preg_match('/^[A-Za-z0-9_-]+$/', $foldername) !== 1) {
             throw new \Exception(__('notification.plugin_cant_download'));
         }
 
-        if (
-            is_dir($pluginDir = "{$this->pluginDirectory}{$foldername}")
-            && ! File::deleteDirectory($pluginDir)
-        ) {
-            throw new \Exception(__('notification.plugin_cant_remove'));
+        // A private, unpredictable temp path for the download, always removed afterwards.
+        $temporaryFile = Str::finish(sys_get_temp_dir(), '/').'leantime-plugin-'.bin2hex(random_bytes(16)).'.zip';
+
+        try {
+            if (! file_put_contents($temporaryFile, $response->body())) {
+                throw new \Exception(__('notification.plugin_cant_download'));
+            }
+
+            // Verifies the archive (entries, then the phar signature in a staging directory) before
+            // anything reaches the plugin directory; the installed version is only replaced after.
+            $this->pluginArchive->install($temporaryFile, $foldername, "{$this->pluginDirectory}{$foldername}");
+        } finally {
+            if (is_file($temporaryFile)) {
+                @unlink($temporaryFile);
+            }
         }
-
-        if (! mkdir($pluginDir) && ! is_dir($pluginDir)) {
-            throw new \RuntimeException(sprintf('Directory "%s" was not created', $pluginDir));
-        }
-
-        $zip = new \ZipArchive;
-
-        match ($zip->open($temporaryFile)) {
-            \ZipArchive::ER_EXISTS => throw new \Exception(__('notification.plugin_zip_exists')),
-            \ZipArchive::ER_INCONS => throw new \Exception(__('notification.plugin_zip_inconsistent')),
-            \ZipArchive::ER_INVAL => throw new \Exception(__('notification.plugin_zip_invalid_arg')),
-            \ZipArchive::ER_MEMORY => throw new \Exception(__('notification.plugin_zip_malloc')),
-            \ZipArchive::ER_NOENT => throw new \Exception(__('notification.plugin_zip_no_file')),
-            \ZipArchive::ER_NOZIP => throw new \Exception(__('notification.plugin_zip_not_zip')),
-            \ZipArchive::ER_OPEN => throw new \Exception(__('notification.plugin_zip_cant_open')),
-            \ZipArchive::ER_READ => throw new \Exception(__('notification.plugin_zip_read_err')),
-            \ZipArchive::ER_SEEK => throw new \Exception(__('notification.plugin_zip_seek_err')),
-            default => throw new \Exception(__('notification.plugin_zip_unknown_err')),
-            true => null,
-        };
-
-        if (! $zip->extractTo($pluginDir)) {
-            throw new \Exception(__('notification.plugin_zip_cant_extract'));
-        }
-
-        $zip->close();
-
-        unlink($temporaryFile);
 
         // read the composer.json content from the plugin phar file
         $pluginModel = $this->createPluginFromComposer($foldername, $plugin->license);
@@ -759,6 +808,59 @@ class Plugins
         if (! $this->pluginRepository->addPlugin($pluginModel)) {
             throw new \Exception(__('notification_cant_add_to_db'));
         }
+
+        PluginInstalled::dispatch(plugin: (string) $pluginModel->foldername, format: (string) $pluginModel->format);
+    }
+
+    /**
+     * Downloads a marketplace archive over verified HTTPS, following at most
+     * MAX_DOWNLOAD_REDIRECTS https redirects itself. The marketplace headers (license key,
+     * instance id, user count) are sent only to the configured marketplace origin and are never
+     * forwarded to a redirect target on another origin.
+     *
+     * @param  string  $url  The marketplace download URL.
+     * @param  array<string, mixed>  $marketplaceHeaders  Headers meant for the marketplace only.
+     *
+     * @throws \Exception When a redirect leaves https or the redirect limit is exceeded.
+     */
+    private function downloadMarketplaceArchive(string $url, array $marketplaceHeaders): Response
+    {
+        $marketplaceOrigin = self::urlOrigin($this->marketplaceUrl);
+
+        for ($hop = 0; ; $hop++) {
+            if (strtolower((string) parse_url($url, PHP_URL_SCHEME)) !== 'https') {
+                throw new \Exception(__('notification.plugin_cant_download'));
+            }
+
+            $headers = self::urlOrigin($url) === $marketplaceOrigin ? $marketplaceHeaders : [];
+
+            $response = Http::timeout($this->timeout)
+                ->withOptions(['allow_redirects' => false])
+                ->withHeaders($headers)
+                ->get($url);
+
+            if (! $response->redirect()) {
+                return $response;
+            }
+
+            $location = (string) $response->header('Location');
+            if ($location === '' || $hop >= self::MAX_DOWNLOAD_REDIRECTS) {
+                throw new \Exception(__('notification.plugin_cant_download'));
+            }
+
+            $url = (string) UriResolver::resolve(new Uri($url), new Uri($location));
+        }
+    }
+
+    /**
+     * The origin (scheme, host, effective port) of a URL, lower-cased.
+     */
+    private static function urlOrigin(string $url): string
+    {
+        $uri = new Uri($url);
+        $port = $uri->getPort() ?? ($uri->getScheme() === 'https' ? 443 : 80);
+
+        return $uri->getScheme().'://'.$uri->getHost().':'.$port;
     }
 
     /**
@@ -851,7 +953,7 @@ class Plugins
             'module' => 'plugins',
             'moduleId' => $pluginId,
             'message' => sprintf("The plugin '%s' has been disabled due to license validation failure. Please check your marketplace subscription.", $plugin->name),
-            'datetime' => date('Y-m-d H:i:s'),
+            'datetime' => dtHelper()->dbNow()->formatDateTimeForDb(), // UTC; date() is the user's tz here (#3201)
             'url' => '/plugins/show',
             'authorId' => 1,
         ])->toArray();
@@ -992,13 +1094,13 @@ class Plugins
         Cache::store('installation')->forget('domainEvents');
         Cache::store('installation')->forget('commands');
         Cache::store('installation')->forget('plugins.enabledPlugins');
-        // Permission engine caches (provider discovery + the role->permission map/meta), all
-        // cross-request on the installation store — a documented cache clear must bust them too,
-        // or a newly-shipped domain/plugin permission class stays invisible (and acts as a
-        // recovery path if the provider cache ever goes stale).
+        // Permission engine caches — a documented cache clear must bust them too, or a
+        // newly-shipped domain/plugin permission class stays invisible (and acts as a recovery
+        // path if the provider cache ever goes stale). Provider discovery is code-derived and
+        // lives on the installation store; the role->permission map/meta come from this
+        // instance's database and live on the instance store, so the engine flushes those.
         Cache::store('installation')->forget('permissionProviders');
-        Cache::store('installation')->forget('leantime.permissionMap');
-        Cache::store('installation')->forget('leantime.permissionMeta');
+        app(\Leantime\Core\Auth\Permissions\PermissionService::class)->flushCache();
 
         session()->forget('template_paths');
         session()->forget('composers');
@@ -1009,5 +1111,16 @@ class Plugins
 
         $composerPathCachePath = storage_path('framework/composerPaths.php');
         $files->delete($composerPathCachePath);
+
+        // Compiled Blade views are invalidated by the source file's mtime, which a phar-packaged
+        // plugin does not change across releases, so an upgraded plugin kept executing its OLD
+        // templates (including already-fixed crashes) until someone cleared the folder by hand
+        // (#3594). Plugin changes are rare, so recompiling everything once is cheap.
+        $compiledViewsPath = config('view.compiled');
+        if (is_string($compiledViewsPath) && $files->isDirectory($compiledViewsPath)) {
+            foreach ($files->glob($compiledViewsPath.'/*.php') as $compiledView) {
+                $files->delete($compiledView);
+            }
+        }
     }
 }

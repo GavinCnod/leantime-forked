@@ -59,19 +59,6 @@ class ShowClient extends Controller
             return $this->tpl->display('errors.error404', responseCode: 404);
         }
 
-        // Handle file deletion via GET param
-        if (isset($_GET['delFile'])) {
-            $result = $this->fileService->deleteFile($_GET['delFile']);
-
-            if ($result === true) {
-                $this->tpl->setNotification($this->language->__('notifications.file_deleted'), 'success', 'clientfile_deleted');
-
-                return Frontcontroller::redirect(BASE_URL.'/clients/showClient/'.$id.'#files');
-            } else {
-                $this->tpl->setNotification($this->language->__('notifications.file_deleted_error'), 'error');
-            }
-        }
-
         if (session('userdata.role') == 'admin') {
             $this->tpl->assign('admin', true);
         }
@@ -103,6 +90,28 @@ class ShowClient extends Controller
             return $this->tpl->display('errors.error404', responseCode: 404);
         }
 
+        // Handle file deletion (POST only: it changes data)
+        if (isset($_POST['delFile'])) {
+            if ($this->fileService->deleteFile($_POST['delFile']) === true) {
+                $this->tpl->setNotification($this->language->__('notifications.file_deleted'), 'success', 'clientfile_deleted');
+            } else {
+                $this->tpl->setNotification($this->language->__('notifications.file_deleted_error'), 'error');
+            }
+
+            return Frontcontroller::redirect(BASE_URL.'/clients/showClient/'.$id.'#files');
+        }
+
+        // Handle comment deletion
+        if (isset($_POST['delComment'])) {
+            if ($this->commentService->deleteComment((int) $_POST['delComment'])) {
+                $this->tpl->setNotification($this->language->__('notifications.comment_deleted'), 'success');
+            } else {
+                $this->tpl->setNotification($this->language->__('notifications.comment_deleted_error'), 'error');
+            }
+
+            return Frontcontroller::redirect(BASE_URL.'/clients/showClient/'.$id.'#comment');
+        }
+
         // Handle file upload
         if (isset($_POST['upload'])) {
             if (isset($_FILES['file']) && $_FILES['file']['tmp_name'] != '') {
@@ -115,7 +124,7 @@ class ShowClient extends Controller
 
         // Handle comment
         if (isset($_POST['comment'])) {
-            if ($this->commentService->addComment($_POST, 'client', $id, $client)) {
+            if ($this->commentService->addCommentToLoadedEntity($_POST, 'client', (int) $id, $client)) {
                 $this->tpl->setNotification($this->language->__('notifications.comment_create_success'), 'success');
             } else {
                 $this->tpl->setNotification($this->language->__('notifications.comment_create_error'), 'error');

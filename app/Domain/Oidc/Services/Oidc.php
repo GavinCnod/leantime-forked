@@ -4,6 +4,7 @@ namespace Leantime\Domain\Oidc\Services;
 
 use GuzzleHttp\Client;
 use GuzzleHttp\Exception\GuzzleException;
+use Illuminate\Http\Client\PendingRequest;
 use Illuminate\Http\Exceptions\HttpResponseException;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Log;
@@ -11,6 +12,7 @@ use Leantime\Core\Configuration\Environment;
 use Leantime\Core\Controller\Frontcontroller;
 use Leantime\Core\Language;
 use Leantime\Domain\Auth\Services\Auth as AuthService;
+use Leantime\Domain\Users\Events\UserCreated;
 use Leantime\Domain\Users\Repositories\Users as UserRepository;
 use OpenSSLAsymmetricKey;
 use phpseclib3\Crypt\PublicKeyLoader;
@@ -69,6 +71,15 @@ class Oidc
 
     private Language $language;
 
+    private bool $requireVerifiedEmail;
+
+    private bool $skipTlsVerify;
+
+    /**
+     * Allowed clock skew in seconds between Leantime and the provider when checking exp/nbf/iat.
+     */
+    private const CLOCK_LEEWAY_SECONDS = 60;
+
     public function __construct(
         Environment $config,
         Language $language,
@@ -103,6 +114,18 @@ class Oidc
         $this->fieldJobtitle = $this->config->get('oidcFieldJobtitle', '');
         $this->fieldJoblevel = $this->config->get('oidcFieldJoblevel', '');
         $this->fieldDepartment = $this->config->get('oidcFieldDepartment', '');
+
+        $this->requireVerifiedEmail = filter_var($this->config->get('oidcRequireVerifiedEmail', true), FILTER_VALIDATE_BOOLEAN);
+        $this->skipTlsVerify = filter_var($this->config->get('oidcSkipTlsVerify', false), FILTER_VALIDATE_BOOLEAN);
+    }
+
+    /**
+     * HTTP client for provider requests. TLS certificates are verified unless the admin explicitly
+     * opted out with LEAN_OIDC_SKIP_TLS_VERIFY.
+     */
+    private function providerHttp(): PendingRequest
+    {
+        return $this->skipTlsVerify ? Http::withoutVerifying() : Http::withOptions([]);
     }
 
     private function trimTrailingSlash(string $str): string
@@ -131,6 +154,11 @@ class Oidc
             $state = $this->generateState();
             session(['oidc.state' => $state]);
 
+            // Bound into the id_token by the provider and checked on callback, so a token minted
+            // for a different login attempt can't be replayed into this one.
+            $nonce = $this->generateState();
+            session(['oidc.nonce' => $nonce]);
+
             // Mobile-brokered SSO: remember that this flow began in the app + where
             // to hand the result back, so the callback mints a token + one-time
             // code instead of a web session. Only a whitelisted app scheme is
@@ -153,6 +181,7 @@ class Oidc
                 'response_type' => 'code',
                 'scope' => $this->scopes,
                 'state' => $state,
+                'nonce' => $nonce,
             ]);
         }
 
@@ -180,6 +209,10 @@ class Oidc
             $this->displayError('oidc.error.invalidState');
         }
 
+        // One-time use, like the state.
+        $expectedNonce = (string) session('oidc.nonce');
+        session()->forget('oidc.nonce');
+
         $tokens = $this->requestTokens($code);
 
         if (! is_array($tokens)) {
@@ -189,7 +222,7 @@ class Oidc
         $userInfo = null;
         // echo '<pre>' . print_r($tokens, true) . '</pre>';
         if (isset($tokens['id_token'])) {
-            $userInfo = $this->decodeJWT($tokens['id_token']);
+            $userInfo = $this->decodeJWT($tokens['id_token'], $expectedNonce);
         } elseif (isset($tokens['access_token'])) {
             // fallback to OAuth userinfo endpoint
             $userInfo = $this->pollUserInfo($tokens['access_token']);
@@ -227,6 +260,12 @@ class Oidc
             $this->displayError('oidc.error.emailUnavailable');
         }
 
+        // Accounts are matched by email, so an address the provider itself flags as unverified
+        // must not be able to sign into (or create) the account that owns it.
+        if (! $this->emailVerificationAccepted($userInfo)) {
+            $this->displayError('oidc.error.emailNotVerified');
+        }
+
         $user = $this->userRepo->getUserByEmail($userName);
 
         if ($user === false) {
@@ -250,6 +289,8 @@ class Oidc
                 $userId = $this->userRepo->addUser($userArray);
 
                 if ($userId !== false) {
+                    UserCreated::dispatch(userId: (int) $userId, role: (int) $userArray['role'], source: 'oidc');
+
                     $user = $this->userRepo->getUserByEmail($userName);
                 } else {
                     throw new \Exception('OIDC user creation failed.');
@@ -282,6 +323,10 @@ class Oidc
         }
 
         $this->authService->setUserSession($user, false);
+        $this->authService->learnTrustedAppUrl($user);
+        if (is_array($user)) {
+            $this->authService->dispatchLoginSucceeded($user, 'oidc');
+        }
 
         // Mobile-brokered SSO: instead of landing on the web dashboard, mint a
         // single-use one-time code bound to this user and hand it to the app via
@@ -321,6 +366,26 @@ class Oidc
         return str_starts_with($redirect, 'leantime://');
     }
 
+    /**
+     * Whether the email_verified claim allows this login.
+     *
+     * A claim that is present must be true (boolean or the string "true"). Providers that do not
+     * send the claim at all (Entra ID, GitHub) are accepted. LEAN_OIDC_REQUIRE_VERIFIED_EMAIL=false
+     * disables the check.
+     *
+     * @param  array  $userInfo  claims from the id_token or userinfo endpoint
+     */
+    private function emailVerificationAccepted(array $userInfo): bool
+    {
+        if (! $this->requireVerifiedEmail || ! array_key_exists('email_verified', $userInfo)) {
+            return true;
+        }
+
+        $claim = $userInfo['email_verified'];
+
+        return $claim === true || (is_string($claim) && strtolower($claim) === 'true');
+    }
+
     private function getUserRole(array $userInfo, array $user = []): string
     {
         return $user['role'] ?? 'readonly';
@@ -331,7 +396,7 @@ class Oidc
      */
     private function requestTokens(string $code): array|string
     {
-        $httpClient = Http::withoutVerifying();
+        $httpClient = $this->providerHttp();
 
         // Add proper client authentication headers
         $response = $httpClient->asForm()->post($this->getTokenUrl(), [
@@ -380,9 +445,15 @@ class Oidc
     }
 
     /**
+     * Verifies the id_token signature and its claims and returns the claims.
+     *
+     * @param  string  $jwt  the id_token
+     * @param  string  $expectedNonce  the nonce sent with the authorization request
+     * @return array|null the claims, or null when the signature does not verify
+     *
      * @throws GuzzleException
      */
-    private function decodeJWT(string $jwt): ?array
+    private function decodeJWT(string $jwt, string $expectedNonce): ?array
     {
         [$header, $content, $signature] = explode('.', $jwt);
 
@@ -406,8 +477,72 @@ class Oidc
 
         $data = $header.'.'.$content;
 
-        if (openssl_verify($data, $this->decodeBase64Url($signature), $key, $this->getAlgorythm($header)) === 1) {
-            return $tokenData;
+        if (openssl_verify($data, $this->decodeBase64Url($signature), $key, $this->getAlgorythm($header)) !== 1) {
+            return null;
+        }
+
+        $claimError = $this->validateIdTokenClaims($tokenData, $expectedNonce, time());
+
+        if ($claimError !== null) {
+            Log::warning('OIDC: rejected id_token: '.$claimError);
+            $this->displayError('oidc.error.invalidClaims', $claimError);
+        }
+
+        return $tokenData;
+    }
+
+    /**
+     * Checks the id_token claims that bind it to this client and this login attempt
+     * (OpenID Connect Core 3.1.3.7): audience, authorized party, lifetime and nonce.
+     *
+     * @param  array  $claims  decoded id_token payload
+     * @param  string  $expectedNonce  nonce stored when the login started
+     * @param  int  $now  current unix time
+     * @return string|null the reason the token is invalid, or null when it is valid
+     */
+    private function validateIdTokenClaims(array $claims, string $expectedNonce, int $now): ?string
+    {
+        $audiences = $claims['aud'] ?? [];
+        $audiences = is_array($audiences) ? $audiences : [$audiences];
+
+        if ($this->clientId === '' || ! in_array($this->clientId, $audiences, true)) {
+            return 'audience mismatch';
+        }
+
+        // azp identifies the party the token was issued to: required when there are several
+        // audiences, and must name this client whenever it is present.
+        if (count($audiences) > 1 && ! isset($claims['azp'])) {
+            return 'missing authorized party';
+        }
+
+        if (isset($claims['azp']) && $claims['azp'] !== $this->clientId) {
+            return 'authorized party mismatch';
+        }
+
+        if (! isset($claims['exp']) || ! is_numeric($claims['exp'])) {
+            return 'missing expiry';
+        }
+
+        if ((int) $claims['exp'] + self::CLOCK_LEEWAY_SECONDS < $now) {
+            return 'token expired';
+        }
+
+        if (isset($claims['nbf']) && (! is_numeric($claims['nbf']) || (int) $claims['nbf'] - self::CLOCK_LEEWAY_SECONDS > $now)) {
+            return 'token not yet valid';
+        }
+
+        if (! isset($claims['iat']) || ! is_numeric($claims['iat'])) {
+            return 'missing issue time';
+        }
+
+        if ((int) $claims['iat'] - self::CLOCK_LEEWAY_SECONDS > $now) {
+            return 'token issued in the future';
+        }
+
+        $nonce = $claims['nonce'] ?? null;
+
+        if ($expectedNonce === '' || ! is_string($nonce) || ! hash_equals($expectedNonce, $nonce)) {
+            return 'nonce mismatch';
         }
 
         return null;
@@ -440,7 +575,7 @@ class Oidc
             return openssl_pkey_get_public(file_get_contents($this->certificateFile));
         }
 
-        $httpClient = Http::withoutVerifying();
+        $httpClient = $this->providerHttp();
         // AUTH HEADER?
         $response = $httpClient->get($this->getJwksUrl()); // https://cloud.lukas-sieper.de/apps/oidc/jwks
         $keys = json_decode($response->getBody()->getContents(), true);
@@ -465,6 +600,11 @@ class Oidc
                     $modulus = $this->base64UrlDecode($key['n']);
                     $exponent = $this->base64UrlDecode($key['e']);
                     $keySource = $this->createPublicKey($modulus, exponent: $exponent);
+                } elseif (($key['kty'] ?? '') === 'EC') {
+                    // Elliptic-curve keys (ES256 etc.) are not supported yet. Say so explicitly
+                    // instead of the generic format hint, which sent deployers looking for a
+                    // different JWKS endpoint rather than switching the provider to RSA (#3761).
+                    $this->displayError('oidc.error.unsupportedKeyTypeEc');
                 } else {
                     $this->displayError('oidc.error.unsupportedKeyFormat');
                 }
@@ -539,7 +679,7 @@ class Oidc
             return true;
         }
 
-        $httpClient = Http::withoutVerifying();
+        $httpClient = $this->providerHttp();
         try {
             // $uri = strlen() ? $this->autoDiscoverUrl : $this->providerUrl;
             $uri = empty($this->autoDiscoverUrl) ? $this->providerUrl : $this->autoDiscoverUrl;
@@ -579,7 +719,7 @@ class Oidc
     private function getMultiUrl(string $urls, string $token = ''): array
     {
         $urlList = explode(',', $urls);
-        $httpClient = new Client;
+        $httpClient = new Client(['verify' => ! $this->skipTlsVerify]);
         $combinedArray = [];
 
         $options = [];

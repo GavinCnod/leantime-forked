@@ -14,7 +14,7 @@
 
 {!! $tpl->displayNotification() !!}
 
-<form class="formModal" method="post" action="{{ BASE_URL }}/ideas/ideaDialog/{{ $id }}">
+<form class="formModal" method="post" action="{{ BASE_URL }}/ideas/ideaDialog/{{ $id }}" id="ideaItemForm">
 
 <div class="row">
 
@@ -29,7 +29,7 @@
         <input type="hidden" name="milestoneId" value="{{ $canvasItem['milestoneId'] }}"/>
         <input type="hidden" name="changeItem" value="1"/>
 
-        <x-global::forms.text-input name="description" variant="headline" style="width:99%;" value="{{ $tpl->escape($canvasItem['description']) }}"
+        <x-global::forms.text-input width="full" name="description" variant="headline" value="{{ $tpl->escape($canvasItem['description']) }}"
                placeholder="{{ __('input.placeholders.short_name') }}" /><br/>
 
         <input type="text" value="{{ $tpl->escape($canvasItem['tags']) }}" name="tags" id="tags" />
@@ -88,7 +88,7 @@
 
                         <div class="row" id="existingMilestone" style="display:none;">
                             <div class="col-md-12">
-                                <select data-placeholder="{{ __('input.placeholders.filter_by_milestone') }}"
+                                <x-global::forms.select data-placeholder="{{ __('input.placeholders.filter_by_milestone') }}"
                                         name="existingMilestone" class="user-select">
                                     <option value="">{!! __('text.all_milestones') !!}</option>
                                     @foreach ($milestones as $milestoneRow)
@@ -98,7 +98,7 @@
                                             @endif
                                         >{{ $tpl->escape($milestoneRow->headline) }}</option>
                                     @endforeach
-                                </select>
+                                </x-global::forms.select>
                                 <input type="hidden" name="type" value="milestone"/>
                                 <input type="hidden" name="leancanvasitemid" value="{{ $id }} "/>
                                 <x-global::forms.button tag="input" inputType="button" :labelText="__('buttons.save')" onclick="jQuery('#primaryCanvasSubmitButton').click()"
@@ -121,7 +121,8 @@
                                 {!! __('label.loading_milestone') !!}
                             </div>
                         </div>
-                        <a href="{{ CURRENT_URL }}?removeMilestone={{ $canvasItem['milestoneId'] }}" class="ideaCanvasModal delete formModal"><i class="fa fa-close"></i> {!! __('links.remove') !!}</a>
+                        {{-- The comment form above closes this form early in the browser, so target it by id. --}}
+                        <a href="javascript:void(0);" data-post-form="ideaItemForm" data-post-field="removeMilestone" data-post-value="{{ $canvasItem['milestoneId'] }}" class="delete"><i class="fa fa-close"></i> {!! __('links.remove') !!}</a>
 
                     </li>
                 @endif

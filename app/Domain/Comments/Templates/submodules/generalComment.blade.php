@@ -9,14 +9,6 @@
     $commentsRepo = app()->make(Leantime\Domain\Comments\Repositories\Comments::class);
     $formUrl = CURRENT_URL;
     $formHash = md5($formUrl);
-
-    // Controller may not redirect. Make sure delComment is only added once
-    if (str_contains($formUrl, '?delComment=')) {
-        $urlParts = explode('?delComment=', $formUrl);
-        $deleteUrlBase = $urlParts[0] . '?delComment=';
-    } else {
-        $deleteUrlBase = $formUrl . '?delComment=';
-    }
 @endphp
 
 <form method="post" accept-charset="utf-8" action="{{ $formUrl }}" id="commentForm-{{ $formHash }}" class="formModal">
@@ -60,29 +52,24 @@
                             <div class="right commentDate">
                                 {!! sprintf(__('text.written_on'), format($row['date'])->date(), format($row['date'])->time()) !!}
                                     @if ($login::userIsAtLeast($roles::$editor))
-                                        <div class="inlineDropDownContainer" style="float:right; margin-left:10px;">
-                                            <a href="javascript:void(0);" class="dropdown-toggle ticketDropDown" data-toggle="dropdown">
-                                                <i class="fa fa-ellipsis-v" aria-hidden="true"></i>
-                                            </a>
+                                        <x-global::actions.dropdown style="float:right; margin-left:10px;">
+                                            @if (($row['userId'] == session('userdata.id')) || can('comments.moderate'))
+                                                <li><a href="javascript:void(0);" class="deleteComment" data-post-field="delComment" data-post-value="{{ $row['id'] }}">
+                                                    <span class="fa fa-trash"></span> {!! __('links.delete') !!}
+                                                </a></li>
+                                            @endif
+                                            @if (($row['userId'] == session('userdata.id')) || can('comments.moderate'))
+                                                <li>
+                                                    <a href="javascript:void(0);" onclick="toggleCommentBoxes({{ $row['id'] }}, null, '{{ $formHash }}', true)">
+                                                        <span class="fa fa-edit"></span> {!! __('label.edit') !!}
+                                                    </a>
+                                                </li>
+                                            @endif
+                                            @if (isset($ticket->id))
+                                                    <li><a href="javascript:void(0);" onclick="leantime.ticketsController.addCommentTimesheetContent({{ $row['id'] }}, {{ $ticket->id }});">{!! __('links.add_to_timesheets') !!}</a></li>
+                                            @endif
 
-                                            <ul class="dropdown-menu">
-                                                @if (($row['userId'] == session('userdata.id')) || can('comments.moderate'))
-                                                    <li><a href="{{ $deleteUrlBase . $row['id'] }}" class="deleteComment formModal">
-                                                        <span class="fa fa-trash"></span> {!! __('links.delete') !!}
-                                                    </a></li>
-                                                @endif
-                                                @if (($row['userId'] == session('userdata.id')) || can('comments.moderate'))
-                                                    <li>
-                                                        <a href="javascript:void(0);" onclick="toggleCommentBoxes({{ $row['id'] }}, null, '{{ $formHash }}', true)">
-                                                            <span class="fa fa-edit"></span> {!! __('label.edit') !!}
-                                                        </a>
-                                                    </li>
-                                                @endif
-                                                @if (isset($ticket->id))
-                                                        <li><a href="javascript:void(0);" onclick="leantime.ticketsController.addCommentTimesheetContent({{ $row['id'] }}, {{ $ticket->id }});">{!! __('links.add_to_timesheets') !!}</a></li>
-                                                @endif
-                                            </ul>
-                                        </div>
+                                        </x-global::actions.dropdown>
                                     @endif
                             </div>
                             <span class="name">{!! sprintf(__('text.full_name'), $tpl->escape($row['firstname']), $tpl->escape($row['lastname'])) !!}</span>
@@ -141,8 +128,8 @@
                                                         <span class="fa fa-reply"></span> {!! __('links.reply') !!}
                                                     </a>
                                                     @if ($comment['userId'] == session('userdata.id'))
-                                                        <a href="{{ $deleteUrlBase . $comment['id'] }}"
-                                                           class="deleteComment formModal">
+                                                        <a href="javascript:void(0);"
+                                                           class="deleteComment" data-post-field="delComment" data-post-value="{{ $comment['id'] }}">
                                                             <span class="fa fa-trash"></span> {!! __('links.delete') !!}
                                                         </a>
                                                         <a href="javascript:void(0);" onclick="toggleCommentBoxes({{ $row['id'] }}, {{ $comment['id'] }}, '{{ $formHash }}', true, true)">

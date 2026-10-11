@@ -31,8 +31,8 @@ var patterns = {
     googleForms: /^(?:https?:\/\/)?docs\.google\.com\/forms\/d\/(?:e\/)?([a-zA-Z0-9_-]+)(?:\/\S*)?$/,
 
     // Microsoft
-    oneDrive: /^(?:https?:\/\/)?(?:1drv\.ms|onedrive\.live\.com|.*\.sharepoint\.com)\/\S+$/,
-    office365: /^(?:https?:\/\/)?(?:.*\.sharepoint\.com|.*\.officeapps\.live\.com)\/\S+$/,
+    oneDrive: /^(?:https?:\/\/)?(?:1drv\.ms|onedrive\.live\.com|[a-zA-Z0-9-]+(?:\.[a-zA-Z0-9-]+)*\.sharepoint\.com)\/\S+$/,
+    office365: /^(?:https?:\/\/)?(?:[a-zA-Z0-9-]+(?:\.[a-zA-Z0-9-]+)*\.sharepoint\.com|[a-zA-Z0-9-]+(?:\.[a-zA-Z0-9-]+)*\.officeapps\.live\.com)\/\S+$/,
 
     // Design & Collaboration
     figma: /^(?:https?:\/\/)?(?:www\.)?figma\.com\/(file|proto|design)\/([a-zA-Z0-9]+)(?:\/\S*)?$/,
@@ -131,20 +131,122 @@ function getEmbedUrl(url, type, id) {
 
         case 'oneDrive':
         case 'office365':
-            // For Office docs, use action=edit for editable embeds
-            if (url.includes('sharepoint.com')) {
-                return url.replace(/\?.*$/, '') + '?action=edit&embedded=true';
+            // For Office docs, use action=edit for editable embeds. The pattern has already
+            // pinned the host; force https so the iframe never gets a relative or plain-http src.
+            var officeUrl = url.replace(/^(?:https?:\/\/)?/i, 'https://');
+            var officeHost;
+            try {
+                officeHost = new URL(officeUrl).hostname.toLowerCase();
+            } catch (e) {
+                return null;
             }
-            // For OneDrive personal links
-            if (url.includes('1drv.ms') || url.includes('onedrive.live.com')) {
-                return url.replace(/\?.*$/, '') + '?action=edit&embedded=true';
+            if (!isAllowedEmbedHost(officeHost, type)) {
+                return null;
             }
-            return url;
+            // officeapps viewer links are already embeddable; the others need the edit/embed flags.
+            if (/\.officeapps\.live\.com$/.test(officeHost)) {
+                return officeUrl;
+            }
+            return officeUrl.replace(/\?.*$/, '') + '?action=edit&embedded=true';
 
         default:
             // Unknown embed type - return null to reject
             return null;
     }
+}
+
+/**
+ * Hosts an embed iframe may point at, per embed type. Used to validate src values that
+ * come from stored HTML rather than from the embed dialog.
+ */
+var allowedEmbedHosts = {
+    youtube: [/^(?:www\.)?youtube\.com$/, /^(?:www\.)?youtube-nocookie\.com$/],
+    vimeo: [/^player\.vimeo\.com$/],
+    loom: [/^(?:www\.)?loom\.com$/],
+    googleDocs: [/^docs\.google\.com$/],
+    googleSheets: [/^docs\.google\.com$/],
+    googleSlides: [/^docs\.google\.com$/],
+    googleForms: [/^docs\.google\.com$/],
+    figma: [/^(?:www\.)?figma\.com$/],
+    miro: [/^(?:www\.)?miro\.com$/],
+    airtable: [/^airtable\.com$/],
+    typeform: [/^(?:[a-z0-9-]+\.)?typeform\.com$/],
+    calendly: [/^calendly\.com$/],
+    codepen: [/^codepen\.io$/],
+    codesandbox: [/^codesandbox\.io$/],
+    oneDrive: [/^1drv\.ms$/, /^onedrive\.live\.com$/, /^[a-z0-9-]+(?:\.[a-z0-9-]+)*\.sharepoint\.com$/],
+    office365: [/^[a-z0-9-]+(?:\.[a-z0-9-]+)*\.sharepoint\.com$/, /^[a-z0-9-]+(?:\.[a-z0-9-]+)*\.officeapps\.live\.com$/],
+};
+
+/**
+ * Whether src is an https URL on a host allowed for the given embed type.
+ */
+function isAllowedEmbedSrc(src, type) {
+    if (!src || !type || !allowedEmbedHosts[type]) return false;
+
+    var parsedUrl;
+    try {
+        parsedUrl = new URL(src);
+    } catch (e) {
+        return false;
+    }
+
+    if (parsedUrl.protocol !== 'https:') return false;
+
+    return isAllowedEmbedHost(parsedUrl.hostname.toLowerCase(), type);
+}
+
+/**
+ * Whether a (lower-case) hostname belongs to the given embed type.
+ */
+function isAllowedEmbedHost(hostname, type) {
+    if (!hostname || !allowedEmbedHosts[type]) return false;
+
+    return allowedEmbedHosts[type].some(function(hostPattern) {
+        return hostPattern.test(hostname);
+    });
+}
+
+/**
+ * Rebuild embed attributes from untrusted stored HTML.
+ *
+ * Stored data-src / data-type are never trusted on their own: the src is rebuilt from the
+ * original URL the same way the embed dialog does it, and the result must be an https URL
+ * on a host that belongs to the embed type. Returns false (node is dropped) otherwise.
+ */
+function buildSafeEmbedAttrs(storedSrc, storedType, originalUrl, title) {
+    var type = null;
+    var embedId = null;
+    var embedSrc = null;
+
+    if (originalUrl) {
+        // An original URL is always rebuilt, never bypassed: if it is not a recognised
+        // service URL the embed is rejected rather than falling back to the stored src.
+        // (The embed dialog only inserts URLs detectEmbedType() recognises.)
+        type = detectEmbedType(originalUrl);
+        if (!type) {
+            return false;
+        }
+        embedId = extractId(originalUrl, type);
+        embedSrc = getEmbedUrl(originalUrl, type, embedId);
+    } else if (storedType && patterns[storedType]) {
+        // Older content (and legacy <iframe> markup) has no original URL; accept the
+        // stored src only if it checks out against the stored type's allowed hosts.
+        type = storedType;
+        embedSrc = storedSrc;
+    }
+
+    if (!type || !isAllowedEmbedSrc(embedSrc, type)) {
+        return false;
+    }
+
+    return {
+        src: embedSrc,
+        type: type,
+        embedId: embedId,
+        originalUrl: originalUrl || null,
+        title: title,
+    };
 }
 
 /**
@@ -225,6 +327,96 @@ function getAspectRatio(type) {
 }
 
 /**
+ * Iframe attributes for an embed. Shared by the editor node and the read-only hydration
+ * so both render the same sandboxed iframe.
+ */
+function buildIframeAttributes(type, embedSrc, title) {
+    // Trusted embeds are services that require same-origin cookie access or
+    // postMessage with origin validation to authenticate and render correctly.
+    // Without allow-same-origin their internal scripts receive a null origin,
+    // auth cookies are inaccessible, and the embed fails with a 400 error.
+    //
+    // NOTE: allow-scripts + allow-same-origin together allow sandboxed content
+    // to remove its own sandbox via script — this is acceptable for these
+    // known first-party services but should NOT be added for arbitrary URLs.
+    var trustedEmbeds = {
+        googleDocs: true,
+        googleSheets: true,
+        googleSlides: true,
+        googleForms: true,
+        figma: true,
+        miro: true,
+        oneDrive: true,
+        office365: true,
+    };
+
+    var sandboxValue = trustedEmbeds[type]
+        ? 'allow-scripts allow-same-origin allow-forms allow-popups allow-popups-to-escape-sandbox allow-storage-access-by-user-activation allow-downloads allow-modals'
+        : 'allow-scripts allow-forms allow-popups allow-popups-to-escape-sandbox allow-downloads allow-modals';
+
+    return {
+        src: embedSrc,
+        frameborder: '0',
+        allowfullscreen: 'true',
+        // Allow all permissions needed for editable embeds
+        allow: 'accelerometer; autoplay; clipboard-read; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share; fullscreen; camera; microphone',
+        sandbox: sandboxValue,
+        title: title || getTypeName(type) + ' embed',
+        loading: 'lazy',
+    };
+}
+
+/**
+ * Re-create embed iframes in read-only content.
+ *
+ * Saved HTML goes through the server sanitizer, which strips <iframe>, so outside the
+ * editor an embed is only its data-embed container. Rebuild the iframe from the stored
+ * data attributes, validated exactly like the editor does when it parses stored HTML.
+ *
+ * @param {ParentNode} root - Element (or document) to search for embed containers
+ */
+function hydrateEmbeds(root) {
+    if (!root || !root.querySelectorAll) return;
+
+    root.querySelectorAll('div[data-embed]').forEach(function(container) {
+        // The editor renders its own iframes
+        if (container.closest('.ProseMirror')) return;
+        if (container.querySelector('iframe')) return;
+
+        var safeAttrs = buildSafeEmbedAttrs(
+            container.getAttribute('data-src'),
+            container.getAttribute('data-type'),
+            container.getAttribute('data-original-url'),
+            container.getAttribute('data-title')
+        );
+        if (!safeAttrs) return;
+
+        var wrapper = container.querySelector('.tiptap-embed__wrapper');
+        if (!wrapper) {
+            wrapper = document.createElement('div');
+            wrapper.className = 'tiptap-embed__wrapper';
+            container.appendChild(wrapper);
+        }
+
+        var iframe = document.createElement('iframe');
+        var iframeAttributes = buildIframeAttributes(safeAttrs.type, safeAttrs.src, safeAttrs.title);
+        Object.keys(iframeAttributes).forEach(function(name) {
+            iframe.setAttribute(name, iframeAttributes[name]);
+        });
+        wrapper.appendChild(iframe);
+    });
+}
+
+if (typeof document !== 'undefined') {
+    document.addEventListener('DOMContentLoaded', function() {
+        hydrateEmbeds(document);
+    });
+    document.addEventListener('htmx:afterSettle', function(event) {
+        hydrateEmbeds(event.target);
+    });
+}
+
+/**
  * Create the Embed node extension
  */
 var EmbedNode = Node.create({
@@ -249,13 +441,12 @@ var EmbedNode = Node.create({
             {
                 tag: 'div[data-embed]',
                 getAttrs: function(dom) {
-                    return {
-                        src: dom.getAttribute('data-src'),
-                        type: dom.getAttribute('data-type'),
-                        embedId: dom.getAttribute('data-embed-id'),
-                        originalUrl: dom.getAttribute('data-original-url'),
-                        title: dom.getAttribute('data-title'),
-                    };
+                    return buildSafeEmbedAttrs(
+                        dom.getAttribute('data-src'),
+                        dom.getAttribute('data-type'),
+                        dom.getAttribute('data-original-url'),
+                        dom.getAttribute('data-title')
+                    );
                 },
             },
             // Legacy support for direct iframes
@@ -264,12 +455,8 @@ var EmbedNode = Node.create({
                 getAttrs: function(dom) {
                     var src = dom.getAttribute('src');
                     var videoId = src.match(/embed\/([a-zA-Z0-9_-]{11})/);
-                    return {
-                        src: src,
-                        type: 'youtube',
-                        embedId: videoId ? videoId[1] : null,
-                        title: dom.getAttribute('title'),
-                    };
+                    if (!videoId) return false;
+                    return buildSafeEmbedAttrs('https://www.youtube.com/embed/' + videoId[1], 'youtube', null, dom.getAttribute('title'));
                 },
             },
             {
@@ -277,12 +464,8 @@ var EmbedNode = Node.create({
                 getAttrs: function(dom) {
                     var src = dom.getAttribute('src');
                     var videoId = src.match(/video\/(\d+)/);
-                    return {
-                        src: src,
-                        type: 'vimeo',
-                        embedId: videoId ? videoId[1] : null,
-                        title: dom.getAttribute('title'),
-                    };
+                    if (!videoId) return false;
+                    return buildSafeEmbedAttrs('https://player.vimeo.com/video/' + videoId[1], 'vimeo', null, dom.getAttribute('title'));
                 },
             },
             {
@@ -293,21 +476,13 @@ var EmbedNode = Node.create({
                     if (src.includes('spreadsheets')) type = 'googleSheets';
                     if (src.includes('presentation')) type = 'googleSlides';
                     if (src.includes('forms')) type = 'googleForms';
-                    return {
-                        src: src,
-                        type: type,
-                        title: dom.getAttribute('title'),
-                    };
+                    return buildSafeEmbedAttrs(src, type, null, dom.getAttribute('title'));
                 },
             },
             {
                 tag: 'iframe[src*="figma.com"]',
                 getAttrs: function(dom) {
-                    return {
-                        src: dom.getAttribute('src'),
-                        type: 'figma',
-                        title: dom.getAttribute('title'),
-                    };
+                    return buildSafeEmbedAttrs(dom.getAttribute('src'), 'figma', null, dom.getAttribute('title'));
                 },
             },
         ];
@@ -316,31 +491,9 @@ var EmbedNode = Node.create({
     renderHTML: function(props) {
         var attrs = props.HTMLAttributes;
         var type = attrs.type || 'youtube';
-        var embedSrc = attrs.src;
+        // Last line of defense: never hand the iframe anything but an allowed https URL.
+        var embedSrc = isAllowedEmbedSrc(attrs.src, type) ? attrs.src : 'about:blank';
         var aspectRatio = getAspectRatio(type);
-
-        // Trusted embeds are services that require same-origin cookie access or
-        // postMessage with origin validation to authenticate and render correctly.
-        // Without allow-same-origin their internal scripts receive a null origin,
-        // auth cookies are inaccessible, and the embed fails with a 400 error.
-        //
-        // NOTE: allow-scripts + allow-same-origin together allow sandboxed content
-        // to remove its own sandbox via script — this is acceptable for these
-        // known first-party services but should NOT be added for arbitrary URLs.
-        var trustedEmbeds = {
-            googleDocs: true,
-            googleSheets: true,
-            googleSlides: true,
-            googleForms: true,
-            figma: true,
-            miro: true,
-            oneDrive: true,
-            office365: true,
-        };
-
-        var sandboxValue = trustedEmbeds[type]
-            ? 'allow-scripts allow-same-origin allow-forms allow-popups allow-popups-to-escape-sandbox allow-storage-access-by-user-activation allow-downloads allow-modals'
-            : 'allow-scripts allow-forms allow-popups allow-popups-to-escape-sandbox allow-downloads allow-modals';
 
         return ['div', mergeAttributes({
             class: 'tiptap-embed tiptap-embed--' + type + ' tiptap-embed--' + aspectRatio,
@@ -352,16 +505,7 @@ var EmbedNode = Node.create({
             'data-title': attrs.title || '',
         }), [
             'div', { class: 'tiptap-embed__wrapper' }, [
-                'iframe', {
-                    src: embedSrc,
-                    frameborder: '0',
-                    allowfullscreen: 'true',
-                    // Allow all permissions needed for editable embeds
-                    allow: 'accelerometer; autoplay; clipboard-read; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share; fullscreen; camera; microphone',
-                    sandbox: sandboxValue,
-                    title: attrs.title || getTypeName(type) + ' embed',
-                    loading: 'lazy',
-                }
+                'iframe', buildIframeAttributes(type, embedSrc, attrs.title)
             ]
         ]];
     },
@@ -571,6 +715,7 @@ window.leantime.tiptapEmbed = {
     detectType: detectEmbedType,
     getEmbedUrl: getEmbedUrl,
     getTypeName: getTypeName,
+    hydrate: hydrateEmbeds,
     patterns: patterns,
 };
 

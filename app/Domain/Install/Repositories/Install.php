@@ -99,17 +99,20 @@ class Install
         30524,
         30525,
         30526,
+        30527,
+        30528,
+        30529,
     ];
 
     /**
      * config object, passed into constructor
      */
-    private Environment|string $config;
+    private Environment $config;
 
     /**
      * appSettings object, passed into constructor
      */
-    private string|AppSettingCore $settings;
+    private AppSettingCore $settings;
 
     /**
      * __construct - get database connection using Laravel's database manager
@@ -303,7 +306,7 @@ class Install
         $this->selectDatabase($this->config->dbDatabase);
 
         $versionArray = explode('.', $this->settings->dbVersion);
-        if (is_array($versionArray) && count($versionArray) == 3) {
+        if (count($versionArray) == 3) {
             $major = $versionArray[0];
             $minor = str_pad($versionArray[1], 2, '0', STR_PAD_LEFT);
             $patch = str_pad($versionArray[2], 2, '0', STR_PAD_LEFT);
@@ -319,7 +322,7 @@ class Install
         $currentDBVersion = 0;
         if ($dbVersion) {
             $versionArray = explode('.', $dbVersion);
-            if (is_array($versionArray) && count($versionArray) == 3) {
+            if (count($versionArray) == 3) {
                 $major = $versionArray[0];
                 $minor = str_pad($versionArray[1], 2, '0', STR_PAD_LEFT);
                 $patch = str_pad($versionArray[2], 2, '0', STR_PAD_LEFT);
@@ -2701,6 +2704,168 @@ class Install
             Log::error('Migration 30526: '.$e->getMessage());
 
             return ['Migration 30526 failed: '.$e->getMessage()];
+        }
+
+        return true;
+    }
+
+    /**
+     * update_sql_30527 — database update for v3.5.27.
+     *
+     * Indexes zp_queue on (channel, thedate, msghash), in that order. The queue runner reads
+     * one channel oldest first, msghash breaking ties, a batch at a time; with this index the
+     * read walks the index in order instead of scanning and sorting the table on every run.
+     * Fresh installs get the same index from SchemaBuilder::createQueueTable().
+     *
+     * Idempotent and data-preserving: an index already on exactly those columns in that order,
+     * under any name, is kept and nothing is added; queued rows are never touched. A missing
+     * zp_queue is skipped like the other partial-install guards — there is nothing to index.
+     *
+     * On MySQL and MariaDB, zp_queue is first rebuilt as InnoDB with ROW_FORMAT=DYNAMIC when it is
+     * on any engine other than InnoDB (MyISAM, Aria, ...) or is InnoDB still in the COMPACT or
+     * REDUNDANT row format. Leantime creates zp_queue as InnoDB, so another engine means the
+     * table drifted; MyISAM's 1000-byte key limit and the old row formats' 767-byte key columns
+     * cannot hold the index at all. If the rebuild fails, the migration fails and db-version
+     * stays where it was.
+     *
+     * @return bool|array<int, string> true on success or skip, otherwise the error messages
+     */
+    public function update_sql_30527(): bool|array
+    {
+        try {
+            /** @var \Illuminate\Database\Connection $connection */
+            $connection = $this->connection;
+            $schema = $connection->getSchemaBuilder();
+            if (! $schema->hasTable('zp_queue')) {
+                Log::info('Migration 30527 skipped: zp_queue table missing (partial install?)');
+
+                return true;
+            }
+
+            $channelBatchColumns = ['channel', 'thedate', 'msghash'];
+            if ($schema->hasIndex('zp_queue', $channelBatchColumns)) {
+                return true;
+            }
+
+            // channel (varchar(255), utf8mb4) needs 1020 bytes of key. MyISAM caps a whole key at
+            // 1000 bytes and InnoDB's COMPACT and REDUNDANT row formats cap a key column at 767,
+            // so the index cannot be built on either. Leantime always creates zp_queue as InnoDB,
+            // so a table on any other engine (MyISAM, Aria, ...) has drifted, and one created
+            // under old server defaults keeps its row format across server upgrades. Rebuild such
+            // a table as InnoDB DYNAMIC (3072 bytes) first. The rebuild keeps every row; other
+            // drivers and InnoDB tables already in DYNAMIC or COMPRESSED are left as they are.
+            if (in_array($connection->getDriverName(), ['mysql', 'mariadb'], true)) {
+                $queueTableStatus = $connection->selectOne(
+                    'select engine as table_engine, row_format as table_row_format from information_schema.tables where table_schema = ? and table_name = ?',
+                    [$connection->getDatabaseName(), $connection->getTablePrefix().'zp_queue']
+                );
+
+                if ($queueTableStatus !== null
+                    && (strcasecmp((string) $queueTableStatus->table_engine, 'InnoDB') !== 0
+                        || in_array(strtolower((string) $queueTableStatus->table_row_format), ['compact', 'redundant'], true))) {
+                    $connection->statement('alter table '.$connection->getQueryGrammar()->wrapTable('zp_queue').' engine = InnoDB, row_format = dynamic');
+                }
+            }
+
+            $schema->table('zp_queue', function (Blueprint $table) use ($channelBatchColumns): void {
+                $table->index($channelBatchColumns, 'idx_queue_channel_thedate_msghash');
+            });
+        } catch (\Exception $e) {
+            Log::error('Migration 30527: '.$e->getMessage());
+
+            return ['Migration 30527 failed: '.$e->getMessage()];
+        }
+
+        return true;
+    }
+
+    /**
+     * update_sql_30528 — database update for v3.5.28.
+     *
+     * Re-seeds the permission engine on installs whose role tables ended up empty. 30518 marks
+     * itself done once its tables exist, but on at least one cloud workspace the built-in roles
+     * and grants never stuck, leaving zp_roles/zp_role_permissions empty — which makes every
+     * permission check deny, owners included. Re-running the seed there restores the defaults.
+     *
+     * Installs that already have roles AND grants are left untouched, so operator role edits and
+     * revocations survive. The seed itself is additive (upsert roles, grant defaults).
+     *
+     * @return bool|array<int, string> true on success or skip, otherwise the error messages
+     */
+    public function update_sql_30528(): bool|array
+    {
+        try {
+            /** @var \Illuminate\Database\Connection $connection */
+            $connection = $this->connection;
+            $schema = $connection->getSchemaBuilder();
+            if (! $schema->hasTable('zp_roles') || ! $schema->hasTable('zp_role_permissions') || ! $schema->hasTable('zp_permissions')) {
+                Log::info('Migration 30528 skipped: permission tables missing (30518 not applied?)');
+
+                return true;
+            }
+
+            $roleCount = $connection->table('zp_roles')->count();
+            $grantCount = $connection->table('zp_role_permissions')->count();
+
+            if ($roleCount > 0 && $grantCount > 0) {
+                return true;
+            }
+
+            Log::warning('Migration 30528: permission tables unseeded (roles: '.$roleCount.', grants: '.$grantCount.') — re-seeding built-in roles.');
+
+            app(\Leantime\Core\Auth\Permissions\PermissionRegistry::class)->flush();
+
+            $seeder = app(\Leantime\Core\Auth\Permissions\PermissionSeeder::class);
+            $seeder->syncDiscoveredPermissions();
+            $seeder->seedBuiltInRoles();
+        } catch (\Exception $e) {
+            Log::error('Migration 30528: '.$e->getMessage());
+
+            return ['Migration 30528 failed: '.$e->getMessage()];
+        }
+
+        return true;
+    }
+
+    /**
+     * Full-text indexes for global search on MySQL/MariaDB.
+     *
+     * Measured on 500k to-dos / 300k comments: LIKE '%term%' scans took ~600 ms and ~300 ms per
+     * query, a boolean-mode MATCH ordered by relevance 1–100 ms. Other drivers keep the LIKE
+     * path (see Search repository), so this is a no-op there. Fresh installs get the same
+     * indexes from SchemaBuilder. Building the indexes takes about 30 s per million rows.
+     */
+    public function update_sql_30529(): bool|array
+    {
+        try {
+            /** @var \Illuminate\Database\Connection $connection */
+            $connection = $this->connection;
+
+            if (! in_array($connection->getDriverName(), ['mysql', 'mariadb'], true)) {
+                return true;
+            }
+
+            $schema = $connection->getSchemaBuilder();
+
+            $fullTextIndexes = [
+                'zp_tickets' => ['zp_tickets_search_ft', ['headline', 'description', 'tags']],
+                'zp_canvas_items' => ['zp_canvas_items_search_ft', ['title', 'description', 'data', 'assumptions', 'conclusion', 'tags']],
+                'zp_comment' => ['zp_comment_search_ft', ['text']],
+            ];
+
+            foreach ($fullTextIndexes as $tableName => [$indexName, $columns]) {
+                if (! $schema->hasTable($tableName) || $schema->hasIndex($tableName, $indexName)) {
+                    continue;
+                }
+
+                $schema->table($tableName, function (Blueprint $table) use ($columns, $indexName): void {
+                    $table->fullText($columns, $indexName);
+                });
+            }
+        } catch (\Exception $e) {
+            Log::error('Migration 30529: '.$e->getMessage());
+
+            return ['Migration 30529 failed: '.$e->getMessage()];
         }
 
         return true;

@@ -16,6 +16,9 @@ leantime.appUrl = appURL;
 var leantimeVersion = jQuery('meta[name=leantime-version]').attr("content");
 leantime.version = leantimeVersion;
 
+// LEAN_SOFT_RELOAD: refresh page content in place after a modal changed data (see modals.js)
+leantime.softReloadEnabled = jQuery('meta[name=soft-reload]').attr("content") !== 'false';
+
 leantime.replaceSVGColors = function () {
 
     jQuery(document).ready(function () {
@@ -43,25 +46,6 @@ leantime.handleAsyncResponse = function (response) {
 };
 
 jQuery.noConflict();
-
-// On touch devices, require a brief long-press + a few px of movement before a
-// jQuery-UI sortable/draggable starts dragging. Without this the whole card is a
-// drag target, so a tap "grabs" it instead of opening it and a swipe drags it
-// instead of scrolling. Set on the widget prototypes so it applies to every
-// sortable/draggable (dashboard to-dos, kanban cards, ideas cards) without
-// touching each init. Touch-only, so mouse drag on desktop is unaffected.
-// Fixes #1357 (can't tap cards), #3350 (scrolling moves tasks), #1465 (tablet drag).
-leantime.applyTouchDragGuards = function () {
-    if (!(('ontouchstart' in window || navigator.maxTouchPoints > 0) && jQuery.ui)) {
-        return;
-    }
-    if (jQuery.ui.sortable) {
-        jQuery.extend(jQuery.ui.sortable.prototype.options, { delay: 200, distance: 8 });
-    }
-    if (jQuery.ui.draggable) {
-        jQuery.extend(jQuery.ui.draggable.prototype.options, { delay: 200, distance: 8 });
-    }
-};
 
 // Initialise Tippy tooltips idempotently. Calling tippy('[data-tippy-content]')
 // on every document.ready AND every htmx.onLoad re-instanced ALL tooltips on
@@ -95,8 +79,6 @@ leantime.initTooltips = function (root) {
 
 jQuery(document).ready(function () {
 
-    leantime.applyTouchDragGuards();
-
     leantime.replaceSVGColors();
 
     jQuery(".confetti").click(function () {
@@ -104,6 +86,33 @@ jQuery(document).ready(function () {
     });
 
     leantime.initTooltips();
+
+    // The datepicker calendar floats on <body>: picking a date inside a dropdown panel (filters)
+    // must not count as an outside click that closes the panel.
+    if (jQuery.datepicker && jQuery.datepicker.dpDiv) {
+        jQuery.datepicker.dpDiv.on('click', function (event) {
+            event.stopPropagation();
+        });
+    }
+
+    // Bootstrap 2 handles Escape only while focus is on a dropdown's toggle. Close an open dropdown
+    // from anywhere inside it too (a menu link, a field in a filter panel) and hand focus back to
+    // its toggle. An enhanced select inside a panel closes its own list first.
+    document.addEventListener('keydown', function (event) {
+        if (event.key !== 'Escape' || event.defaultPrevented || !(event.target instanceof Element)) {
+            return;
+        }
+        if (event.target.closest('.ss-main')) {
+            return;
+        }
+        var openDropdown = event.target.closest('.open');
+        var toggle = openDropdown ? openDropdown.querySelector(':scope > [data-toggle="dropdown"]') : null;
+        if (!toggle) {
+            return;
+        }
+        openDropdown.classList.remove('open');
+        toggle.focus();
+    });
 
     if (jQuery('.login-alert .alert').text() !== '') {
         jQuery('.login-alert').fadeIn();
@@ -117,11 +126,6 @@ jQuery(document).ready(function () {
 
 htmx.onLoad(function(element){
     leantime.initTooltips(element);
-    // Re-assert touch drag guards before HTMX-loaded sortables (e.g. the
-    // dashboard to-do list) initialise.
-    if (leantime.applyTouchDragGuards) {
-        leantime.applyTouchDragGuards();
-    }
 });
 
 // --- Singleton HTMX progress bar -------------------------------------------------
@@ -185,3 +189,75 @@ leantime.showNotification = function (evt) {
 
 window.addEventListener("lt:ui:notify", leantime.showNotification);
 window.addEventListener("HTMX.ShowNotification", leantime.showNotification);
+
+// Links that change data (delete a comment, remove a file, enable a plugin…) must be sent as
+// POST: a GET can be fired by any other site through a plain link or image. Such links carry
+// data-post-field / data-post-value instead of a query string, and the form that gets posted is:
+//   - data-post-url: a one-off form posted to that same-origin URL (full page submit);
+//   - data-post-form: the form with that id (for links rendered outside their form);
+//   - otherwise the surrounding <form>, so forms that live in a modal keep posting through it.
+// Optional data-post-confirm asks before submitting.
+jQuery(document).on('click', '[data-post-field]', function (event) {
+    event.preventDefault();
+
+    var link = jQuery(this);
+    var fieldName = link.attr('data-post-field');
+    var fieldValue = link.attr('data-post-value') || '';
+    var postUrl = link.attr('data-post-url');
+    var postFormId = link.attr('data-post-form');
+    var confirmText = link.attr('data-post-confirm');
+
+    if (confirmText && !window.confirm(confirmText)) {
+        return;
+    }
+
+    var formElement = null;
+    if (postUrl) {
+        // Only ever post to this app: resolve the URL and refuse other origins / schemes.
+        var target;
+        try {
+            target = new URL(postUrl, window.location.href);
+        } catch (e) {
+            return;
+        }
+        if (target.origin !== window.location.origin) {
+            return;
+        }
+
+        formElement = document.createElement('form');
+        formElement.method = 'post';
+        formElement.action = target.href;
+        formElement.style.display = 'none';
+
+        var csrfToken = jQuery('meta[name=csrf-token]').attr('content');
+        if (csrfToken) {
+            var tokenInput = document.createElement('input');
+            tokenInput.type = 'hidden';
+            tokenInput.name = '_token';
+            tokenInput.value = csrfToken;
+            formElement.appendChild(tokenInput);
+        }
+        document.body.appendChild(formElement);
+    } else {
+        formElement = postFormId ? document.getElementById(postFormId) : this.closest('form');
+        if (!formElement || formElement.tagName !== 'FORM') {
+            return;
+        }
+        jQuery(formElement).find('input[type=hidden]').filter(function () {
+            return this.name === fieldName;
+        }).remove();
+    }
+
+    var fieldInput = document.createElement('input');
+    fieldInput.type = 'hidden';
+    fieldInput.name = fieldName;
+    fieldInput.value = fieldValue;
+    formElement.appendChild(fieldInput);
+
+    // Fire a real submit event so modal (nyroModal) and htmx handlers can take over; fall back
+    // to a native submit when nobody intercepted it. No field validation — this is not a save.
+    var submitEvent = new Event('submit', { bubbles: true, cancelable: true });
+    if (formElement.dispatchEvent(submitEvent)) {
+        HTMLFormElement.prototype.submit.call(formElement);
+    }
+});

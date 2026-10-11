@@ -8,6 +8,7 @@ use Leantime\Domain\Projects\Services\Projects as ProjectService;
 use Leantime\Domain\Reports\Services\Reports as ReportService;
 use Leantime\Domain\Setting\Repositories\Setting;
 use Leantime\Domain\Users\Services\Users;
+use Leantime\Domain\Widgets\Events\DashboardWidgetAdded;
 use Leantime\Domain\Widgets\Models\Widget;
 
 class Widgets
@@ -163,6 +164,29 @@ class Widgets
     }
 
     /**
+     * Restores any always-visible widget missing from a grid and returns it sorted by position.
+     *
+     * The Welcome widget carries the only link to the Widget Manager; the mobile layout drops it
+     * from the grid engine and a later saveGrid persisted that, leaving hidden widgets
+     * unrestorable (#3791).
+     *
+     * @param  array  $widgets  Widgets keyed by id.
+     * @return array The widgets with always-visible ones restored, sorted by gridY then gridX.
+     */
+    private function withAlwaysVisibleWidgets(array $widgets): array
+    {
+        foreach ($this->defaultWidgets as $widgetId => $defaultWidget) {
+            $isAlwaysVisible = $this->availableWidgets[$widgetId]->alwaysVisible ?? false;
+
+            if ($isAlwaysVisible && ! isset($widgets[$widgetId])) {
+                $widgets[$widgetId] = $defaultWidget;
+            }
+        }
+
+        return array_sort($widgets, [['gridY', 'asc'], ['gridX', 'asc']]);
+    }
+
+    /**
      * Retrieves the active widgets for a specific user.
      *
      * @param  int  $userId  The ID of the user.
@@ -172,11 +196,15 @@ class Widgets
      */
     public function getActiveWidgets(int $userId): array
     {
+        // Self-service: pin to the authenticated user (ignore any caller-supplied id — prevents RPC IDOR).
+        $userId = (int) session('userdata.id');
 
         $activeWidgetKey = sprintf(self::ACTIVE_WIDGETS_KEY, $userId);
 
         if (Cache::has($activeWidgetKey) && is_array(Cache::get($activeWidgetKey)) && count(Cache::get($activeWidgetKey)) > 0) {
-            return Cache::get($activeWidgetKey);
+            // A cached grid can predate the always-visible restore below (30-day TTL), so it gets
+            // the same treatment before being returned (#3791).
+            return $this->withAlwaysVisibleWidgets(Cache::get($activeWidgetKey));
         }
 
         $activeWidgets = $this->settingRepo->getSetting($activeWidgetKey);
@@ -214,8 +242,7 @@ class Widgets
             }
         }
 
-        // Sort Widgets
-        $widgets = array_sort($widgets, [['gridY', 'asc'], ['gridX', 'asc']]);
+        $widgets = $this->withAlwaysVisibleWidgets($widgets);
 
         Cache::set($activeWidgetKey, $widgets, new \DateInterval('P30D'));
 
@@ -231,6 +258,8 @@ class Widgets
      */
     public function resetDashboard(int $userId): void
     {
+        // Self-service: pin to the authenticated user (ignore any caller-supplied id — prevents RPC IDOR).
+        $userId = (int) session('userdata.id');
 
         $activeWidgetKey = sprintf(self::ACTIVE_WIDGETS_KEY, $userId);
 
@@ -248,6 +277,8 @@ class Widgets
      */
     public function getNewWidgets(int $userId): array
     {
+        // Self-service: pin to the authenticated user (ignore any caller-supplied id — prevents RPC IDOR).
+        $userId = (int) session('userdata.id');
         $availableWidgets = $this->getAll();
         $widgetHistory = $this->getWidgetHistory($userId);
         $activeWidgets = $this->getActiveWidgets($userId);
@@ -308,11 +339,62 @@ class Widgets
      */
     public function saveGridForUser($data, int $userId, ?array $visibilityData = null): void
     {
+        // Self-service: pin to the authenticated user (ignore any caller-supplied id — prevents RPC IDOR).
+        $userId = (int) session('userdata.id');
+
+        $previousWidgetIds = $this->storedGridWidgetIds($userId);
+
         $this->saveGrid($data, $userId);
 
         if ($visibilityData !== null && ! empty($visibilityData['visible'])) {
             $this->markWidgetAsSeen($userId, $visibilityData['widgetId']);
         }
+
+        // Only widgets that were not on the grid before count as added; drags and resizes re-post
+        // the same set of widgets.
+        foreach (array_diff($this->gridWidgetIds($data), $previousWidgetIds) as $addedWidgetId) {
+            DashboardWidgetAdded::dispatch(widgetId: $addedWidgetId);
+        }
+    }
+
+    /**
+     * The ids of the widgets on the user's stored grid; the default widgets when the user never
+     * saved a grid.
+     *
+     * @param  int  $userId  The user.
+     * @return array<int, string>
+     */
+    private function storedGridWidgetIds(int $userId): array
+    {
+        $storedGrid = $this->settingRepo->getSetting(sprintf(self::ACTIVE_WIDGETS_KEY, $userId));
+
+        if (! $storedGrid) {
+            return array_map('strval', array_keys($this->defaultWidgets));
+        }
+
+        return $this->gridWidgetIds(safe_unserialize($storedGrid, []));
+    }
+
+    /**
+     * The widget ids in a grid layout payload (a list of items carrying an `id`).
+     *
+     * @param  mixed  $grid  The grid layout.
+     * @return array<int, string>
+     */
+    private function gridWidgetIds(mixed $grid): array
+    {
+        if (! is_array($grid)) {
+            return [];
+        }
+
+        $widgetIds = [];
+        foreach ($grid as $item) {
+            if (is_array($item) && isset($item['id']) && is_scalar($item['id']) && (string) $item['id'] !== '') {
+                $widgetIds[] = (string) $item['id'];
+            }
+        }
+
+        return array_values(array_unique($widgetIds));
     }
 
     /**
@@ -328,14 +410,12 @@ class Widgets
      */
     public function getMyProjectsWidgetData(int $userId, string $clientFilter = ''): array
     {
+        // Self-service: pin to the authenticated user (ignore any caller-supplied id — prevents RPC IDOR).
+        $userId = (int) session('userdata.id');
         $assignedProjects = $this->projectService->getProjectsAssignedToUser($userId, 'open');
 
         $clients = [];
         $projects = [];
-
-        if (! is_array($assignedProjects)) {
-            return ['projects' => $projects, 'clients' => $clients];
-        }
 
         foreach ($assignedProjects as $project) {
             // Build the client map from every assigned project, regardless of filter.

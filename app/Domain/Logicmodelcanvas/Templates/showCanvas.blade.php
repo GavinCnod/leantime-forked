@@ -56,61 +56,53 @@
     </div>
     @if (count($allCanvas) > 0)
         <div class="pageheader-right">
-            <span class="dropdown dropdownWrapper headerEditDropdown">
-                <a href="javascript:void(0)" class="dropdown-toggle btn btn-transparent" data-toggle="dropdown"><i class="fa-solid fa-ellipsis-v"></i></a>
-                <ul class="dropdown-menu editCanvasDropdown">
-                    @if ($login::userIsAtLeast($roles::$editor))
-                        <li><a href="#/{{ $canvasName }}canvas/boardDialog/{{ $currentCanvas }}" class="editCanvasLink">{!! $tpl->__('links.icon.edit') !!}</a></li>
-                    @endif
-                    <li><a href="{{ BASE_URL }}/{{ $canvasName }}canvas/export/{{ $currentCanvas }}" hx-boost="false">{!! $tpl->__('links.icon.export') !!}</a></li>
-                    <li><a href="javascript:window.print();">{!! $tpl->__('links.icon.print') !!}</a></li>
-                    @dispatchEvent('logicmodel.headerActions', ['canvasId' => $currentCanvas])
-                    @if ($login::userIsAtLeast($roles::$editor))
-                        <li><a href="#/{{ $canvasName }}canvas/delCanvas/{{ $currentCanvas }}" class="delete">{!! $tpl->__('links.icon.delete') !!}</a></li>
-                    @endif
-                </ul>
-            </span>
+            <x-global::actions.dropdown variant="header-menu">
+                @if ($login::userIsAtLeast($roles::$editor))
+                    <li><a href="#/{{ $canvasName }}canvas/boardDialog/{{ $currentCanvas }}" class="editCanvasLink">{!! $tpl->__('links.icon.edit') !!}</a></li>
+                @endif
+                <li><a href="{{ BASE_URL }}/{{ $canvasName }}canvas/export/{{ $currentCanvas }}" hx-boost="false">{!! $tpl->__('links.icon.export') !!}</a></li>
+                <li><a href="javascript:window.print();">{!! $tpl->__('links.icon.print') !!}</a></li>
+                @dispatchEvent('logicmodel.headerActions', ['canvasId' => $currentCanvas])
+                @if ($login::userIsAtLeast($roles::$editor))
+                    <li><a href="#/{{ $canvasName }}canvas/delCanvas/{{ $currentCanvas }}" class="delete">{!! $tpl->__('links.icon.delete') !!}</a></li>
+                @endif
+
+            </x-global::actions.dropdown>
         </div>
     @endif
 </div>
 
 <div class="maincontent">
+    @if (count($allCanvas) > 0 && ! empty($statusLabels))
+        <x-global::navigation.view-tabs>
+            <x-slot:actions>
+                @php
+                    $statusColorMap = ['blue' => '#1B75BB', 'orange' => '#fdab3d', 'green' => '#75BB1B', 'red' => '#BB1B25', 'grey' => '#c3ccd4'];
+                    if ($filter['status'] != 'all' && !isset($statusLabels[$filter['status']])) { $filter['status'] = 'all'; }
+                    if ($filter['status'] == 'all') {
+                        $statusFilterLabel = '<i class="fas fa-filter"></i> ' . $tpl->__('status.all');
+                    } else {
+                        $sc = $statusColorMap[$statusLabels[$filter['status']]['color']] ?? '#666';
+                        $statusFilterLabel = '<i class="fas fa-fw ' . $statusLabels[$filter['status']]['icon'] . '" style="color:' . $sc . '"></i> ' . $statusLabels[$filter['status']]['title'];
+                    }
+                @endphp
+                <x-global::actions.dropdown variant="filter">
+                    <x-slot:trigger class="btn-link">{!! $statusFilterLabel !!}</x-slot:trigger>
+                    <li><a href="{{ BASE_URL }}/{{ $canvasName }}canvas/showCanvas?filter_status=all" @if ($filter['status'] == 'all') class="active" @endif><i class="fas fa-globe"></i> {{ $tpl->__('status.all') }}</a></li>
+                    @foreach ($statusLabels as $key => $data)
+                        @php $iconColor = $statusColorMap[$data['color']] ?? '#666'; @endphp
+                        <li><a href="{{ BASE_URL }}/{{ $canvasName }}canvas/showCanvas?filter_status={{ $key }}" @if ($filter['status'] == $key) class="active" @endif><i class="fas fa-fw {{ $data['icon'] }}" style="color:{{ $iconColor }}"></i> {{ $data['title'] }}</a></li>
+                    @endforeach
+                </x-global::actions.dropdown>
+            </x-slot:actions>
+        </x-global::navigation.view-tabs>
+    @endif
+
     <div class="maincontentinner">
 
         {!! $tpl->displayNotification() !!}
 
         @if (count($allCanvas) > 0)
-            {{-- Toolbar --}}
-            <div style="display:flex; align-items:center; gap:8px; margin-bottom:8px;">
-                {{-- Board creation lives in the header title dropdown; no duplicate button here. --}}
-                @if (!empty($statusLabels))
-                    @php
-                        $statusColorMap = ['blue' => '#1B75BB', 'orange' => '#fdab3d', 'green' => '#75BB1B', 'red' => '#BB1B25', 'grey' => '#c3ccd4'];
-                        if ($filter['status'] != 'all' && !isset($statusLabels[$filter['status']])) { $filter['status'] = 'all'; }
-                        if ($filter['status'] == 'all') {
-                            $statusFilterLabel = '<i class="fas fa-filter"></i> ' . $tpl->__('status.all');
-                        } else {
-                            $sc = $statusColorMap[$statusLabels[$filter['status']]['color']] ?? '#666';
-                            $statusFilterLabel = '<i class="fas fa-fw ' . $statusLabels[$filter['status']]['icon'] . '" style="color:' . $sc . '"></i> ' . $statusLabels[$filter['status']]['title'];
-                        }
-                    @endphp
-                    {{-- viewDropDown right-aligns the menu (left:auto; right:0). On
-                         this board the button sits at the left edge of the toolbar, so
-                         a 240px menu extends back under the sidebar and gets clipped
-                         by .primaryContent's overflow-x:hidden. Left-align it locally. --}}
-                    <div class="btn-group viewDropDown">
-                        <button class="btn btn-default dropdown-toggle" data-toggle="dropdown">{!! $statusFilterLabel !!}</button>
-                        <ul class="dropdown-menu" style="left:0; right:auto;">
-                            <li><a href="{{ BASE_URL }}/{{ $canvasName }}canvas/showCanvas?filter_status=all" @if ($filter['status'] == 'all') class="active" @endif><i class="fas fa-globe"></i> {{ $tpl->__('status.all') }}</a></li>
-                            @foreach ($statusLabels as $key => $data)
-                                @php $iconColor = $statusColorMap[$data['color']] ?? '#666'; @endphp
-                                <li><a href="{{ BASE_URL }}/{{ $canvasName }}canvas/showCanvas?filter_status={{ $key }}" @if ($filter['status'] == $key) class="active" @endif><i class="fas fa-fw {{ $data['icon'] }}" style="color:{{ $iconColor }}"></i> {{ $data['title'] }}</a></li>
-                            @endforeach
-                        </ul>
-                    </div>
-                @endif
-
-            </div>
             {{-- Export & print live in the header 3-dot menu (and the plugin extends it
                  via the logicmodel.headerActions hook), so no duplicate toolbar control here. --}}
 
@@ -160,7 +152,7 @@
                             <x-global::stageflow.item
                                 :itemId="$row['id']"
                                 :title="$row['description']"
-                                :description="$row['conclusion'] != '' ? $tpl->convertRelativePaths($row['conclusion']) : ''"
+                                :description="$row['conclusion'] ?? ''"
                                 :editUrl="'#/' . $canvasName . 'canvas/editCanvasItem/' . $row['id']"
                                 :deleteUrl="'#/' . $canvasName . 'canvas/delCanvasItem/' . $row['id']"
                                 :commentUrl="'#/' . $canvasName . 'canvas/editCanvasComment/' . $row['id']"
@@ -228,10 +220,6 @@
 <script type="text/javascript">
     jQuery(document).ready(function () {
 
-        if (jQuery('#searchCanvas').length > 0) {
-            new SlimSelect({ select: '#searchCanvas' });
-        }
-
         @if (isset($_GET['closeModal']))
             jQuery.nmTop().close();
         @endif
@@ -241,9 +229,6 @@
 
         @if ($login::userIsAtLeast($roles::$editor))
             leantime.canvasController.initCanvasLinks();
-            leantime.canvasController.initUserDropdown();
-            leantime.canvasController.initStatusDropdown();
-            leantime.canvasController.initRelatesDropdown();
         @else
             leantime.authController.makeInputReadonly(".maincontentinner");
         @endif

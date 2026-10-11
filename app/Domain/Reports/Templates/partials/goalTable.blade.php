@@ -21,7 +21,7 @@
             break;
         }
     }
-    $fmt = fn ($n) => format_number((float) $n);
+    $fmt = fn ($n) => \Leantime\Core\Support\Format::number((float) $n, 1);
 @endphp
 
 @if (count($goals) === 0)

@@ -430,7 +430,16 @@ class Helper
             'end' => null,
         ];
 
-        $projectId = $projectService->addProject($values);
+        $projectId = $projectService->createProject($values);
+
+        // Remember which project is this user's onboarding project: the first-login wizard may
+        // rename/describe exactly this project without the company-wide projects.edit capability.
+        if ($projectId) {
+            $this->settingsRepo->saveSetting(
+                sprintf(\Leantime\Domain\Projects\Services\Projects::ONBOARDING_PROJECT_SETTING, $userId),
+                (int) $projectId
+            );
+        }
 
         // Create Milestone
         $ticketService = app()->make(\Leantime\Domain\Tickets\Services\Tickets::class);
@@ -443,6 +452,7 @@ class Helper
             'editFrom' => dtHelper()->userNow()->formatDateTimeForDb(),
             'editTo' => dtHelper()->userNow()->addDays(14)->formatDateTimeForDb(),
             'tags' => '#124F7D',
+            'origin' => 'onboarding_seed',
         ];
         $milestoneId = $ticketService->quickAddMilestone($values);
 
@@ -455,6 +465,8 @@ class Helper
             'userId' => $userId,
             'dateToFinish' => dtHelper()->userNow()->addDays(3)->formatDateTimeForDb(),
             'milestone' => $milestoneId,
+            // Generated for the user, not typed by them: analytics excludes it from "real work".
+            'origin' => 'onboarding_seed',
         ];
 
         $values['headline'] = '💬 Join our community chat';

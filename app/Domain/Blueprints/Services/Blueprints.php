@@ -11,6 +11,8 @@ use Leantime\Core\Auth\Permissions\RequiresPermission;
 use Leantime\Core\Domains\BaseService;
 use Leantime\Core\Exceptions\AuthorizationException;
 use Leantime\Core\Language as LanguageCore;
+use Leantime\Domain\Blueprints\Events\CanvasCreated;
+use Leantime\Domain\Blueprints\Events\CanvasItemCreated;
 use Leantime\Domain\Blueprints\Events\CanvasItemUpdated;
 use Leantime\Domain\Blueprints\Models\CanvasTemplate;
 use Leantime\Domain\Blueprints\Permissions\BlueprintsPermissions;
@@ -144,7 +146,13 @@ class Blueprints extends BaseService
         }
         $this->authorize(BlueprintsPermissions::CREATE, $projectId);
 
-        return $this->blueprintsRepo->addCanvasItem($values);
+        $newId = $this->blueprintsRepo->addCanvasItem($values);
+
+        if ($newId !== false && (int) $newId > 0) {
+            CanvasItemCreated::dispatch(canvasItemId: (int) $newId, type: $canvasType, projectId: $projectId);
+        }
+
+        return $newId;
     }
 
     /**
@@ -155,16 +163,29 @@ class Blueprints extends BaseService
      * @param  array<string, mixed>  $values  Item values (must include `itemId` or `id`)
      * @param  string  $canvasType  Board type the item must belong to
      *
-     * @throws AuthorizationException When the item is unknown/foreign or EDIT is denied.
+     * The id is validated strictly (an array such as `itemId[]=N` is rejected rather than cast)
+     * and the SAME authorized id is written back into the payload, so the row that is written is
+     * always the row that was authorized.
+     *
+     * @throws AuthorizationException When the item id is invalid, the item is unknown/foreign or EDIT is denied.
      */
     public function updateCanvasItem(array $values, string $canvasType): void
     {
-        $itemId = (int) ($values['itemId'] ?? $values['id'] ?? 0);
+        $rawItemId = $values['itemId'] ?? $values['id'] ?? null;
+        $itemId = is_int($rawItemId) || is_string($rawItemId) ? filter_var($rawItemId, FILTER_VALIDATE_INT) : false;
+        if ($itemId === false || $itemId <= 0) {
+            throw new AuthorizationException;
+        }
+
         $projectId = $this->blueprintsRepo->getCanvasItemProjectId($itemId, $canvasType);
         if ($projectId === null) {
             throw new AuthorizationException;
         }
         $this->authorize(BlueprintsPermissions::EDIT, $projectId);
+
+        // Write exactly the id that was authorized.
+        $values['itemId'] = $itemId;
+        $values['id'] = $itemId;
 
         $this->blueprintsRepo->editCanvasItem($values);
 
@@ -202,7 +223,10 @@ class Blueprints extends BaseService
      * @return bool False when no allowlisted columns were present (a client error, not a denial)
      *
      * @throws AuthorizationException When the item is unknown/foreign or EDIT is denied.
+     *
+     * @api
      */
+    #[RequiresPermission(BlueprintsPermissions::EDIT, entityScoped: true)]
     public function patchCanvasItem(int $id, array $params, string $canvasType): bool
     {
         $projectId = $this->blueprintsRepo->getCanvasItemProjectId($id, $canvasType);
@@ -264,6 +288,8 @@ class Blueprints extends BaseService
 
         if ($newId !== false) {
             $this->applyStartContent((int) $newId, $canvasType);
+
+            CanvasCreated::dispatch(canvasId: (int) $newId, type: $canvasType, projectId: $projectId);
         }
 
         return $newId;
@@ -365,7 +391,13 @@ class Blueprints extends BaseService
         $this->authorize(BlueprintsPermissions::VIEW, $sourceProjectId);
         $this->authorize(BlueprintsPermissions::CREATE, $targetProjectId);
 
-        return $this->blueprintsRepo->copyCanvas($targetProjectId, $sourceCanvasId, $authorId, $title, $canvasType);
+        $newCanvasId = $this->blueprintsRepo->copyCanvas($targetProjectId, $sourceCanvasId, $authorId, $title, $canvasType);
+
+        if ($newCanvasId > 0) {
+            CanvasCreated::dispatch(canvasId: $newCanvasId, type: $canvasType, projectId: $targetProjectId);
+        }
+
+        return $newCanvasId;
     }
 
     /**
@@ -496,7 +528,7 @@ class Blueprints extends BaseService
      * @param  string  $canvasSlug  Canvas type slug (e.g., "swot", "lean")
      * @param  int  $projectId  Project identifier
      * @param  int  $authorId  Author user identifier
-     * @return bool|int False on failure, or the new canvas board ID on success
+     * @return false|int False on failure, or the new canvas board ID on success
      *
      * @throws BindingResolutionException
      * @throws AuthorizationException When the user cannot create canvases in $projectId.
@@ -504,7 +536,7 @@ class Blueprints extends BaseService
      * @api
      */
     #[RequiresPermission(BlueprintsPermissions::CREATE, entityScoped: true)]
-    public function import(string $filename, string $canvasSlug, int $projectId, int $authorId): bool|int
+    public function import(string $filename, string $canvasSlug, int $projectId, int $authorId): false|int
     {
         // Authorize CREATE against the TARGET project (the destination of the import), not the
         // session project — import is reachable via RPC with an arbitrary projectId.
@@ -698,6 +730,8 @@ class Blueprints extends BaseService
             $this->blueprintsRepo->addCanvasItem($record);
         }
 
+        CanvasCreated::dispatch(canvasId: (int) $canvasId, type: $canvasType, projectId: $projectId);
+
         return (int) $canvasId;
     }
 
@@ -707,7 +741,7 @@ class Blueprints extends BaseService
      * Counts items per box type for each canvas and calculates what fraction
      * of box types have at least one item.
      *
-     * @param  string  $projectId  Project identifier (empty string for all)
+     * @param  string  $projectId  Project identifier (empty string for the current project)
      * @param  array<int, string>  $boards  Array of database canvas types to check
      * @return array<string, float> Map of canvas type to max progress (0.0 to 1.0)
      *
@@ -718,7 +752,10 @@ class Blueprints extends BaseService
     #[RequiresPermission(BlueprintsPermissions::VIEW, projectIdParam: 'projectId')]
     public function getBoardProgress(string $projectId = '', array $boards = []): array
     {
-        $values = $this->blueprintsRepo->getCanvasProgressCount((int) $projectId, $boards);
+        // An omitted project means the current one, which is also what the permission check authorized.
+        $resolvedProjectId = $projectId !== '' ? (int) $projectId : (int) session('currentProject');
+
+        $values = $this->blueprintsRepo->getCanvasProgressCount($resolvedProjectId, $boards);
 
         $results = [];
 

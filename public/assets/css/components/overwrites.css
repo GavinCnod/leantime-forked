@@ -32,9 +32,8 @@
 .nav-list > .active > a,
 .nav-list > .active > a:hover,
 .nav-list > .active > a:focus,
-.fc-widget-header, .fc-widget-header.fc-agenda-gutter.fc-last, .chosen-container-multi .chosen-choices .search-choice,
-div.tagsinput span.tag, .chosen-container .chosen-results .highlighted
-{ background-color: var(--primary-color) }
+.fc-widget-header, .fc-widget-header.fc-agenda-gutter.fc-last,
+div.tagsinput span.tag{ background-color: var(--primary-color) }
 
 
 
@@ -93,9 +92,6 @@ button:hover {
     color:#fff;
 }
 
-.chosen-container-multi .chosen-choices .search-choice {
-    color:#fff;
-}
 
 .btn-white {
     background:#fff;
@@ -203,19 +199,21 @@ div.tagsinput span.tag
     font-weight:normal
 }
 
+/* Filter panels: an actions.dropdown panel menu (position, shadow and radius come from .dropdown-menu).
+   They open left-aligned under their button, unlike the right-aligned view/group-by menus — except in
+   a right-edge toolbar (.lt-tabs-actions, see tab-group.css), where every menu opens leftward. */
 .filterBar {
-
-    border:0px solid var(--main-border-color);
     padding:10px;
-    margin-bottom:5px;
     padding-top:5px;
-    margin-top: 10px;
-    background:var(--secondary-background);
-    border-radius:var(--box-radius);
-    z-index: 10;
-    position: absolute;
-    left: 0px;
-    box-shadow: var(--large-shadow);
+}
+
+.viewDropDown .dropdown-menu.filterBar {
+    left: 0;
+    right: auto;
+}
+
+.lt-tabs-actions .viewDropDown .dropdown-menu.filterBar {
+    right: 0;
 }
 
 .filterBar label {

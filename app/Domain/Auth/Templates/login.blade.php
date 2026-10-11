@@ -22,11 +22,11 @@
         <input type="hidden" name="redirectUrl" value="{{ $redirectUrl }}" />
 
         <div class="">
-            <label for="username">Email</label>
+            <label for="username">{{ __('label.email') }}</label>
             <x-global::forms.text-input name="username" id="username" placeholder="{{ __($inputPlaceholder) }}" value="" />
         </div>
         <div class="">
-            <label for="password">Password</label>
+            <label for="password">{{ __('label.password') }}</label>
             <x-global::forms.text-input type="password" name="password" id="password" autocomplete="off" placeholder="{{ __('input.placeholders.enter_password') }}" value="" />
             <div class="forgotPwContainer">
                 <a href="{{ BASE_URL }}/auth/resetPw" class="forgotPw">{!! __('links.forgot_password') !!}</a>
@@ -50,9 +50,11 @@
         @dispatchEvent('beforeOidcButton')
 
         <div class="">
-            <div style="margin-top:20px; border-bottom:1px solid #ccc; with:100%; height:10px; overflow:show; text-align:center; margin-bottom:40px;">
-                <p style="text-align:center; display:inline-block; background:var(--secondary-background); padding:0px 5px;">{!! __('label.or_login_with') !!}</p>
-            </div>
+            @if ($noLoginForm === false)
+                <div style="margin-top:20px; border-bottom:1px solid #ccc; with:100%; height:10px; overflow:show; text-align:center; margin-bottom:40px;">
+                    <p style="text-align:center; display:inline-block; background:var(--secondary-background); padding:0px 5px;">{!! __('label.or_login_with') !!}</p>
+                </div>
+            @endif
             <x-global::forms.button tag="a" :link="BASE_URL . '/oidc/login'" contentRole="primary" style="width:100%;">{!! __('buttons.oidclogin') !!}</x-global::forms.button>
         </div>
     @endif

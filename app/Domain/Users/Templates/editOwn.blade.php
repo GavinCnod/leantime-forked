@@ -207,23 +207,23 @@
                                 <div class="form-group">
                                     <label for="language" >{{ __('label.language') }}</label>
                                     <span class='field'>
-                                        <select name="language" id="language" style="width: 220px">
+                                        <x-global::forms.select enhanced name="language" id="language">
                                             @foreach ($languageList as $languagKey => $languageValue )
                                                 <option value="{{ $languagKey }}"
                                                         @if ($userLang == $languagKey )
                                                             selected='selected'
                                                          @endif >{{ $languageValue }}</option>
                                              @endforeach
-                                        </select>
+                                        </x-global::forms.select>
                                     </span>
                                 </div>
                                 <div class="form-group">
                                     <label for="date_format" >{{ __('label.date_format') }}</label>
                                     <span>
-                                        <select name="date_format" id="date_format" style="width: 220px">
+                                        <x-global::forms.select name="date_format" id="date_format">
                                            @php
                                             $dateFormats = $dateTimeValues['dates'];
-                                            $dateTimeNow = date_create();
+                                            $dateTimeNow = dtHelper()->userNow();
                                            @endphp
 
                                             @foreach ($dateFormats as $format)
@@ -233,16 +233,16 @@
                                                             selected='selected'
                                                         @endif >{{ date_format($dateTimeNow, $format) }}</option>
                                             @endforeach
-                                        </select>
+                                        </x-global::forms.select>
                                     </span>
                                 </div>
                                 <div class="form-group">
                                     <label for="time_format" >{{ __('label.time_format') }}</label>
                                     <span>
-                                        <select name="time_format" id="time_format" style="width: 220px">
+                                        <x-global::forms.select name="time_format" id="time_format">
                                             @php
                                                 $timeFormats = $dateTimeValues['times'];
-                                                $dateTimeNow = date_create();
+                                                $dateTimeNow = dtHelper()->userNow();
                                             @endphp
 
                                             @foreach ($timeFormats as $format)
@@ -252,13 +252,13 @@
                                                             selected='selected'
                                                         @endif>{{ date_format($dateTimeNow, $format) }}</option>
                                             @endforeach
-                                        </select>
+                                        </x-global::forms.select>
                                     </span>
                                 </div>
                                 <div class="form-group">
                                     <label for="timezone" >{{ __('label.timezone') }}</label>
                                     <span>
-                                        <select name="timezone" id="timezone" style="width: 220px">
+                                        <x-global::forms.select name="timezone" id="timezone">
 
                                             @foreach ($timezoneOptions as $tz)
                                                 <option value="{{ $tz }}"
@@ -267,7 +267,7 @@
                                                         @endif
                                                         >{{ $tz }}</option>
                                             @endforeach
-                                        </select>
+                                        </x-global::forms.select>
                                     </span>
                                 </div>
                             </div>
@@ -371,7 +371,7 @@
                                 <div class="form-group">
                                     <label for="messagesfrequency" >{{ __('label.messages_frequency') }}</label>
                                     <span>
-                                        <select name="messagesfrequency" class="input" id="messagesfrequency" style="width: 220px">
+                                        <x-global::forms.select enhanced name="messagesfrequency" class="input" id="messagesfrequency">
                                             <option value="">--{{ __('label.choose_option') }}--</option>
                                              <option value="60"
                                                      @if ($values['messagesfrequency'] == "60" )
@@ -407,7 +407,7 @@
                                             <option value="604800" @if ($values['messagesfrequency'] == "604800" )
                                                 selected="selected"
                                                                    @endif>{{ __('label.1w') }}</option>
-                                        </select> <br/>
+                                        </x-global::forms.select> <br/>
                                     </span>
                                 </div>
                             </div>
@@ -462,19 +462,44 @@
                                                     <span class="tw-text-gray-400 tw-text-xs">({{ $project['clientName'] }})</span>
                                                 @endif
                                             </span>
-                                            <select name="projectNotificationLevel[{{ $project['id'] }}]"
+                                            <x-global::forms.select name="projectNotificationLevel[{{ $project['id'] }}]"
                                                     class="tw-text-sm tw-border tw-border-gray-300 tw-rounded tw-px-2 tw-py-1 tw-min-w-[140px]">
                                                 @foreach ($relevanceLevels as $level => $labelKey)
                                                     <option value="{{ $level }}"
                                                             @if ($currentLevel === $level) selected @endif
                                                     >{{ __($labelKey) }}</option>
                                                 @endforeach
-                                            </select>
+                                            </x-global::forms.select>
                                         </div>
                                     @endforeach
                                 @else
                                     <p class="tw-text-gray-400 tw-p-2">{{ __('label.no_projects') }}</p>
                                 @endif
+                            </div>
+
+                            <hr />
+
+                            <h4 class="widgettitle title-light">{{ __('label.webhook_notifications') }}</h4>
+                            <p><small>{{ __('label.webhook_notifications_description') }}</small></p>
+                            <div class="form-group">
+                                <label for="webhookEnabled" style="display: inline-flex; align-items: center; gap: 8px; cursor: pointer;">
+                                    <input type="checkbox" value="1" name="webhookEnabled" class="input"
+                                           id="webhookEnabled"
+                                           @if (!empty($webhookEnabled))
+                                               checked="checked"
+                                           @endif/>
+                                    {{ __('label.enable_webhook_notifications') }}
+                                </label>
+                            </div>
+                            <div class="form-group">
+                                <label for="webhookUrl">{{ __('label.webhook_url') }}</label>
+                                <span>
+                                    <x-global::forms.text-input type="url" name="webhookUrl" id="webhookUrl" class="input"
+                                                                placeholder="https://example.com/webhook"
+                                                                value="{{ $webhookUrl ?? '' }}" />
+                                    <br/>
+                                    <small class="tw-text-gray-500">{{ __('label.webhook_url_hint') }}</small>
+                                </span>
                             </div>
 
                             <input type="hidden" name="savenotifications" value="1" />
@@ -498,9 +523,6 @@
 
         jQuery('.accountTabs').tabs();
 
-        jQuery("#messagesfrequency").chosen();
-        jQuery("#language").chosen();
-        jQuery("#themeSelect").chosen();
 
     });
 </script>

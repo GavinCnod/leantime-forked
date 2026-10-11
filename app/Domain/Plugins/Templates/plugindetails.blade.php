@@ -45,7 +45,7 @@
             $pluginFirstTab = $pluginTabOrder[0] ?? null;
         @endphp
         @if ($pluginFirstTab !== null)
-        <x-global::navigation.tabs group="plugindetails" label="Plugin details sections">
+        <x-global::navigation.tabs group="plugindetails" variant="underline" label="Plugin details sections">
             @if (! empty($plugin->description))
                 <x-global::navigation.tabs.tab name="overview" :selected="$pluginFirstTab === 'overview'">Overview</x-global::navigation.tabs.tab>
             @endif
@@ -150,12 +150,12 @@
                                 @foreach ((array) $plugin as $prop => $value)
                                     <input type="hidden" name="plugin[{{ $prop }}]" value="{{ is_array($value) || is_object($value) ? json_encode($value) : $value }}" />
                                 @endforeach
-                                <select class="!tw-mb-none !tw-p-[4px]" name="plugin[version]">
+                                <x-global::forms.select width="auto" class="!tw-mb-none !tw-py-[4px]" name="plugin[version]">
                                     @foreach ($plugin->compatibility as $compatibility)
                                         <option value="{{ $compatibility['version_number'] }}">{{ $compatibility['version_number'] }}</option>
                                     @endforeach
-                                </select>
-                                <x-global::forms.text-input class="!tw-mb-none !tw-p-[4px]" name="plugin[license]" placeholder="License Key" />
+                                </x-global::forms.select>
+                                <x-global::forms.text-input class="!tw-mb-none !tw-py-[4px]" name="plugin[license]" placeholder="License Key" />
                                 <x-global::button
                                     :tag="'button'"
                                     :type="'secondary'"

@@ -9,7 +9,7 @@
             <form method="post" class="form-group formModal" action="{{ BASE_URL }}/tickets/showTicket/{{ $ticket->id }}#substasks">
                 <input type="hidden" value="new" name="subtaskId" />
                 <input type="hidden" value="1" name="subtaskSave" />
-                <x-global::forms.text-input name="headline" title="{{ __('label.headline') }}" style="width:100%" placeholder="{{ __('input.placeholders.what_are_you_working_on') }}" />
+                <x-global::forms.text-input width="full" name="headline" title="{{ __('label.headline') }}" placeholder="{{ __('input.placeholders.what_are_you_working_on') }}" />
                 <x-global::forms.button tag="input" inputType="submit" contentRole="primary" :labelText="__('buttons.save')" name="quickadd" />
                 <input type="hidden" name="dateToFinish" id="dateToFinish" value="" />
                 <input type="hidden" name="status" value="3" />
@@ -33,11 +33,10 @@ $sumEstHours = 0;
     $sumPlanHours = $sumPlanHours + $subticket['planHours'];
     $sumEstHours = $sumEstHours + $subticket['hourRemaining'];
 
-    if ($subticket['dateToFinish'] == '0000-00-00 00:00:00' || $subticket['dateToFinish'] == '1969-12-31 00:00:00') {
+    if ($subticket['dateToFinish'] == '0000-00-00 00:00:00' || $subticket['dateToFinish'] == '1969-12-31 00:00:00' || empty($subticket['dateToFinish'])) {
         $date = __('text.anytime');
     } else {
-        $date = new DateTime($subticket['dateToFinish']);
-        $date = $date->format(__('language.dateformat'));
+        $date = format($subticket['dateToFinish'])->date(__('text.anytime'));
     }
     @endphp
     <li class="ui-state-default" id="ticket_{{ $subticket['id'] }}" >
@@ -46,15 +45,11 @@ $sumEstHours = 0;
             <div class="row">
                 <div class="col-md-12" style="padding:0 15px;">
                     @if ($login::userIsAtLeast($roles::$editor))
-                        <div class="inlineDropDownContainer" >
-                            <a href="javascript:void(0)" class="dropdown-toggle ticketDropDown" data-toggle="dropdown">
-                                <i class="fa fa-ellipsis-v" aria-hidden="true"></i>
-                            </a>
-                            <ul class="dropdown-menu">
-                                <li><a href="{{ BASE_URL }}/tickets/showTicket/{{ $ticket->id }}?delSubtask={{ $subticket['id'] }}" class="delete formModal"><i class="fa fa-trash"></i> {!! __('links.delete_todo') !!}</a></li>
+                        <x-global::actions.dropdown>
+                            <li><a href="{{ BASE_URL }}/tickets/showTicket/{{ $ticket->id }}?delSubtask={{ $subticket['id'] }}" class="delete formModal"><i class="fa fa-trash"></i> {!! __('links.delete_todo') !!}</a></li>
 
-                            </ul>
-                        </div>
+
+                        </x-global::actions.dropdown>
                     @endif
 
                     <a href="#/tickets/showTicket/{{ $subticket['id'] }}">{{ $tpl->escape($subticket['headline']) }}</a>
@@ -77,20 +72,7 @@ $sumEstHours = 0;
                 </div>
                 <div class="col-md-3" style="padding-top:3px;" >
                     <div class="right">
-                        <div class="dropdown ticketDropdown effortDropdown show">
-                            <a class="dropdown-toggle f-left  label-default effort" href="javascript:void(0);" role="button" id="effortDropdownMenuLink{{ $subticket['id'] }}" data-toggle="dropdown" aria-haspopup="true" aria-expanded="false">
-                                                                <span class="text">@if ($subticket['storypoints'] != '' && $subticket['storypoints'] > 0){{ $efforts['' . $subticket['storypoints']] }}@else{!! __('label.story_points_unkown') !!}@endif</span>
-                                &nbsp;<i class="fa fa-caret-down" aria-hidden="true"></i>
-                            </a>
-                            <ul class="dropdown-menu" aria-labelledby="effortDropdownMenuLink{{ $subticket['id'] }}">
-                                <li class="nav-header border">{!! __('dropdown.how_big_todo') !!}</li>
-                                @foreach ($efforts as $effortKey => $effortValue)
-                                    <li class='dropdown-item'>
-                                        <a href='javascript:void(0);' data-value='{{ $subticket['id'] }}_{{ $effortKey }}' id='ticketEffortChange{{ $subticket['id'] }}{{ $effortKey }}'>{{ $effortValue }}</a>
-                                    </li>
-                                @endforeach
-                            </ul>
-                        </div>
+                        <x-tickets::chip-effort :ticket-id="$subticket['id']" :storypoints="$subticket['storypoints']" :efforts="$efforts" />
 
                         @php
                         if (isset($statusLabels[$subticket['status']])) {
@@ -101,21 +83,7 @@ $sumEstHours = 0;
                             $name = 'new';
                         }
                         @endphp
-                        <div class="dropdown ticketDropdown statusDropdown colorized show">
-                            <a class="dropdown-toggle f-left status {{ $class }}" href="javascript:void(0);" role="button" id="statusDropdownMenuLink{{ $subticket['id'] }}" data-toggle="dropdown" aria-haspopup="true" aria-expanded="false">
-                                                                <span class="text">{{ $name }}</span>
-                                &nbsp;<i class="fa fa-caret-down" aria-hidden="true"></i>
-                            </a>
-                            <ul class="dropdown-menu" aria-labelledby="statusDropdownMenuLink{{ $subticket['id'] }}">
-                                <li class="nav-header border">{!! __('dropdown.choose_status') !!}</li>
-
-                                @foreach ($statusLabels as $key => $label)
-                                    <li class='dropdown-item'>
-                                        <a href='javascript:void(0);' class='{{ $label['class'] }}' data-label='{{ $tpl->escape($label['name']) }}' data-value='{{ $subticket['id'] }}_{{ $key }}_{{ $label['class'] }}' id='ticketStatusChange{{ $subticket['id'] }}{{ $key }}' >{{ $tpl->escape($label['name']) }}</a>
-                                    </li>
-                                @endforeach
-                            </ul>
-                        </div>
+                        <x-tickets::chip-status :ticket-id="$subticket['id']" :status="$subticket['status']" :labels="$statusLabels" />
 
                     </div>
                 </div>

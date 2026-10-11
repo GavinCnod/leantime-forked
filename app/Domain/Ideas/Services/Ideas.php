@@ -4,8 +4,12 @@ namespace Leantime\Domain\Ideas\Services;
 
 use Leantime\Core\Auth\Permissions\RequiresPermission;
 use Leantime\Core\Domains\BaseService;
+use Leantime\Core\Http\TrustedAppUrl;
 use Leantime\Core\Language as LanguageCore;
 use Leantime\Core\Mailer as MailerCore;
+use Leantime\Domain\Blueprints\Events\CanvasCreated;
+use Leantime\Domain\Blueprints\Events\CanvasItemCreated;
+use Leantime\Domain\Comments\Events\CommentAdded;
 use Leantime\Domain\Comments\Permissions\CommentsPermissions;
 use Leantime\Domain\Comments\Repositories\Comments as CommentRepository;
 use Leantime\Domain\Ideas\Permissions\IdeasPermissions;
@@ -353,6 +357,10 @@ class Ideas extends BaseService
 
         $boardId = (int) $this->ideasRepository->addCanvas($values);
 
+        if ($boardId > 0) {
+            CanvasCreated::dispatch(canvasId: $boardId, type: 'idea', projectId: $projectId);
+        }
+
         $this->notifyBoardCreated($title, $projectId);
 
         return $boardId;
@@ -385,6 +393,10 @@ class Ideas extends BaseService
         ];
 
         $boardId = (int) $this->ideasRepository->addCanvas($values);
+
+        if ($boardId > 0) {
+            CanvasCreated::dispatch(canvasId: $boardId, type: 'idea', projectId: $projectId);
+        }
 
         $this->notifyBoardCreatedFromDialog($title, $projectId);
 
@@ -461,7 +473,7 @@ class Ideas extends BaseService
         $message = sprintf(
             $this->language->__('email_notifications.idea_board_created_message'),
             session('userdata.name'),
-            "<a href='".CURRENT_URL."'>".strip_tags($title).'</a>.<br />'
+            "<a href='".\Leantime\Core\Mailer::notificationEmailUrl(app()->make(TrustedAppUrl::class)->rebase(CURRENT_URL), 'idea_board_created')."'>".strip_tags($title).'</a>.<br />'
         );
         $mailer->setHtml($message);
 
@@ -489,7 +501,7 @@ class Ideas extends BaseService
         $message = sprintf(
             $this->language->__('email_notifications.canvas_created_message'),
             session('userdata.name'),
-            "<a href='".CURRENT_URL."'>".strip_tags($title).'</a>'
+            "<a href='".\Leantime\Core\Mailer::notificationEmailUrl(app()->make(TrustedAppUrl::class)->rebase(CURRENT_URL), 'idea_board_created')."'>".strip_tags($title).'</a>'
         );
         $mailer->setHtml($message);
 
@@ -633,6 +645,10 @@ class Ideas extends BaseService
         $id = (int) $this->ideasRepository->addCanvasItem($canvasItem);
         $canvasItem['id'] = $id;
 
+        if ($id > 0) {
+            CanvasItemCreated::dispatch(canvasItemId: $id, type: 'idea', projectId: $projectId);
+        }
+
         $subject = $this->language->__('email_notifications.idea_created_subject');
         $actualLink = BASE_URL.'#/ideas/ideaDialog/'.$id;
         $message = sprintf(
@@ -673,6 +689,11 @@ class Ideas extends BaseService
     #[RequiresPermission(IdeasPermissions::EDIT, entityScoped: true)]
     public function updateIdeaItem(array $input, int $projectId, int $authorId): int
     {
+        // Reject non-scalar ids (e.g. `itemId[]=N`) instead of letting (int) turn them into 1.
+        if (! is_int($input['itemId'] ?? null) && ! is_string($input['itemId'] ?? null)) {
+            return 0;
+        }
+
         $itemId = (int) $input['itemId'];
 
         // Fail closed: resolve the EXISTING item's real project (shared zp_canvas_items) and require
@@ -707,10 +728,11 @@ class Ideas extends BaseService
             'data' => $input['data'],
             'conclusion' => '',
             'tags' => $input['tags'],
-            'itemId' => $input['itemId'],
+            // Write exactly the (int) id that was authorized above, never the raw input.
+            'itemId' => $itemId,
             'canvasId' => $input['canvasId'],
             'milestoneId' => $input['milestoneId'],
-            'id' => $input['itemId'],
+            'id' => $itemId,
         ];
 
         if (isset($input['newMilestone']) && $input['newMilestone'] != '') {
@@ -819,9 +841,14 @@ class Ideas extends BaseService
         }
         $this->authorize(CommentsPermissions::CREATE, $itemProjectId);
 
+        // Reachable over JSON-RPC: the author is the authenticated user, and the project is the
+        // idea's real one resolved above. Neither is taken from the caller.
+        $authorId = (int) session('userdata.id');
+        $projectId = $itemProjectId;
+
         $values = [
             'text' => $text,
-            'date' => date('Y-m-d H:i:s'),
+            'date' => dtHelper()->dbNow()->formatDateTimeForDb(),
             'userId' => $authorId,
             'moduleId' => $ideaItemId,
             'commentParent' => $parentCommentId,
@@ -829,6 +856,17 @@ class Ideas extends BaseService
 
         $commentId = $this->commentsRepository->addComment($values, 'idea');
         $values['id'] = $commentId;
+
+        if ($commentId) {
+            CommentAdded::dispatch(
+                commentId: (int) $commentId,
+                module: 'idea',
+                moduleId: $ideaItemId,
+                projectId: $projectId,
+                isReply: (int) $parentCommentId > 0,
+                hasMention: str_contains($text, 'data-tagged-user-id'),
+            );
+        }
 
         $subject = $this->language->__('email_notifications.new_comment_idea_subject');
         $actualLink = BASE_URL.'#/ideas/ideaDialog/'.$ideaItemId;

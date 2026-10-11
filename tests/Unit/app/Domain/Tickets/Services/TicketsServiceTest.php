@@ -498,20 +498,485 @@ class TicketsServiceTest extends TestCase
         $service->patchTicket(5, ['status' => 3]);
     }
 
+    /**
+     * Builds a TicketsService whose ticket repository is stubbed, whose project service reports
+     * the session user as a member of every project (so getTicket() resolves), and whose
+     * permission engine is the given stub.
+     *
+     * @param  array<string, mixed>  $ticketRepoStubs
+     */
+    private function buildAuthzService(array $ticketRepoStubs, PermissionService $permissions, ?TimesheetService $timesheetService = null): TicketsService
+    {
+        $service = new TicketsService(
+            language: $this->make(LanguageCore::class, ['__' => fn ($key) => $key]),
+            ticketRepository: $this->make(TicketRepository::class, $ticketRepoStubs),
+            timesheetsRepo: $this->make(TimesheetRepository::class),
+            settingsRepo: $this->make(SettingRepository::class),
+            projectService: $this->make(ProjectService::class, [
+                'isUserAssignedToProject' => fn () => true,
+                'notifyProjectUsers' => fn () => null,
+            ]),
+            timesheetService: $timesheetService ?? $this->make(TimesheetService::class),
+            sprintService: $this->make(SprintService::class),
+            ticketHistoryRepo: $this->make(TicketHistory::class),
+            goalcanvasService: $this->make(Goalcanvas::class),
+            dateTimeHelper: $this->make(DateTimeHelper::class, ['userNow' => fn () => CarbonImmutable::now('UTC')]),
+            commentService: $this->make(CommentService::class),
+            clientService: $this->make(ClientService::class)
+        );
+        $service->setPermissionService($permissions);
+
+        return $service;
+    }
+
+    /**
+     * Permission stub that grants $key only in the listed projects and records every check.
+     *
+     * @param  array<int, int>  $allowedProjects
+     * @param  array<int, array{0: string, 1: int|null}>  $checks
+     */
+    private function permissionsForProjects(array $allowedProjects, array &$checks = []): PermissionService
+    {
+        $decide = function (string $key, ?int $projectId = null) use ($allowedProjects, &$checks): bool {
+            $checks[] = [$key, $projectId];
+
+            return in_array($projectId, $allowedProjects, true);
+        };
+
+        return $this->make(PermissionService::class, [
+            'currentUserCan' => $decide,
+            'authorize' => function (string $key, ?int $projectId = null) use ($decide): void {
+                if (! $decide($key, $projectId)) {
+                    throw new AuthorizationException;
+                }
+            },
+        ]);
+    }
+
+    /** A ticket model in the given project. */
+    private function ticketIn(int $id, int $projectId, array $extra = []): TicketModel
+    {
+        return $this->make(TicketModel::class, array_merge(['id' => $id, 'projectId' => $projectId, 'headline' => 'T'.$id], $extra));
+    }
+
     public function test_sort_tickets_is_denied_for_non_editor(): void
     {
         session(['userdata' => ['id' => 1, 'role' => 'readonly']]);
 
+        // Editor in project 9 only; ticket 5 lives in project 7 where the caller is read-only.
+        $service = $this->buildAuthzService([
+            'getTicket' => fn ($id) => $this->ticketIn((int) $id, 7),
+            'bulkUpdateSortIndex' => function () {
+                throw new \RuntimeException('must not re-sort when denied');
+            },
+        ], $this->permissionsForProjects([9]));
+
         $this->expectException(AuthorizationException::class);
 
-        $this->ticketsService->sortTickets(['5' => 1]);
+        $service->sortTickets(['5' => 1]);
+    }
+
+    public function test_sort_tickets_checks_each_tickets_own_project(): void
+    {
+        session(['userdata' => ['id' => 1, 'role' => 'editor'], 'currentProject' => 9]);
+
+        // Ticket 5 is editable (project 9), ticket 6 is in project 7 — a mixed batch must fail.
+        $service = $this->buildAuthzService([
+            'getTicket' => fn ($id) => $this->ticketIn((int) $id, (int) $id === 5 ? 9 : 7),
+            'bulkUpdateSortIndex' => function () {
+                throw new \RuntimeException('must not re-sort a batch containing a foreign ticket');
+            },
+        ], $this->permissionsForProjects([9]));
+
+        $this->expectException(AuthorizationException::class);
+
+        $service->sortTickets(['5' => 1, '6' => 2]);
     }
 
     public function test_status_and_sorting_is_denied_for_non_editor(): void
     {
         session(['userdata' => ['id' => 1, 'role' => 'readonly']]);
 
-        $this->assertFalse($this->ticketsService->updateTicketStatusAndSorting(['3' => 'ticket[]=5'], null));
+        $service = $this->buildAuthzService([
+            'getTicket' => fn ($id) => $this->ticketIn((int) $id, 7),
+            'updateTicketStatus' => function () {
+                throw new \RuntimeException('must not change status when denied');
+            },
+        ], $this->permissionsForProjects([9]));
+
+        $this->assertFalse($service->updateTicketStatusAndSorting(['3' => 'ticket[]=5'], null));
+    }
+
+    public function test_patch_requires_edit_on_the_tickets_real_project(): void
+    {
+        session(['userdata' => ['id' => 1, 'role' => 'readonly']]);
+
+        $checks = [];
+        $service = $this->buildAuthzService([
+            'getTicket' => fn ($id) => $this->ticketIn((int) $id, 7),
+            'patchTicket' => function () {
+                throw new \RuntimeException('patch must not write without edit rights');
+            },
+        ], $this->permissionsForProjects([9], $checks));
+
+        try {
+            $service->patch(5, ['headline' => 'x']);
+            $this->fail('patch() must self-authorize (MCP tools and HTMX widgets call it directly)');
+        } catch (AuthorizationException) {
+            $this->assertContains(['tickets.edit', 7], $checks);
+        }
+    }
+
+    /**
+     * Service whose ticket 5 (project 7) is patchable, with the session user's timer on $clockedTicketId.
+     *
+     * @param  array<int, int>  $punchedOut  Collects the ticket ids punchOut() was called with.
+     */
+    private function buildTimerService(int $clockedTicketId, array &$punchedOut): TicketsService
+    {
+        $timesheetService = $this->make(TimesheetService::class, [
+            'isClocked' => fn () => ['id' => $clockedTicketId],
+            'punchOut' => function (int $ticketId) use (&$punchedOut) {
+                $punchedOut[] = $ticketId;
+
+                return 1.5;
+            },
+        ]);
+
+        return $this->buildAuthzService([
+            'getTicket' => fn ($id) => $this->ticketIn((int) $id, 7),
+            'patchTicket' => fn () => true,
+            'updateTicketStatus' => fn () => true,
+            'getStateLabels' => fn () => [
+                0 => ['name' => 'Done', 'statusType' => 'DONE'],
+                3 => ['name' => 'New', 'statusType' => 'NEW'],
+                4 => ['name' => 'In Progress', 'statusType' => 'INPROGRESS'],
+            ],
+        ], $this->permissionsForProjects([7]), $timesheetService);
+    }
+
+    public function test_moving_a_ticket_to_done_stops_the_users_timer_on_it(): void
+    {
+        session(['userdata' => ['id' => 1, 'role' => 'editor', 'name' => 'Caller']]);
+        $punchedOut = [];
+
+        $this->assertTrue($this->buildTimerService(5, $punchedOut)->patch(5, ['status' => 0]));
+
+        $this->assertSame([5], $punchedOut, 'a DONE status must stop the timer running on the ticket (#415)');
+    }
+
+    public function test_a_non_done_status_keeps_the_timer_running(): void
+    {
+        session(['userdata' => ['id' => 1, 'role' => 'editor', 'name' => 'Caller']]);
+        $punchedOut = [];
+
+        $this->buildTimerService(5, $punchedOut)->patch(5, ['status' => 4]);
+
+        $this->assertSame([], $punchedOut);
+    }
+
+    public function test_done_on_another_ticket_keeps_the_timer_running(): void
+    {
+        session(['userdata' => ['id' => 1, 'role' => 'editor', 'name' => 'Caller']]);
+        $punchedOut = [];
+
+        $this->buildTimerService(99, $punchedOut)->patch(5, ['status' => 0]);
+
+        $this->assertSame([], $punchedOut, 'only a timer on the completed ticket is stopped');
+    }
+
+    public function test_kanban_batch_without_handler_stops_the_timer_of_a_ticket_moved_to_done(): void
+    {
+        session(['userdata' => ['id' => 1, 'role' => 'editor', 'name' => 'Caller']]);
+        $punchedOut = [];
+
+        $this->assertTrue($this->buildTimerService(5, $punchedOut)->updateTicketStatusAndSorting(['4' => 'ticket[]=6', '0' => 'ticket[]=5'], null));
+
+        $this->assertSame([5], $punchedOut, 'every ticket in the batch counts, not only the optional handler');
+    }
+
+    public function test_kanban_batch_failing_later_still_stops_the_timer_of_a_persisted_done_ticket(): void
+    {
+        session(['userdata' => ['id' => 1, 'role' => 'editor', 'name' => 'Caller']]);
+        $punchedOut = [];
+
+        $timesheetService = $this->make(TimesheetService::class, [
+            'isClocked' => fn () => ['id' => 5],
+            'punchOut' => function (int $ticketId) use (&$punchedOut) {
+                $punchedOut[] = $ticketId;
+
+                return 1.0;
+            },
+        ]);
+        $service = $this->buildAuthzService([
+            'getTicket' => fn ($id) => $this->ticketIn((int) $id, 7),
+            // Ticket 5 is written; ticket 6 reports false (e.g. 0 rows changed).
+            'updateTicketStatus' => fn ($id) => (int) $id === 5,
+            'getStateLabels' => fn () => [0 => ['name' => 'Done', 'statusType' => 'DONE']],
+        ], $this->permissionsForProjects([7]), $timesheetService);
+
+        $this->assertFalse($service->updateTicketStatusAndSorting(['0' => 'ticket[]=5&ticket[]=6'], null));
+
+        $this->assertSame([5], $punchedOut, 'a status that was persisted before the failure still stops the timer');
+    }
+
+    public function test_kanban_batch_does_not_stop_the_timer_of_a_ticket_that_was_already_done(): void
+    {
+        session(['userdata' => ['id' => 1, 'role' => 'editor', 'name' => 'Caller']]);
+        $punchedOut = [];
+
+        $timesheetService = $this->make(TimesheetService::class, [
+            'isClocked' => fn () => ['id' => 5],
+            'punchOut' => function (int $ticketId) use (&$punchedOut) {
+                $punchedOut[] = $ticketId;
+
+                return 1.0;
+            },
+        ]);
+        $service = $this->buildAuthzService([
+            // Ticket 5 already sits in Done; ticket 6 is the card being dragged into Done.
+            'getTicket' => fn ($id) => $this->ticketIn((int) $id, 7, ['status' => (int) $id === 5 ? 0 : 4]),
+            'updateTicketStatus' => fn () => true,
+            'getStateLabels' => fn () => [0 => ['name' => 'Done', 'statusType' => 'DONE'], 4 => ['name' => 'Doing', 'statusType' => 'INPROGRESS']],
+        ], $this->permissionsForProjects([7]), $timesheetService);
+
+        $this->assertTrue($service->updateTicketStatusAndSorting(['0' => 'ticket[]=5&ticket[]=6'], 'ticket_6'));
+
+        $this->assertSame([], $punchedOut, 're-sorting a ticket that was already Done must not stop its timer');
+    }
+
+    public function test_kanban_drag_does_not_revert_a_card_moved_in_another_tab(): void
+    {
+        session(['userdata' => ['id' => 1, 'role' => 'editor', 'name' => 'Caller']]);
+
+        $writtenStatuses = [];
+        $expectedStatuses = [];
+        $service = $this->buildAuthzService([
+            // Ticket 5 was moved to In Progress (4) elsewhere; this stale tab still shows it in New (3).
+            'getTicket' => fn ($id) => $this->ticketIn((int) $id, 7, ['status' => (int) $id === 5 ? 4 : 3]),
+            'updateTicketStatus' => function ($id, $status, $sorting = -1, $handler = null, $expectedStatus = false) use (&$writtenStatuses, &$expectedStatuses) {
+                $writtenStatuses[(int) $id] = (int) $status;
+                $expectedStatuses[(int) $id] = $expectedStatus;
+
+                return true;
+            },
+            'getStateLabels' => fn () => [3 => ['name' => 'New', 'statusType' => 'NEW'], 0 => ['name' => 'Done', 'statusType' => 'DONE']],
+        ], $this->permissionsForProjects([7]), $this->make(TimesheetService::class, ['isClocked' => fn () => false]));
+
+        // Ticket 6 is dragged to Done; the stale payload still lists ticket 5 under New.
+        $this->assertTrue($service->updateTicketStatusAndSorting(['3' => 'ticket[]=5&ticket[]=7', '0' => 'ticket[]=6'], 'ticket_6'));
+
+        $this->assertSame([7 => 3, 6 => 0], $writtenStatuses, 'only the dragged card may change status (#3099)');
+        // Other cards are only written while their status is still the one read (compare-and-set),
+        // the dragged card unconditionally.
+        $this->assertSame([7 => '3', 6 => false], $expectedStatuses);
+    }
+
+    public function test_kanban_drag_tolerates_a_card_moved_by_an_overlapping_request(): void
+    {
+        session(['userdata' => ['id' => 1, 'role' => 'editor', 'name' => 'Caller']]);
+
+        $service = $this->buildAuthzService([
+            'getTicket' => fn ($id) => $this->ticketIn((int) $id, 7, ['status' => 3]),
+            // Ticket 5 was moved by an overlapping request after we read it: the conditional write misses.
+            'updateTicketStatus' => fn ($id, $status, $sorting = -1, $handler = null, $expectedStatus = false) => $expectedStatus === false,
+            'getStateLabels' => fn () => [3 => ['name' => 'New', 'statusType' => 'NEW'], 0 => ['name' => 'Done', 'statusType' => 'DONE']],
+        ], $this->permissionsForProjects([7]), $this->make(TimesheetService::class, ['isClocked' => fn () => false]));
+
+        $this->assertTrue($service->updateTicketStatusAndSorting(['3' => 'ticket[]=5', '0' => 'ticket[]=6'], 'ticket_6'));
+    }
+
+    public function test_kanban_drag_on_a_field_sorted_board_keeps_the_manual_order(): void
+    {
+        session(['userdata' => ['id' => 1, 'role' => 'editor', 'name' => 'Caller']]);
+
+        $writes = [];
+        $repoStubs = [
+            // Ticket 8 already sits in Doing (4); tickets 5 and 6 start in New (3).
+            'getTicket' => fn ($id) => $this->ticketIn((int) $id, 7, ['status' => (int) $id === 8 ? 4 : 3]),
+            'updateTicketStatus' => function ($id, $status, $sorting = -1) use (&$writes) {
+                $writes[(int) $id] = ['status' => (int) $status, 'sorting' => $sorting];
+
+                return true;
+            },
+            'getStateLabels' => fn () => [3 => ['name' => 'New', 'statusType' => 'NEW'], 4 => ['name' => 'Doing', 'statusType' => 'INPROGRESS']],
+        ];
+        $timesheets = $this->make(TimesheetService::class, ['isClocked' => fn () => false]);
+
+        // Board sorted by e.g. priority (#1536): ticket 6 is dragged from New to Doing.
+        $service = $this->buildAuthzService($repoStubs, $this->permissionsForProjects([7]), $timesheets);
+        $this->assertTrue($service->updateTicketStatusAndSorting(['3' => 'ticket[]=5', '4' => 'ticket[]=8&ticket[]=6'], 'ticket_6', true));
+
+        $this->assertSame([6 => ['status' => 4, 'sorting' => -1]], $writes, 'only the dragged card is written, and its kanbanSortIndex is left alone');
+
+        // Manual order (default): the on-screen position becomes the stored order.
+        $writes = [];
+        $service = $this->buildAuthzService($repoStubs, $this->permissionsForProjects([7]), $timesheets);
+        $this->assertTrue($service->updateTicketStatusAndSorting(['3' => 'ticket[]=5', '4' => 'ticket[]=8&ticket[]=6'], 'ticket_6'));
+
+        $this->assertSame([
+            5 => ['status' => 3, 'sorting' => 0],
+            8 => ['status' => 4, 'sorting' => 0],
+            6 => ['status' => 4, 'sorting' => 100],
+        ], $writes);
+    }
+
+    public function test_upsert_subtask_reloads_the_parent_and_ignores_a_forged_project(): void
+    {
+        session(['userdata' => ['id' => 1, 'role' => 'editor']]);
+
+        $checks = [];
+        $service = $this->buildAuthzService([
+            // The real parent (id 5) lives in project 7.
+            'getTicket' => fn ($id) => $this->ticketIn((int) $id, 7),
+            'addTicket' => function () {
+                throw new \RuntimeException('must not create a subtask when denied');
+            },
+        ], $this->permissionsForProjects([9], $checks));
+
+        try {
+            // The caller claims the parent belongs to project 9 (where they are an editor).
+            $service->upsertSubtask(['headline' => 'Sub', 'status' => 3], ['id' => 5, 'projectId' => 9]);
+            $this->fail('upsertSubtask must authorize the parent\'s real project');
+        } catch (AuthorizationException) {
+            $this->assertContains(['tickets.create', 7], $checks);
+            $this->assertNotContains(['tickets.create', 9], $checks);
+        }
+    }
+
+    public function test_upsert_subtask_update_refuses_a_ticket_that_is_not_a_child_of_the_parent(): void
+    {
+        session(['userdata' => ['id' => 1, 'role' => 'editor']]);
+
+        $service = $this->buildAuthzService([
+            'getTicket' => fn ($id) => match ((int) $id) {
+                5 => $this->ticketIn(5, 9),
+                // Ticket 77 is an unrelated task in another project.
+                77 => $this->ticketIn(77, 4, ['dependingTicketId' => 0]),
+                default => false,
+            },
+            'updateTicket' => function () {
+                throw new \RuntimeException('must not overwrite a ticket that is not this parent\'s subtask');
+            },
+        ], $this->permissionsForProjects([9]));
+
+        $this->assertFalse($service->upsertSubtask(
+            ['headline' => 'Pwn', 'status' => 3, 'subtaskId' => 77],
+            $this->ticketIn(5, 9)
+        ));
+    }
+
+    public function test_upsert_subtask_update_writes_a_real_child(): void
+    {
+        session(['userdata' => ['id' => 1, 'role' => 'editor']]);
+
+        $updatedId = null;
+        $service = $this->buildAuthzService([
+            'getTicket' => fn ($id) => match ((int) $id) {
+                5 => $this->ticketIn(5, 9),
+                12 => $this->ticketIn(12, 9, ['dependingTicketId' => 5]),
+                default => false,
+            },
+            'getStateLabels' => fn () => [3 => ['name' => 'status.new', 'statusType' => 'NEW']],
+            'updateTicket' => function ($values, $id) use (&$updatedId) {
+                $updatedId = $id;
+
+                return true;
+            },
+        ], $this->permissionsForProjects([9]));
+
+        $this->assertTrue($service->upsertSubtask(['headline' => 'Sub', 'status' => 3, 'subtaskId' => '12'], $this->ticketIn(5, 9)));
+        $this->assertSame(12, $updatedId);
+    }
+
+    public function test_upsert_subtask_new_subtask_inherits_the_parent_sprint(): void
+    {
+        session(['userdata' => ['id' => 1, 'role' => 'editor'], 'currentSprint' => 99]);
+
+        $addedValues = null;
+        $service = $this->buildAuthzService([
+            'getTicket' => fn ($id) => (int) $id === 5 ? $this->ticketIn(5, 9, ['sprint' => 42]) : false,
+            'getStateLabels' => fn () => [3 => ['name' => 'status.new', 'statusType' => 'NEW']],
+            'addTicket' => function ($values) use (&$addedValues) {
+                $addedValues = $values;
+
+                return 123;
+            },
+        ], $this->permissionsForProjects([9]));
+
+        // The quick-add form posts the session sprint; the parent's sprint must win (#2078).
+        $this->assertTrue($service->upsertSubtask(['headline' => 'Sub', 'status' => 3, 'sprint' => 99], $this->ticketIn(5, 9)));
+        $this->assertSame(42, $addedValues['sprint']);
+    }
+
+    public function test_upsert_subtask_update_keeps_the_stored_sprint(): void
+    {
+        session(['userdata' => ['id' => 1, 'role' => 'editor']]);
+
+        $updatedValues = null;
+        $service = $this->buildAuthzService([
+            'getTicket' => fn ($id) => match ((int) $id) {
+                5 => $this->ticketIn(5, 9, ['sprint' => 42]),
+                12 => $this->ticketIn(12, 9, ['dependingTicketId' => 5, 'sprint' => 7]),
+                default => false,
+            },
+            'getStateLabels' => fn () => [3 => ['name' => 'status.new', 'statusType' => 'NEW']],
+            'updateTicket' => function ($values) use (&$updatedValues) {
+                $updatedValues = $values;
+
+                return true;
+            },
+        ], $this->permissionsForProjects([9]));
+
+        $this->assertTrue($service->upsertSubtask(['headline' => 'Sub', 'status' => 3, 'subtaskId' => '12', 'sprint' => ''], $this->ticketIn(5, 9)));
+        $this->assertSame(7, $updatedValues['sprint']);
+    }
+
+    public function test_get_all_possible_parents_is_empty_for_a_project_the_caller_cannot_view(): void
+    {
+        session(['userdata' => ['id' => 1, 'role' => 'editor'], 'currentProject' => 9]);
+
+        $service = $this->buildAuthzService([
+            'getAllPossibleParents' => function () {
+                throw new \RuntimeException('must not query a project the caller cannot view');
+            },
+        ], $this->permissionsForProjects([9]));
+
+        $this->assertSame([], $service->getAllPossibleParents($this->ticketIn(1, 9), '7'));
+        // Project 0 used to mean "every project" in the repository — never reachable now.
+        $this->assertSame([], $service->getAllPossibleParents($this->ticketIn(1, 9), '0'));
+    }
+
+    public function test_prepare_ticket_search_array_ignores_caller_supplied_membership_scope(): void
+    {
+        session(['userdata' => ['id' => 1, 'clientId' => 3], 'currentProject' => 9]);
+
+        $criteria = $this->ticketsService->prepareTicketSearchArray(['currentUser' => 2, 'currentClient' => 8]);
+
+        $this->assertSame(1, $criteria['currentUser']);
+        $this->assertSame(3, $criteria['currentClient']);
+    }
+
+    public function test_program_board_requires_view_on_the_program(): void
+    {
+        session(['userdata' => ['id' => 1, 'role' => 'editor']]);
+
+        $service = $this->buildAuthzService([], $this->permissionsForProjects([9]));
+
+        $this->expectException(AuthorizationException::class);
+
+        $service->getProgramTicketTemplateAssignments([], 50, [9], []);
+    }
+
+    public function test_get_milestone_is_false_for_a_project_the_caller_cannot_view(): void
+    {
+        session(['userdata' => ['id' => 1, 'role' => 'editor']]);
+
+        $service = $this->buildAuthzService([
+            'getTicket' => fn ($id) => $this->ticketIn((int) $id, 7, ['type' => 'milestone']),
+        ], $this->permissionsForProjects([9]));
+
+        $this->assertFalse($service->getMilestone(5));
     }
 
     public function test_quick_add_ticket_is_denied_without_create_permission(): void
@@ -897,5 +1362,122 @@ class TicketsServiceTest extends TestCase
 
         $this->assertSame([], $result);
         $this->assertFalse($fetchCalled, 'an empty commented set must short-circuit before the ticket fetch');
+    }
+
+    /**
+     * dateToFinish is stored in UTC as the user's end-of-day. A task due on 17 March in
+     * Los Angeles is stored as 2026-03-18 06:59:59 UTC; on the 18th (LA) it is overdue. Parsing
+     * the stored value in the process timezone put it on the 18th, so it showed as "due today".
+     */
+    public function test_due_date_bucket_uses_the_users_calendar_day(): void
+    {
+        $bucket = new \ReflectionMethod($this->ticketsService, 'getDueDateBucket');
+        $bucket->setAccessible(true);
+
+        $todayLa = \Carbon\CarbonImmutable::parse('2026-03-18 09:00:00', 'America/Los_Angeles')->startOfDay();
+
+        $this->assertSame('overdue', $bucket->invoke($this->ticketsService, '2026-03-18 06:59:59', $todayLa));
+        $this->assertSame('due-this-week', $bucket->invoke($this->ticketsService, '2026-03-19 06:59:59', $todayLa));
+        // Due 24 March (LA) = 2026-03-25 06:59:59 UTC: six days out, so still this week. Read on the
+        // UTC calendar it landed 6.7 days out and was bucketed as next week.
+        $this->assertSame('due-this-week', $bucket->invoke($this->ticketsService, '2026-03-25 06:59:59', $todayLa));
+    }
+
+    /**
+     * #1798: the parent's "including subtasks" figures sum each direct subtask's planned hours
+     * and, in one aggregate query, the hours logged against those subtask ids.
+     */
+    public function test_get_subtask_hour_totals_sums_plan_and_logged_hours(): void
+    {
+        $summedIds = new \ArrayObject;
+        $service = $this->subtaskHoursService(
+            [
+                ['id' => 11, 'projectId' => 5, 'planHours' => '2'],
+                ['id' => 12, 'projectId' => 5, 'planHours' => null],
+                ['id' => 13, 'projectId' => 5, 'planHours' => '0.5'],
+            ],
+            [5],
+            $summedIds,
+            3.75
+        );
+
+        $this->assertSame(
+            ['subtaskCount' => 3, 'planHours' => 2.5, 'loggedHours' => 3.75],
+            $service->getSubtaskHourTotals(10)
+        );
+        $this->assertSame([[11, 12, 13]], $summedIds->getArrayCopy(), 'one SUM query over all included ids');
+    }
+
+    /**
+     * A subtask left in a project the viewer can't access (parent moved elsewhere) is skipped
+     * instead of failing the whole parent view; the count reflects what was actually included.
+     */
+    public function test_get_subtask_hour_totals_skips_subtasks_in_inaccessible_projects(): void
+    {
+        $summedIds = new \ArrayObject;
+        $service = $this->subtaskHoursService(
+            [
+                ['id' => 11, 'projectId' => 5, 'planHours' => '2'],
+                ['id' => 12, 'projectId' => 9, 'planHours' => '7'],
+            ],
+            [5],
+            $summedIds,
+            1.0
+        );
+
+        $this->assertSame(
+            ['subtaskCount' => 1, 'planHours' => 2.0, 'loggedHours' => 1.0],
+            $service->getSubtaskHourTotals(10)
+        );
+        $this->assertSame([[11]], $summedIds->getArrayCopy());
+    }
+
+    public function test_get_subtask_hour_totals_without_subtasks_is_zero(): void
+    {
+        $service = $this->subtaskHoursService(false, [5], new \ArrayObject, 0.0);
+
+        $this->assertSame(
+            ['subtaskCount' => 0, 'planHours' => 0.0, 'loggedHours' => 0.0],
+            $service->getSubtaskHourTotals(10)
+        );
+    }
+
+    /**
+     * @param  false|array<int, array<string, mixed>>  $subtasks
+     * @param  array<int, int>  $viewableProjects  Projects the user may view
+     * @param  \ArrayObject  $summedIds  Records the id lists passed to the SUM query
+     */
+    private function subtaskHoursService(false|array $subtasks, array $viewableProjects, \ArrayObject $summedIds, float $loggedSum): TicketsService
+    {
+        session(['userdata.id' => 1]);
+
+        $service = new TicketsService(
+            language: $this->make(LanguageCore::class),
+            ticketRepository: $this->make(TicketRepository::class, [
+                // getAllSubtasks() is fenced on the parent being visible to the caller.
+                'getTicket' => fn ($id) => $this->make(TicketModel::class, ['id' => (int) $id, 'projectId' => 5]),
+                'getAllSubtasks' => fn () => $subtasks,
+                'sumLoggedHoursForTickets' => function (array $ticketIds) use ($summedIds, $loggedSum) {
+                    $summedIds->append($ticketIds);
+
+                    return $ticketIds === [] ? 0.0 : $loggedSum;
+                },
+            ]),
+            timesheetsRepo: $this->make(TimesheetRepository::class),
+            settingsRepo: $this->make(SettingRepository::class),
+            projectService: $this->make(ProjectService::class, ['isUserAssignedToProject' => fn () => true]),
+            timesheetService: $this->make(TimesheetService::class),
+            sprintService: $this->make(SprintService::class),
+            ticketHistoryRepo: $this->make(TicketHistory::class),
+            goalcanvasService: $this->make(Goalcanvas::class),
+            dateTimeHelper: $this->make(DateTimeHelper::class),
+            commentService: $this->make(CommentService::class),
+            clientService: $this->make(ClientService::class)
+        );
+        $service->setPermissionService($this->make(PermissionService::class, [
+            'currentUserCan' => fn (string $key, ?int $projectId = null) => in_array($projectId, $viewableProjects, true),
+        ]));
+
+        return $service;
     }
 }

@@ -5,6 +5,7 @@ namespace Leantime\Domain\Tickets\Repositories;
 use Carbon\CarbonImmutable;
 use Illuminate\Contracts\Container\BindingResolutionException;
 use Illuminate\Database\ConnectionInterface;
+use Illuminate\Database\Query\Builder;
 use Illuminate\Support\Facades\Cache;
 use Leantime\Core\Db\DatabaseHelper;
 use Leantime\Core\Db\Db as DbCore;
@@ -121,7 +122,7 @@ class Tickets
     public function getStateLabels($projectId = null): array
     {
         if (Cache::has('projectsettings.'.$projectId.'.ticketlabels')) {
-            return Cache::get('projectsettings.'.$projectId.'.ticketlabels');
+            return self::withSafeLabelClasses((array) Cache::get('projectsettings.'.$projectId.'.ticketlabels'));
         }
 
         if ($projectId == null) {
@@ -174,7 +175,35 @@ class Tickets
             return $a['sortKey'] <=> $b['sortKey'];
         });
 
+        // Label settings saved before class validation existed may hold arbitrary strings.
+        $statusList = self::withSafeLabelClasses($statusList);
+
         Cache::put('projectsettings.'.$projectId.'.ticketlabels', $statusList, 3600);
+
+        return $statusList;
+    }
+
+    /**
+     * Whether a status label css class is safe to render: a plain label-* class.
+     */
+    public static function isValidLabelClass(mixed $labelClass): bool
+    {
+        return is_string($labelClass) && preg_match('/^label-[a-z0-9-]+$/', $labelClass) === 1;
+    }
+
+    /**
+     * Replace any status label class that is not a plain label-* class with label-default.
+     *
+     * @param  array<int|string, mixed>  $statusList
+     * @return array<int|string, mixed>
+     */
+    private static function withSafeLabelClasses(array $statusList): array
+    {
+        foreach ($statusList as $key => $status) {
+            if (is_array($status) && isset($status['class']) && ! self::isValidLabelClass($status['class'])) {
+                $statusList[$key]['class'] = 'label-default';
+            }
+        }
 
         return $statusList;
     }
@@ -290,6 +319,206 @@ class Tickets
     }
 
     /**
+     * Limit a ticket query to projects the user may see: assigned projects, projects open to
+     * everyone, projects open to the user's client, or every project for manager+ (role >= 40).
+     *
+     * The query must already join zp_projects and the requesting user as "requestor".
+     *
+     * @param  \Illuminate\Database\Query\Builder  $query  The zp_tickets query.
+     * @param  mixed  $userId  The session user id.
+     * @param  mixed  $clientId  The session user's client id.
+     */
+    private function applyProjectAccessScope($query, mixed $userId, mixed $clientId): void
+    {
+        $query->leftJoin('zp_relationuserproject as rup', function ($join) use ($userId) {
+            $join->on('zp_tickets.projectId', '=', 'rup.projectId')
+                ->where('rup.userId', '=', $userId);
+        })
+            ->where(function ($q) use ($clientId) {
+                $q->whereNotNull('rup.projectId')
+                    ->orWhere('zp_projects.psettings', 'all')
+                    ->orWhere(function ($q2) use ($clientId) {
+                        $q2->where('zp_projects.psettings', 'clients')
+                            ->where('zp_projects.clientId', $clientId);
+                    })
+                    ->orWhere('requestor.role', '>=', 40);
+            });
+    }
+
+    /**
+     * Base query for the compact status summary (#3703): non-milestone, non-archived tickets the
+     * session user can access, optionally limited to one project, changed since a time, and
+     * without subtasks. Closed projects are skipped unless a project is given explicitly.
+     *
+     * @param  int|null  $projectId  One project, or null for all accessible projects.
+     * @param  string  $modifiedAfter  UTC database datetime, or '' for no limit.
+     * @param  bool  $includeSubtasks  Whether subtasks are included.
+     * @return \Illuminate\Database\Query\Builder
+     */
+    private function statusSummaryBaseQuery(?int $projectId, string $modifiedAfter, bool $includeSubtasks)
+    {
+        $requestorId = session()->exists('userdata') ? session('userdata.id') : -1;
+
+        $query = $this->connection->table('zp_tickets')
+            ->leftJoin('zp_projects', 'zp_tickets.projectId', '=', 'zp_projects.id')
+            ->leftJoin('zp_user as requestor', function ($join) use ($requestorId) {
+                $join->on('requestor.id', '=', $this->connection->raw((int) $requestorId));
+            });
+
+        $this->applyProjectAccessScope($query, session('userdata.id') ?? '-1', session('userdata.clientId') ?? '-1');
+
+        $query->where('zp_tickets.type', '<>', 'milestone')
+            ->where('zp_tickets.status', '<>', -1);
+
+        if (! $includeSubtasks) {
+            $query->where('zp_tickets.type', '<>', 'subtask');
+        }
+
+        if ($projectId !== null) {
+            $query->where('zp_tickets.projectId', $projectId);
+        } else {
+            $query->where(function ($q) {
+                $q->where('zp_projects.state', '<>', -1)
+                    ->orWhereNull('zp_projects.state');
+            });
+        }
+
+        if ($modifiedAfter !== '') {
+            $lastChangedSql = 'COALESCE('.$this->dbHelper->wrapColumn('zp_tickets.modified').', '.$this->dbHelper->wrapColumn('zp_tickets.date').')';
+            $query->whereRaw($lastChangedSql.' >= ?', [$modifiedAfter]);
+        }
+
+        return $query;
+    }
+
+    /**
+     * Ticket counts grouped by project and status for the status summary (#3703).
+     *
+     * @param  int|null  $projectId  One project, or null for all accessible projects.
+     * @param  string  $modifiedAfter  UTC database datetime, or '' for no limit.
+     * @param  bool  $includeSubtasks  Whether subtasks are counted.
+     * @return array<int, array{projectId: int, status: int, count: int}>
+     */
+    public function countTicketsByProjectAndStatus(?int $projectId, string $modifiedAfter, bool $includeSubtasks): array
+    {
+        $rows = $this->statusSummaryBaseQuery($projectId, $modifiedAfter, $includeSubtasks)
+            ->select('zp_tickets.projectId', 'zp_tickets.status')
+            ->selectRaw('COUNT(DISTINCT zp_tickets.id) AS '.$this->dbHelper->wrapColumn('ticketCount'))
+            ->groupBy('zp_tickets.projectId', 'zp_tickets.status')
+            ->get();
+
+        return $rows->map(fn ($row) => [
+            'projectId' => (int) $row->projectId,
+            'status' => (int) $row->status,
+            'count' => (int) $row->ticketCount,
+        ])->all();
+    }
+
+    /**
+     * The most recently changed tickets of the given status types, as slim rows (#3703).
+     *
+     * @param  int|null  $projectId  One project, or null for all accessible projects.
+     * @param  string  $modifiedAfter  UTC database datetime, or '' for no limit.
+     * @param  bool  $includeSubtasks  Whether subtasks are included.
+     * @param  string  $statusTypes  Comma-separated NEW, INPROGRESS, DONE, NOT_DONE.
+     * @param  int  $limit  Maximum rows returned.
+     * @return array{rows: array<int, array<string, mixed>>, total: int}
+     */
+    public function getActiveTicketSummaries(?int $projectId, string $modifiedAfter, bool $includeSubtasks, string $statusTypes, int $limit): array
+    {
+        $query = $this->statusSummaryBaseQuery($projectId, $modifiedAfter, $includeSubtasks);
+        $this->applyStatusTypeFilter($query, $projectId !== null ? [$projectId] : [], $statusTypes);
+
+        $total = (int) (clone $query)->distinct()->count('zp_tickets.id');
+
+        $lastChangedSql = 'COALESCE('.$this->dbHelper->wrapColumn('zp_tickets.modified').', '.$this->dbHelper->wrapColumn('zp_tickets.date').')';
+        $commentCountSql = '(SELECT COUNT(*) FROM zp_comment WHERE zp_comment.module = ? AND '.$this->dbHelper->wrapColumn('zp_comment.moduleId').' = zp_tickets.id)';
+
+        $rows = $query
+            ->select([
+                'zp_tickets.id',
+                'zp_tickets.headline',
+                'zp_tickets.type',
+                'zp_tickets.projectId',
+                'zp_projects.name as projectName',
+                'zp_tickets.status',
+                'zp_tickets.editorId',
+                'zp_tickets.dependingTicketId',
+                'zp_tickets.milestoneid',
+                'zp_tickets.dateToFinish',
+            ])
+            ->selectRaw($lastChangedSql.' AS '.$this->dbHelper->wrapColumn('lastModified'))
+            ->selectRaw($commentCountSql.' AS '.$this->dbHelper->wrapColumn('commentCount'), ['ticket'])
+            ->orderByRaw($lastChangedSql.' DESC')
+            ->orderByDesc('zp_tickets.id')
+            ->limit($limit)
+            ->get();
+
+        return [
+            'rows' => array_map(fn ($row) => (array) $row, $rows->all()),
+            'total' => $total,
+        ];
+    }
+
+    /**
+     * Restrict a ticket query to the status types requested, per project.
+     *
+     * Every project in scope contributes "(projectId = p AND status IN (keys of p with that
+     * type))". Without an explicit project scope the projects are taken from the query itself
+     * (i.e. the projects the caller can see that have matching tickets).
+     *
+     * @param  \Illuminate\Database\Query\Builder  $query  The ticket query (access scope already applied).
+     * @param  int[]  $scopedProjectIds  Explicit project scope, or [] for "all visible projects".
+     * @param  string  $statusTypes  Comma-separated NEW, INPROGRESS, DONE and/or NOT_DONE.
+     */
+    private function applyStatusTypeFilter($query, array $scopedProjectIds, string $statusTypes): void
+    {
+        $wantedTypes = array_values(array_filter(array_map(
+            fn ($type) => strtoupper(str_replace([' ', '_', '-'], '', trim($type))),
+            explode(',', $statusTypes)
+        )));
+        $includeNotDone = in_array('NOTDONE', $wantedTypes, true);
+
+        $projectIds = $scopedProjectIds;
+        if ($projectIds === []) {
+            $projectIds = (clone $query)
+                ->select('zp_tickets.projectId')
+                ->distinct()
+                ->pluck('projectId')
+                ->map(fn ($projectId) => (int) $projectId)
+                ->all();
+        }
+
+        $statusKeysByProject = [];
+        foreach ($projectIds as $projectId) {
+            foreach ($this->getStateLabels($projectId) as $statusKey => $label) {
+                $statusType = strtoupper((string) ($label['statusType'] ?? ''));
+                $matches = in_array($statusType, $wantedTypes, true)
+                    || ($includeNotDone && $statusType !== 'DONE');
+
+                if ($matches) {
+                    $statusKeysByProject[$projectId][] = (int) $statusKey;
+                }
+            }
+        }
+
+        if ($statusKeysByProject === []) {
+            $query->whereRaw('1 = 0');
+
+            return;
+        }
+
+        $query->where(function ($statusQuery) use ($statusKeysByProject) {
+            foreach ($statusKeysByProject as $projectId => $statusKeys) {
+                $statusQuery->orWhere(function ($projectQuery) use ($projectId, $statusKeys) {
+                    $projectQuery->where('zp_tickets.projectId', $projectId)
+                        ->whereIn('zp_tickets.status', $statusKeys);
+                });
+            }
+        });
+    }
+
+    /**
      * getAll - get all Tickets, depending on userrole
      *
      * @throws BindingResolutionException
@@ -363,6 +592,54 @@ class Tickets
     }
 
     /**
+     * Applies the ORDER BY for a getAllBySearchCriteria() sort key. Unknown keys add no order.
+     *
+     * @param  Builder  $query  The ticket query.
+     * @param  string  $sort  One of standard, kanbansort, duedate, priority, date, effort, title.
+     */
+    private function applySearchSort(Builder $query, string $sort): void
+    {
+        if ($sort == 'standard') {
+            $query->orderBy('zp_tickets.sortindex', 'ASC')
+                ->orderByDesc('zp_tickets.id');
+        } elseif ($sort == 'kanbansort') {
+            $query->orderBy('zp_tickets.kanbanSortIndex', 'ASC')
+                ->orderByDesc('zp_tickets.id');
+        } elseif ($sort == 'duedate') {
+            // Soonest first; no due date goes last. "No date" is NULL or one of the legacy
+            // sentinels (0000-00-00 00:00:00, 1969-12-31 00:00:00) — both sort before 1970-01-02,
+            // and comparing against that literal is valid on MySQL, PostgreSQL and SQL Server.
+            $dueDateColumn = $this->dbHelper->wrapColumn('zp_tickets.dateToFinish');
+            $query->orderByRaw('(CASE WHEN '.$dueDateColumn.' IS NULL OR '.$dueDateColumn." < '1970-01-02' THEN 1 ELSE 0 END)")
+                ->orderBy('zp_tickets.dateToFinish', 'ASC')
+                ->orderBy('zp_tickets.sortindex', 'ASC')
+                ->orderByDesc('zp_tickets.id');
+        } elseif ($sort == 'priority') {
+            // Highest priority (1) first; tickets without a priority go last, not first.
+            $priorityColumn = $this->dbHelper->wrapColumn('zp_tickets.priority');
+            $query->orderByRaw('(CASE WHEN '.$priorityColumn.' IS NULL OR '.$priorityColumn." = '' OR ".$priorityColumn." = '0' THEN 1 ELSE 0 END)")
+                ->orderBy('zp_tickets.priority', 'ASC')
+                ->orderBy('zp_tickets.dateToFinish', 'ASC')
+                ->orderBy('zp_tickets.sortindex', 'ASC')
+                ->orderByDesc('zp_tickets.id');
+        } elseif ($sort == 'date') {
+            $query->orderByDesc('zp_tickets.date')
+                ->orderBy('zp_tickets.sortindex', 'ASC')
+                ->orderByDesc('zp_tickets.id');
+        } elseif ($sort == 'effort') {
+            // Largest effort first; tickets without an estimate go last.
+            $effortColumn = $this->dbHelper->wrapColumn('zp_tickets.storypoints');
+            $query->orderByRaw('(CASE WHEN '.$effortColumn.' IS NULL OR '.$effortColumn.' <= 0 THEN 1 ELSE 0 END)')
+                ->orderByDesc('zp_tickets.storypoints')
+                ->orderBy('zp_tickets.kanbanSortIndex', 'ASC')
+                ->orderByDesc('zp_tickets.id');
+        } elseif ($sort == 'title') {
+            $query->orderBy('zp_tickets.headline', 'ASC')
+                ->orderByDesc('zp_tickets.id');
+        }
+    }
+
+    /**
      * getAllBySearchCriteria - get Tickets by search criteria array
      *
      * @param  null  $limit
@@ -370,13 +647,16 @@ class Tickets
     /**
      * getAllBySearchCriteria - get Tickets by search criteria array
      *
+     * @param  string  $sort  One of standard, kanbansort, duedate, priority, date, effort, title.
      * @param  null  $limit
      */
     public function getAllBySearchCriteria(array $searchCriteria, string $sort = 'standard', ?int $limit = null, $includeCounts = true, ?int $offset = null): bool|array
     {
         $requestorId = session()->exists('userdata') ? session('userdata.id') : -1;
-        $userId = $searchCriteria['currentUser'] ?? session('userdata.id') ?? '-1';
-        $clientId = $searchCriteria['currentClient'] ?? session('userdata.clientId') ?? '-1';
+        // The project-membership scope is ALWAYS the session user/client. Search criteria can
+        // arrive from JSON-RPC, so a caller-supplied currentUser/currentClient must never widen it.
+        $userId = session('userdata.id') ?? '-1';
+        $clientId = session('userdata.clientId') ?? '-1';
 
         $query = $this->connection->table('zp_tickets')
             ->select([
@@ -491,19 +771,7 @@ class Tickets
                 );
         }
 
-        $query->leftJoin('zp_relationuserproject as rup', function ($join) use ($userId) {
-            $join->on('zp_tickets.projectId', '=', 'rup.projectId')
-                ->where('rup.userId', '=', $userId);
-        })
-            ->where(function ($q) use ($clientId) {
-                $q->whereNotNull('rup.projectId')
-                    ->orWhere('zp_projects.psettings', 'all')
-                    ->orWhere(function ($q2) use ($clientId) {
-                        $q2->where('zp_projects.psettings', 'clients')
-                            ->where('zp_projects.clientId', $clientId);
-                    })
-                    ->orWhere('requestor.role', '>=', 40);
-            });
+        $this->applyProjectAccessScope($query, $userId, $clientId);
 
         // Apply search criteria filters
         if (isset($searchCriteria['dateFrom']) && $searchCriteria['dateFrom'] != '') {
@@ -605,6 +873,24 @@ class Tickets
             $query->where('zp_tickets.status', '<>', -1);
         }
 
+        // Semantic status filter (NEW / INPROGRESS / DONE / NOT_DONE). Status ids mean different
+        // things in different projects, so each project's own label config is applied to its own
+        // tickets — which also makes it work without a project scope (#3700).
+        if (isset($searchCriteria['statusType']) && $searchCriteria['statusType'] != '') {
+            $this->applyStatusTypeFilter($query, $scopedProjectIds, (string) $searchCriteria['statusType']);
+        }
+
+        // Change-feed filters for API watchers: modified (falling back to the creation date for
+        // rows never modified) within the given UTC range (#3700).
+        $lastChangedSql = 'COALESCE('.$this->dbHelper->wrapColumn('zp_tickets.modified').', '.$this->dbHelper->wrapColumn('zp_tickets.date').')';
+        if (isset($searchCriteria['modifiedAfter']) && $searchCriteria['modifiedAfter'] != '') {
+            $query->whereRaw($lastChangedSql.' >= ?', [(string) $searchCriteria['modifiedAfter']]);
+        }
+
+        if (isset($searchCriteria['modifiedBefore']) && $searchCriteria['modifiedBefore'] != '') {
+            $query->whereRaw($lastChangedSql.' <= ?', [(string) $searchCriteria['modifiedBefore']]);
+        }
+
         if (isset($searchCriteria['type']) && $searchCriteria['type'] != '') {
             $types = array_map('strtolower', explode(',', $searchCriteria['type']));
             $query->whereIn($this->connection->raw('LOWER(zp_tickets.type)'), $types);
@@ -674,28 +960,7 @@ class Tickets
 
         $query->groupBy($groupByColumns);
 
-        // Apply sorting
-        if ($sort == 'standard') {
-            $query->orderBy('zp_tickets.sortindex', 'ASC')
-                ->orderByDesc('zp_tickets.id');
-        } elseif ($sort == 'kanbansort') {
-            $query->orderBy('zp_tickets.kanbanSortIndex', 'ASC')
-                ->orderByDesc('zp_tickets.id');
-        } elseif ($sort == 'duedate') {
-            $query->orderByRaw('('.$this->dbHelper->wrapColumn('zp_tickets.dateToFinish').' IS NULL)')
-                ->orderBy('zp_tickets.dateToFinish', 'ASC')
-                ->orderBy('zp_tickets.sortindex', 'ASC')
-                ->orderByDesc('zp_tickets.id');
-        } elseif ($sort == 'priority') {
-            $query->orderBy('zp_tickets.priority', 'ASC')
-                ->orderBy('zp_tickets.dateToFinish', 'ASC')
-                ->orderBy('zp_tickets.sortindex', 'ASC')
-                ->orderByDesc('zp_tickets.id');
-        } elseif ($sort == 'date') {
-            $query->orderByDesc('zp_tickets.date')
-                ->orderBy('zp_tickets.sortindex', 'ASC')
-                ->orderByDesc('zp_tickets.id');
-        }
+        $this->applySearchSort($query, $sort);
 
         if ($limit !== null && $limit > 0) {
             $query->limit($limit);
@@ -1088,6 +1353,26 @@ class Tickets
         return $values;
     }
 
+    /**
+     * Total hours logged against the given To-Dos, in one aggregate query. Rows without a
+     * workDate are excluded, matching the per-ticket booked-hours figure.
+     *
+     * @param  array<int, int>  $ticketIds  To-Do ids (callers authorize them first)
+     * @return float Sum of zp_timesheets.hours, 0 for an empty list
+     */
+    public function sumLoggedHoursForTickets(array $ticketIds): float
+    {
+        if ($ticketIds === []) {
+            return 0.0;
+        }
+
+        return (float) $this->connection->table('zp_timesheets')
+            ->whereIn('ticketId', $ticketIds)
+            // Same rows as Timesheets::getLoggedHoursForTicket(): entries without a work date are not counted.
+            ->whereNotNull('workDate')
+            ->sum('hours');
+    }
+
     public function getAllSubtasks($id): false|array
     {
         $dateFormatSql = match ($this->dbHelper->getDriverName()) {
@@ -1193,11 +1478,18 @@ class Tickets
                 $join->on('zp_tickets.editorId', '=', $this->connection->raw($this->dbHelper->castAs($this->dbHelper->wrapColumn('t3.id'), 'text')));
             })
             ->where('zp_tickets.id', '<>', $ticket->id ?? 0)
-            ->where('zp_tickets.type', '<>', 'milestone')
-            ->where(function ($q) use ($ticket) {
-                $q->where('zp_tickets.dependingTicketId', '<>', $ticket->id ?? 0)
+            ->where('zp_tickets.type', '<>', 'milestone');
+
+        // Exclude this ticket's own children (they can't also be its parent). Only meaningful for a
+        // saved ticket: for a new one the id is empty, and comparing against 0 dropped every
+        // top-level ticket (dependingTicketId = 0), so stories were missing from "Related to"
+        // until the ticket was saved once (#3147).
+        if (! empty($ticket->id)) {
+            $query->where(function ($q) use ($ticket) {
+                $q->where('zp_tickets.dependingTicketId', '<>', $ticket->id)
                     ->orWhereNull('zp_tickets.dependingTicketId');
             });
+        }
 
         if ($projectId !== 0) {
             $query->where('zp_tickets.projectId', $projectId);
@@ -1228,8 +1520,9 @@ class Tickets
         $statusGroups = $this->getStatusListGroupedByType($searchCriteria['currentProject'] ?? session('currentProject'));
 
         $requestorId = session('userdata.id') ?? '-1';
-        $userId = $searchCriteria['currentUser'] ?? session('userdata.id') ?? '-1';
-        $clientId = $searchCriteria['currentClient'] ?? session('userdata.clientId') ?? '-1';
+        // Membership scope is ALWAYS the session user/client — never caller-supplied criteria.
+        $userId = session('userdata.id') ?? '-1';
+        $clientId = session('userdata.clientId') ?? '-1';
 
         $query = $this->connection->table('zp_tickets')
             ->select([
@@ -1709,7 +2002,7 @@ class Tickets
             'tags' => $values['tags'],
             'sprint' => $values['sprint'],
             'storypoints' => $values['storypoints'],
-            'priority' => $values['priority'],
+            'priority' => self::normalizePriority($values['priority'] ?? '') ?? '',
             'hourRemaining' => $values['hourRemaining'],
             'planHours' => $values['planHours'],
             'acceptanceCriteria' => $values['acceptanceCriteria'],
@@ -1724,15 +2017,12 @@ class Tickets
             'modified' => dtHelper()->userNow()->formatDateTimeForDb(),
         ]);
 
-        if ($ticketId !== false) {
-            $ticketId = intval($ticketId);
-            $collaborators = $this->normalizeCollaborators($values['collaborators'] ?? [], $values['editorId'] ?? null);
-            if (! empty($collaborators)) {
-                $this->addCollaborators($ticketId, $collaborators, $values['userId']);
-            }
-
-            return $ticketId;
+        $collaborators = $this->normalizeCollaborators($values['collaborators'] ?? [], $values['editorId'] ?? null);
+        if (! empty($collaborators)) {
+            $this->addCollaborators($ticketId, $collaborators, $values['userId']);
         }
+
+        return $ticketId;
     }
 
     /**
@@ -1768,6 +2058,50 @@ class Tickets
     ];
 
     /**
+     * Whether a patch field name maps to a patchable zp_tickets column (case-insensitive, same
+     * matching as patchTicket()). Lets the service tell callers which fields would be ignored.
+     *
+     * @param  string  $field  The submitted field name.
+     * @return bool True when patchTicket() would write the field.
+     */
+    public static function isPatchableField(string $field): bool
+    {
+        $wanted = strtolower(DbCore::sanitizeToColumnString($field));
+
+        foreach (array_keys(self::PATCHABLE_COLUMNS) as $column) {
+            if (strtolower($column) === $wanted) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /**
+     * Canonical stored form of a priority, or null when the value is not a valid priority.
+     *
+     * Accepts only '' / null (no priority), an int 0-5, or a single digit string '0'-'5'.
+     * Priority is rendered into css class names and used as a lookup key, so every
+     * create/update/patch path stores the value returned here.
+     */
+    public static function normalizePriority(mixed $priority): ?string
+    {
+        if ($priority === '' || $priority === null) {
+            return '';
+        }
+
+        if (is_int($priority)) {
+            return ($priority >= 0 && $priority <= 5) ? (string) $priority : null;
+        }
+
+        if (is_string($priority) && preg_match('/^[0-5]$/', $priority) === 1) {
+            return $priority;
+        }
+
+        return null;
+    }
+
+    /**
      * Patch specific fields on a ticket.
      *
      * Only fields present in PATCHABLE_COLUMNS are included in the update.
@@ -1779,6 +2113,20 @@ class Tickets
      */
     public function patchTicket($id, array $params): bool
     {
+        // Drop invalid priorities before anything is recorded, so history matches what is written.
+        foreach ($params as $key => $value) {
+            if (strtolower(DbCore::sanitizeToColumnString($key)) !== 'priority') {
+                continue;
+            }
+
+            $normalizedPriority = self::normalizePriority($value);
+            if ($normalizedPriority === null) {
+                unset($params[$key]);
+            } else {
+                $params[$key] = $normalizedPriority;
+            }
+        }
+
         $this->addTicketChange(session('userdata.id'), $id, $params);
 
         // Match field names case-insensitively, then write the CANONICAL column name.
@@ -1823,7 +2171,10 @@ class Tickets
      */
     public function updateTicket(array $values, $id): bool
     {
-        $this->addTicketChange(session('userdata.id'), $id, $values);
+        // Normalize before recording history so the audit row matches the stored value.
+        if (array_key_exists('priority', $values)) {
+            $values['priority'] = self::normalizePriority($values['priority']) ?? '';
+        }
 
         $updates = [
             'headline' => $values['headline'],
@@ -1835,7 +2186,7 @@ class Tickets
             'dateToFinish' => $values['dateToFinish'],
             'sprint' => $values['sprint'],
             'storypoints' => $values['storypoints'],
-            'priority' => $values['priority'],
+            'priority' => $values['priority'] ?? '',
             'hourRemaining' => $values['hourRemaining'],
             'planHours' => $values['planHours'],
             'tags' => $values['tags'],
@@ -1854,26 +2205,43 @@ class Tickets
             $updates['outcomeImpact'] = $values['outcomeImpact'];
         }
 
-        $result = $this->connection->table('zp_tickets')
-            ->where('id', $id)
-            ->update($updates);
+        // Background jobs (cron, recurring tasks) have no session user; credit the ticket's author.
+        $actingUserId = session('userdata.id') ?? $values['userId'] ?? null;
+        $collaborators = $this->normalizeCollaborators($values['collaborators'] ?? [], $values['editorId'] ?? null);
 
-        $this->removeCollaborators($id);
+        // One transaction: a failure after the update must not leave the ticket changed with its
+        // collaborators deleted, or history rows for a change that never happened (a caller that
+        // retries would then repeat the update every time).
+        // update() throws on failure; zero affected rows (nothing changed) is still a success.
+        $this->connection->transaction(function () use ($id, $values, $updates, $collaborators, $actingUserId) {
+            // History first: it diffs against the row as it was before this update.
+            $this->addTicketChange($actingUserId, $id, $values);
 
-        // Add new collaborators
-        $this->addCollaborators(
-            $id,
-            $this->normalizeCollaborators($values['collaborators'] ?? [], $values['editorId'] ?? null),
-            session('userdata.id')
-        );
+            $this->connection->table('zp_tickets')
+                ->where('id', $id)
+                ->update($updates);
 
-        return $result !== false;
+            $this->removeCollaborators($id);
+
+            $this->addCollaborators($id, $collaborators, $actingUserId === null ? null : (int) $actingUserId);
+        });
+
+        return true;
     }
 
-    public function updateTicketStatus($ticketId, $status, int $ticketSorting = -1, $handler = null): bool
+    /**
+     * Sets a ticket's status (and optionally its kanban sort index).
+     *
+     * @param  int|string  $ticketId  The ticket id.
+     * @param  int|string  $status  The new status key.
+     * @param  int  $ticketSorting  Kanban sort index, or -1 to leave it unchanged.
+     * @param  string|null  $handler  The kanban card handler (ticket_ID) that triggered the change.
+     * @param  string|null  $expectedStatus  When given, the row is only written while its stored status
+     *                                       still equals this value (compare-and-set). Pass false to skip the check.
+     * @return bool True when a row was written; false when nothing changed or the expected status no longer matched.
+     */
+    public function updateTicketStatus($ticketId, $status, int $ticketSorting = -1, $handler = null, string|null|false $expectedStatus = false): bool
     {
-        $this->addTicketChange(session('userdata.id'), $ticketId, ['status' => $status]);
-
         $updates = [
             'status' => $status,
             'modified' => dtHelper()->userNow()->formatDateTimeForDb(),
@@ -1883,11 +2251,52 @@ class Tickets
             $updates['kanbanSortIndex'] = $ticketSorting;
         }
 
+        // Check the expected status, record history and write in one transaction: history compares
+        // against the row's pre-update values, and the row lock makes the compare-and-set atomic
+        // against an overlapping kanban request that is moving the same card (#3099).
+        $written = $this->connection->transaction(function () use ($ticketId, $status, $updates, $expectedStatus): bool {
+            $current = $this->connection->table('zp_tickets')
+                ->where('id', $ticketId)
+                ->lockForUpdate()
+                ->first(['status']);
+
+            if ($current === null) {
+                return false;
+            }
+
+            if ($expectedStatus !== false && ! $this->statusMatches($current->status, $expectedStatus)) {
+                return false;
+            }
+
+            $this->addTicketChange(session('userdata.id'), $ticketId, ['status' => $status]);
+
+            return $this->connection->table('zp_tickets')
+                ->where('id', $ticketId)
+                ->update($updates) > 0;
+        });
+
+        if (! $written) {
+            return false;
+        }
+
         TicketStatusUpdated::dispatch(ticketId: (int) $ticketId, status: $status, handler: $handler, legacyHook: __FUNCTION__);
 
-        return $this->connection->table('zp_tickets')
-            ->where('id', $ticketId)
-            ->update($updates) > 0;
+        return true;
+    }
+
+    /**
+     * Whether a stored status equals the status a caller expects (null means "no status").
+     *
+     * @param  mixed  $storedStatus  The status column value as read from the database.
+     * @param  string|null  $expectedStatus  The status the caller read earlier.
+     */
+    private function statusMatches(mixed $storedStatus, ?string $expectedStatus): bool
+    {
+        if ($expectedStatus === null || $storedStatus === null) {
+            return $expectedStatus === null && $storedStatus === null;
+        }
+
+        return (string) $storedStatus === $expectedStatus;
     }
 
     /**
@@ -1932,7 +2341,7 @@ class Tickets
         }
 
         $oldValues = (array) $oldValues;
-        $now = date('Y-m-d H:i:s');
+        $now = dtHelper()->dbNow()->formatDateTimeForDb();
         $historyRows = [];
 
         // Compare tracked fields
@@ -1946,7 +2355,8 @@ class Tickets
                 // status 0 (Done). That silently kept ticket-closures out of
                 // zp_tickethistory, so burndown/throughput and the mobile
                 // Progress "closed on date" reflection never saw them.
-                ($values[$dbTable] !== '' && $values[$dbTable] !== null)
+                // (isset() above already excludes null.)
+                $values[$dbTable] !== ''
             ) {
                 $historyRows[] = [
                     'userId' => $userId,
@@ -2151,22 +2561,14 @@ class Tickets
     }
 
     /**
-     * Adds collaborators to a ticket.
-     *
-     * @param  int  $ticketId  The ID of the ticket.
-     * @param  array  $collaborators  An array of user IDs to add as collaborators.
-     * @param  int  $createdBy  The ID of the user adding the collaborators.
-     * @return bool Returns true if the operation is successful.
-     */
-    /**
      * Adds collaborators to a ticket using a single batch insert.
      *
      * @param  int  $ticketId  The ID of the ticket.
      * @param  array  $collaborators  An array of user IDs to add as collaborators.
-     * @param  int  $createdBy  The ID of the user adding the collaborators.
+     * @param  int|null  $createdBy  The ID of the user adding the collaborators (null when no user is acting, e.g. cron).
      * @return bool Returns true if the operation is successful.
      */
-    public function addCollaborators(int $ticketId, array $collaborators, int $createdBy): bool
+    public function addCollaborators(int $ticketId, array $collaborators, ?int $createdBy): bool
     {
         $collaborators = $this->normalizeCollaborators($collaborators);
 
@@ -2174,7 +2576,7 @@ class Tickets
             return true;
         }
 
-        $now = now();
+        $now = dtHelper()->dbNow()->formatDateTimeForDb(); // UTC, not the request user's tz
         $rows = array_map(fn ($userId) => [
             'entityA' => $ticketId,
             'entityAType' => 'Ticket',

@@ -90,7 +90,7 @@
                 @if ((float) $deltaValue == 0.0)
                     ±0
                 @else
-                    {{ (float) $deltaValue > 0 ? '+' : '−' }}{{ format_number(abs((float) $deltaValue)) }}
+                    {{ (float) $deltaValue > 0 ? '+' : '−' }}{{ \Leantime\Core\Support\Format::number(abs((float) $deltaValue), 1) }}
                 @endif
             </span>
         @endif

@@ -99,7 +99,7 @@
                                     <a href="#/tickets/showTicket/{{ $row['id'] }}">{{ $row['headline'] }}</a>
                                 @endif
                             </td>
-                            <td>{!! __('label.'.strtolower($row['type'])) !!}</td>
+                            <td>{{ __('label.'.strtolower($row['type'])) }}</td>
 
                             <td>
                                 @if ($row['type'] == 'milestone')
@@ -121,25 +121,7 @@
                                 @endphp
 
                             <td data-order="{{ $milestoneHeadline }}">
-                                <div class="dropdown ticketDropdown milestoneDropdown colorized show">
-                                    <a style="background-color:{{ $tpl->escape($row['milestoneColor']) }}" class="dropdown-toggle label-default milestone" href="javascript:void(0);" role="button" id="milestoneDropdownMenuLink{{ $row['id'] }}" data-toggle="dropdown" aria-haspopup="true" aria-expanded="false">
-                                        <span class="text">{{ $milestoneHeadline }}</span>
-                                        &nbsp;<i class="fa fa-caret-down" aria-hidden="true"></i>
-                                    </a>
-                                    <ul class="dropdown-menu" aria-labelledby="milestoneDropdownMenuLink{{ $row['id'] }}">
-                                        <li class="nav-header border">{!! __('dropdown.choose_milestone') !!}</li>
-                                        <li class='dropdown-item'><a style='background-color:#b0b0b0' href='javascript:void(0);' data-label="{!! __('label.no_milestone') !!}" data-value='{{ $row['id'].'_0_#b0b0b0' }}'> {!! __('label.no_milestone') !!} </a></li>
-                                        @php
-                                        foreach ($milestones as $milestone) {
-                                            if ($milestone->id != $row['id']) {
-                                                echo "<li class='dropdown-item'>
-                                                    <a href='javascript:void(0);' data-label='".$tpl->escape($milestone->headline)."' data-value='".$row['id'].'_'.$milestone->id.'_'.$tpl->escape($milestone->tags)."' id='ticketMilestoneChange".$row['id'].$milestone->id."' style='background-color:".$tpl->escape($milestone->tags)."'>".$tpl->escape($milestone->headline).'</a>';
-                                                echo '</li>';
-                                            }
-                                        }
-                                        @endphp
-                                    </ul>
-                                </div>
+                                <x-tickets::chip-milestone :float="false" :ticket-id="$row['id']" :milestone-id="$row['milestoneid']" :headline="$row['milestoneHeadline'] ?? ''" :color="$row['milestoneColor'] ?? ''" :milestones="$milestones" />
                             </td>
                             @php
                             if (isset($statusLabels[$row['status']])) {
@@ -153,49 +135,11 @@
                             }
                             @endphp
                             <td data-order="{{ $sortKey }}">
-                                <div class="dropdown ticketDropdown statusDropdown colorized show">
-                                    <a class="dropdown-toggle status {{ $class }}" href="javascript:void(0);" role="button" id="statusDropdownMenuLink{{ $row['id'] }}" data-toggle="dropdown" aria-haspopup="true" aria-expanded="false">
-                                        <span class="text">{{ $name }}</span>
-                                        &nbsp;<i class="fa fa-caret-down" aria-hidden="true"></i>
-                                    </a>
-                                    <ul class="dropdown-menu" aria-labelledby="statusDropdownMenuLink{{ $row['id'] }}">
-                                        <li class="nav-header border">{!! __('dropdown.choose_status') !!}</li>
-                                        @php
-                                        foreach ($statusLabels as $key => $label) {
-                                            echo "<li class='dropdown-item'>
-                                                <a href='javascript:void(0);' class='".$label['class']."' data-label='".$tpl->escape($label['name'])."' data-value='".$row['id'].'_'.$key.'_'.$label['class']."' id='ticketStatusChange".$row['id'].$key."' >".$tpl->escape($label['name']).'</a>';
-                                            echo '</li>';
-                                        }
-                                        @endphp
-                                    </ul>
-                                </div>
+                                <x-tickets::chip-status :float="false" :ticket-id="$row['id']" :status="$row['status']" :labels="$statusLabels" />
                             </td>
 
                             <td data-order="{{ $row['editorFirstname'] != '' ? $tpl->escape($row['editorFirstname']) : __('dropdown.not_assigned') }}">
-                                <div class="dropdown ticketDropdown userDropdown noBg show ">
-                                    <a class="dropdown-toggle" href="javascript:void(0);" role="button" id="userDropdownMenuLink{{ $row['id'] }}" data-toggle="dropdown" aria-haspopup="true" aria-expanded="false">
-                                                                <span class="text">
-                                                                    @php
-                                                                    if ($row['editorFirstname'] != '') {
-                                                                        echo "<span id='userImage".$row['id']."'><img src='".BASE_URL.'/api/users?profileImage='.$row['editorId']."' width='25' style='vertical-align: middle; margin-right:5px;'/></span><span id='user".$row['id']."'> ".$tpl->escape($row['editorFirstname']).'</span>';
-                                                                    } else {
-                                                                        echo "<span id='userImage".$row['id']."'><img src='".BASE_URL."/api/users?profileImage=false' width='25' style='vertical-align: middle; margin-right:5px;'/></span><span id='user".$row['id']."'>".__('dropdown.not_assigned').'</span>';
-                                                                    }
-                                                                    @endphp
-                                                                </span>
-                                        &nbsp;<i class="fa fa-caret-down" aria-hidden="true"></i>
-                                    </a>
-                                    <ul class="dropdown-menu" aria-labelledby="userDropdownMenuLink{{ $row['id'] }}">
-                                        <li class="nav-header border">{!! __('dropdown.choose_user') !!}</li>
-                                        @php
-                                        foreach ($users as $user) {
-                                            echo "<li class='dropdown-item'>
-                                                                <a href='javascript:void(0);' data-label='".sprintf(__('text.full_name'), $tpl->escape($user['firstname']), $tpl->escape($user['lastname']))."' data-value='".$row['id'].'_'.$user['id'].'_'.$user['profileId']."' id='userStatusChange".$row['id'].$user['id']."' ><img src='".BASE_URL.'/api/users?profileImage='.$user['id']."' width='25' style='vertical-align: middle; margin-right:5px;'/>".sprintf(__('text.full_name'), $tpl->escape($user['firstname']), $tpl->escape($user['lastname'])).'</a>';
-                                            echo '</li>';
-                                        }
-                                        @endphp
-                                    </ul>
-                                </div>
+                                <x-tickets::chip-user :ticket-id="$row['id']" :editor-id="$row['editorId']" :editor-name="$row['editorFirstname'] ?? ''" :users="$users" />
                             </td>
 
                             <td data-order="{{ $row['editFrom'] }}" >
@@ -218,19 +162,15 @@
 
                             <td>
                                 @if ($login::userIsAtLeast($roles::$editor))
-                                    <div class="inlineDropDownContainer">
-                                        <a href="javascript:void(0);" class="dropdown-toggle ticketDropDown" data-toggle="dropdown">
-                                            <i class="fa fa-ellipsis-v" aria-hidden="true"></i>
-                                        </a>
-                                        <ul class="dropdown-menu">
-                                            <li class="nav-header">{!! __('subtitles.todo') !!}</li>
-                                            <li><a href="{{ BASE_URL }}/tickets/editMilestone/{{ $row['id'] }}" class='ticketModal'><i class="fa fa-edit"></i> {!! __('links.edit_milestone') !!}</a></li>
-                                            <li><a href="{{ BASE_URL }}/tickets/moveTicket/{{ $row['id'] }}" class="moveTicketModal sprintModal"><i class="fa-solid fa-arrow-right-arrow-left"></i> {!! __('links.move_milestone') !!}</a></li>
-                                            <li><a href="{{ BASE_URL }}/tickets/delMilestone/{{ $row['id'] }}" class="delete"><i class="fa fa-trash"></i> {!! __('links.delete') !!}</a></li>
-                                            <li class="nav-header border"></li>
-                                            <li><a href="{{ BASE_URL }}/tickets/showAll?search=true&milestone={{ $row['id'] }}">{!! __('links.view_todos') !!}</a></li>
-                                        </ul>
-                                    </div>
+                                    <x-global::actions.dropdown>
+                                        <li class="nav-header">{!! __('subtitles.todo') !!}</li>
+                                        <li><a href="{{ BASE_URL }}/tickets/editMilestone/{{ $row['id'] }}" class='ticketModal'><i class="fa fa-edit"></i> {!! __('links.edit_milestone') !!}</a></li>
+                                        <li><a href="{{ BASE_URL }}/tickets/moveTicket/{{ $row['id'] }}" class="moveTicketModal sprintModal"><i class="fa-solid fa-arrow-right-arrow-left"></i> {!! __('links.move_milestone') !!}</a></li>
+                                        <li><a href="{{ BASE_URL }}/tickets/delMilestone/{{ $row['id'] }}" class="delete"><i class="fa fa-trash"></i> {!! __('links.delete') !!}</a></li>
+                                        <li class="nav-header border"></li>
+                                        <li><a href="{{ BASE_URL }}/tickets/showAll?search=true&milestone={{ $row['id'] }}">{!! __('links.view_todos') !!}</a></li>
+
+                                    </x-global::actions.dropdown>
                                 @endif
                             </td>
                             @dispatchEvent('allTicketsTable.beforeRowEnd', ['tickets' => $allTickets, 'rowNum' => $rowNum])
@@ -258,11 +198,6 @@
     jQuery(document).ready(function(){
 
         @if ($login::userIsAtLeast($roles::$editor))
-        leantime.ticketsController.initUserDropdown();
-        leantime.ticketsController.initMilestoneDropdown();
-        leantime.ticketsController.initEffortDropdown();
-        leantime.ticketsController.initStatusDropdown();
-        leantime.ticketsController.initSprintDropdown();
         leantime.ticketsController.initMilestoneDatesAsyncUpdate();
 
         @else

@@ -5,6 +5,9 @@ namespace Leantime\Domain\Goalcanvas\Services;
 use Leantime\Core\Auth\Permissions\RequiresPermission;
 use Leantime\Core\Domains\BaseService;
 use Leantime\Core\Exceptions\AuthorizationException;
+use Leantime\Domain\Blueprints\Events\CanvasCreated;
+use Leantime\Domain\Blueprints\Events\CanvasItemCreated;
+use Leantime\Domain\Goalcanvas\Events\GoalProgressUpdated;
 use Leantime\Domain\Goalcanvas\Permissions\GoalcanvasPermissions;
 use Leantime\Domain\Goalcanvas\Repositories\Goalcanvas as GoalcanvaRepository;
 use Leantime\Domain\Projects\Services\Projects as ProjectService;
@@ -220,6 +223,8 @@ class Goalcanvas extends BaseService
      * project. Reachable beyond the milestone UI (MCP getGoalsByMilestone wraps
      * it verbatim), so the caller's access to the milestone cannot be assumed —
      * a missing/foreign/unauthorized milestone returns [] (neutral, no oracle).
+     *
+     * @api
      */
     public function getGoalsByMilestone($milestoneId): array
     {
@@ -573,6 +578,8 @@ class Goalcanvas extends BaseService
      * Fetch a single goal board by id, authorized for VIEW against the board's real project.
      *
      * @return array<string, mixed>|false False when missing/foreign/unauthorized.
+     *
+     * @api
      */
     public function getSingleCanvas($id)
     {
@@ -588,6 +595,8 @@ class Goalcanvas extends BaseService
      * Create a goal board, authorized for CREATE against the target project.
      *
      * @throws AuthorizationException When projectId is missing or CREATE is denied.
+     *
+     * @api
      */
     public function createGoalboard($values)
     {
@@ -597,13 +606,24 @@ class Goalcanvas extends BaseService
         }
         $this->authorize(GoalcanvasPermissions::CREATE, $projectId);
 
-        return $this->goalRepository->addCanvas($values);
+        // Reachable over JSON-RPC: the author is the authenticated user, never a caller-supplied id.
+        $values['author'] = (int) session('userdata.id');
+
+        $newId = $this->goalRepository->addCanvas($values);
+
+        if ($newId !== false && (int) $newId > 0) {
+            CanvasCreated::dispatch(canvasId: (int) $newId, type: self::CANVAS_TYPE, projectId: $projectId);
+        }
+
+        return $newId;
     }
 
     /**
      * Rename a goal board, authorized for EDIT against the board's real project.
      *
      * @throws AuthorizationException When the board is unknown/foreign or EDIT is denied.
+     *
+     * @api
      */
     public function updateGoalboard($values)
     {
@@ -631,7 +651,13 @@ class Goalcanvas extends BaseService
         $this->authorize(GoalcanvasPermissions::VIEW, $sourceProjectId);
         $this->authorize(GoalcanvasPermissions::CREATE, $targetProjectId);
 
-        return $this->goalRepository->copyCanvas($targetProjectId, $sourceCanvasId, $authorId, $title);
+        $newCanvasId = $this->goalRepository->copyCanvas($targetProjectId, $sourceCanvasId, $authorId, $title);
+
+        if ($newCanvasId > 0) {
+            CanvasCreated::dispatch(canvasId: $newCanvasId, type: self::CANVAS_TYPE, projectId: $targetProjectId);
+        }
+
+        return $newCanvasId;
     }
 
     /**
@@ -690,6 +716,10 @@ class Goalcanvas extends BaseService
 
         $newId = $this->goalRepository->createGoal($values);
 
+        if ($newId !== false && (int) $newId > 0) {
+            CanvasItemCreated::dispatch(canvasItemId: (int) $newId, type: self::CANVAS_TYPE, projectId: $projectId);
+        }
+
         if ($newId !== false && array_key_exists('milestoneId', $values)) {
             $this->syncGoalMilestoneEdges((int) $newId, $values['milestoneId'], (int) session('userdata.id'));
         }
@@ -716,6 +746,10 @@ class Goalcanvas extends BaseService
 
         $newId = $this->goalRepository->addCanvasItem($values);
 
+        if ($newId !== false && (int) $newId > 0) {
+            CanvasItemCreated::dispatch(canvasItemId: (int) $newId, type: self::CANVAS_TYPE, projectId: $projectId);
+        }
+
         // Only reconcile edges when a real milestone id is supplied. A brand-new
         // item has no edges to clear, so an empty milestoneId — controllers post
         // '' for every box via a hidden input — would just cost a wasted lookup.
@@ -738,18 +772,37 @@ class Goalcanvas extends BaseService
      *
      * @param  array<string, mixed>  $values  Item values (must include `itemId` or `id`)
      *
-     * @throws AuthorizationException When the item is unknown/foreign or EDIT is denied.
+     * The id is validated strictly (an array such as `itemId[]=N` is rejected rather than cast)
+     * and the SAME authorized id is written back into the payload, so the row that is written is
+     * always the row that was authorized.
+     *
+     * @throws AuthorizationException When the item id is invalid, the item is unknown/foreign or EDIT is denied.
      */
     public function updateGoalItem(array $values): void
     {
-        $itemId = (int) ($values['itemId'] ?? $values['id'] ?? 0);
+        $rawItemId = $values['itemId'] ?? $values['id'] ?? null;
+        $itemId = is_int($rawItemId) || is_string($rawItemId) ? filter_var($rawItemId, FILTER_VALIDATE_INT) : false;
+        if ($itemId === false || $itemId <= 0) {
+            throw new AuthorizationException;
+        }
+
         $projectId = $this->goalRepository->getCanvasItemProjectId($itemId, self::CANVAS_TYPE);
         if ($projectId === null) {
             throw new AuthorizationException;
         }
         $this->authorize(GoalcanvasPermissions::EDIT, $projectId);
 
+        // Write exactly the id that was authorized.
+        $values['itemId'] = $itemId;
+        $values['id'] = $itemId;
+
+        $goalBefore = array_key_exists('currentValue', $values) ? $this->goalRepository->getSingleCanvasItem($itemId) : null;
+
         $this->goalRepository->editCanvasItem($values);
+
+        if (is_array($goalBefore)) {
+            $this->dispatchGoalProgressOnChange($itemId, $projectId, $goalBefore, $values);
+        }
 
         if (array_key_exists('milestoneId', $values)) {
             $this->syncGoalMilestoneEdges($itemId, $values['milestoneId'], (int) session('userdata.id'));
@@ -796,10 +849,15 @@ class Goalcanvas extends BaseService
      * Patch allowlisted columns of a goal item, authorized for EDIT against the item's real
      * project.
      *
+     * @param  int  $id  Goal item id
      * @param  array<string, mixed>  $params  Fields to patch (allowlisted in the repository)
+     * @return bool False when no allowlisted columns were present
      *
      * @throws AuthorizationException When the item is unknown/foreign or EDIT is denied.
+     *
+     * @api
      */
+    #[RequiresPermission(GoalcanvasPermissions::EDIT, entityScoped: true)]
     public function patchGoalItem(int $id, array $params): bool
     {
         $projectId = $this->goalRepository->getCanvasItemProjectId($id, self::CANVAS_TYPE);
@@ -808,7 +866,13 @@ class Goalcanvas extends BaseService
         }
         $this->authorize(GoalcanvasPermissions::EDIT, $projectId);
 
+        $goalBefore = array_key_exists('currentValue', $params) ? $this->goalRepository->getSingleCanvasItem($id) : null;
+
         $result = $this->goalRepository->patchCanvasItem($id, $params);
+
+        if ($result && is_array($goalBefore)) {
+            $this->dispatchGoalProgressOnChange($id, $projectId, $goalBefore, $params);
+        }
 
         // Only mirror the milestoneId change into the tracked_by edges when the
         // column patch actually persisted — otherwise the edges would drift from
@@ -818,6 +882,51 @@ class Goalcanvas extends BaseService
         }
 
         return $result;
+    }
+
+    /**
+     * Fire {@see GoalProgressUpdated} when a write changed a goal's current value.
+     *
+     * The target counts as reached at >= endValue, or at <= endValue for a decreasing goal (one
+     * whose endValue is below its startValue); `targetReached` is true only when this write
+     * crossed into that state.
+     *
+     * @param  int  $goalId  The goal item id.
+     * @param  int  $projectId  The goal's project.
+     * @param  array<string, mixed>  $goalBefore  The stored goal read before the write.
+     * @param  array<string, mixed>  $written  The fields written (must contain currentValue).
+     */
+    private function dispatchGoalProgressOnChange(int $goalId, int $projectId, array $goalBefore, array $written): void
+    {
+        $toFloat = static fn (mixed $value): ?float => is_numeric($value) ? (float) $value : null;
+
+        $previousValue = $toFloat($goalBefore['currentValue'] ?? null);
+        $currentValue = $toFloat($written['currentValue'] ?? null);
+
+        if ($previousValue === $currentValue) {
+            return;
+        }
+
+        $startValue = $toFloat(array_key_exists('startValue', $written) ? $written['startValue'] : ($goalBefore['startValue'] ?? null));
+        $endValue = $toFloat(array_key_exists('endValue', $written) ? $written['endValue'] : ($goalBefore['endValue'] ?? null));
+
+        $isDecreasing = $startValue !== null && $endValue !== null && $endValue < $startValue;
+        $hasReached = static function (?float $value) use ($endValue, $isDecreasing): bool {
+            if ($value === null || $endValue === null) {
+                return false;
+            }
+
+            return $isDecreasing ? $value <= $endValue : $value >= $endValue;
+        };
+
+        GoalProgressUpdated::dispatch(
+            goalId: $goalId,
+            projectId: $projectId,
+            previousValue: $previousValue,
+            currentValue: $currentValue,
+            endValue: $endValue,
+            targetReached: $hasReached($currentValue) && ! $hasReached($previousValue),
+        );
     }
 
     /**

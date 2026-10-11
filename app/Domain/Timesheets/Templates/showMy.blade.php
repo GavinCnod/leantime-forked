@@ -94,27 +94,10 @@ jQuery(document).ready(function(){
         jQuery(this).find('td a').removeClass('ui-state-hover');
     });
 
-    jQuery(".project-select").chosen();
-    jQuery(".ticket-select").chosen();
-    jQuery(".project-select").change(function(){
-            jQuery(".ticket-select").removeAttr("selected");
-            jQuery(".ticket-select").val("");
-            jQuery(".ticket-select").trigger("liszt:updated");
-
-            jQuery(".ticket-select option").show();
-            jQuery("#ticketSelect .chosen-results li").show();
-            var selectedValue = jQuery(this).find("option:selected").val();
-            jQuery(".ticket-select option").not(".project_"+selectedValue).hide();
-            jQuery("#ticketSelect .chosen-results li").not(".project_"+selectedValue).hide();
-            jQuery(".ticket-select").chosen("destroy").chosen();
-    });
-
-    jQuery(".ticket-select").change(function() {
-        var selectedValue = jQuery(this).find("option:selected").attr("data-value");
-        jQuery(".project-select option[value="+selectedValue+"]").attr("selected", "selected");
-        jQuery(".project-select").trigger("liszt:updated");
-        jQuery(".ticket-select").chosen("destroy").chosen();
-    });
+    leantime.timesheetsController.initProjectTicketSync(
+        document.querySelector('#projectSelect select'),
+        document.querySelector('#ticketSelect select')
+    );
 
     jQuery("#nextWeek").click(function() {
         var date = jQuery("#endDate").datepicker('getDate');
@@ -171,7 +154,10 @@ jQuery(document).ready(function(){
         var finalSum = colSum1 + colSum2 + colSum3 + colSum4 + colSum5 + colSum6 + colSum7;
         var roundedSum = Math.round((finalSum)*100)/100;
         jQuery("#finalSum").text(roundedSum);
+        leantime.timesheetsController.refreshHoursMinutesTitles(".timesheetTable");
     });
+
+    leantime.timesheetsController.refreshHoursMinutesTitles(".timesheetTable");
  });
 </script>
 @endpush
@@ -188,32 +174,28 @@ jQuery(document).ready(function(){
 <!-- page header -->
 
 <div class="maincontent">
+    <x-global::navigation.view-tabs :tabs="[
+        ['url' => BASE_URL.'/timesheets/showMy', 'label' => __('links.week_view'), 'active' => true],
+        ['url' => BASE_URL.'/timesheets/showMyList', 'label' => __('links.list_view'), 'active' => false],
+    ]">
+        <x-slot:actions>
+            {{-- The week range belongs to the #timesheetList form below (form="…"): changing it reloads the week. --}}
+            <span class="lt-tabs-range">
+                <span>{!! __('label.week_from') !!}</span>
+                <a href="javascript:void(0)" id="prevWeek" aria-label="{{ __('language.prevText') }}"><i class="fa fa-chevron-left"></i></a>
+                <input type="text" class="field-width-sm week-picker" name="startDate" form="timesheetList" autocomplete="off" id="startDate" placeholder="{{ __('language.dateformat') }}" value="{{ $dateFrom->formatDateForUser() }}"/>
+                {!! __('label.until') !!}
+                <input type="text" class="field-width-sm week-picker" name="endDate" form="timesheetList" autocomplete="off" id="endDate" placeholder="{{ __('language.dateformat') }}" value="{{ $dateFrom->addDays(6)->formatDateForUser() }}"/>
+                <a href="javascript:void(0)" id="nextWeek" aria-label="{{ __('language.nextText') }}"><i class="fa fa-chevron-right"></i></a>
+                <input type="hidden" name="search" value="1" form="timesheetList" />
+            </span>
+        </x-slot:actions>
+    </x-global::navigation.view-tabs>
+
     <div class="maincontentinner">
         {!! $tpl->displayNotification() !!}
 
         <form action="{{ BASE_URL }}/timesheets/showMy" method="post" id="timesheetList">
-            <div class="btn-group viewDropDown pull-right">
-                <button class="btn dropdown-toggle" data-toggle="dropdown">
-                    {!! __('links.week_view') !!} {!! __('links.view') !!}
-                </button>
-                <ul class="dropdown-menu">
-                    <li><a href="{{ BASE_URL }}/timesheets/showMy" class="active">{!! __('links.week_view') !!}</a></li>
-                    <li><a href="{{ BASE_URL }}/timesheets/showMyList" >{!! __('links.list_view') !!}</a></li>
-                </ul>
-            </div>
-            <div class="pull-left" style="padding-left:5px; margin-top:-3px;">
-
-                <div class="padding-top-sm">
-                    <span>{!! __('label.week_from') !!}</span>
-                    <a href="javascript:void(0)" style="font-size:16px;" id="prevWeek"><i class="fa fa-chevron-left"></i></a>
-                    <input type="text" class="week-picker" name="startDate" autocomplete="off" id="startDate" placeholder="{{ __('language.dateformat') }}" value="{{ $dateFrom->formatDateForUser() }}" style="margin-top:5px;"/>
-                    {!! __('label.until') !!}
-                    <input type="text" class="week-picker" name="endDate" autocomplete="off" id="endDate" placeholder="{{ __('language.dateformat') }}" value="{{ $dateFrom->addDays(6)->formatDateForUser() }}" style="margin-top:6px;"/>
-                    <a href="javascript:void(0)" style="font-size:16px;" id="nextWeek"><i class="fa fa-chevron-right"></i></a>
-                    <input type="hidden" name="search" value="1" />
-                </div>
-
-            </div>
             <table cellpadding="0" width="100%" class="table table-bordered display timesheetTable" id="dyntableX">
                 <colgroup>
                       <col class="con0" >
@@ -306,7 +288,7 @@ jQuery(document).ready(function(){
                         <tr class="gradeA timesheetRow">
                             <td width="14%">
                                 <div class="form-group" id="projectSelect">
-                                    <select data-placeholder="{{ __('input.placeholders.choose_project') }}" style="" class="project-select" >
+                                    <x-global::forms.select width="sm" enhanced data-placeholder="{{ __('input.placeholders.choose_project') }}" class="project-select">
                                         <option value=""></option>
                                         @foreach ($allProjects as $projectRow)
                                             {!! sprintf(
@@ -324,12 +306,12 @@ jQuery(document).ready(function(){
                                                 )
                                             ) !!}
                                         @endforeach
-                                    </select>
+                                    </x-global::forms.select>
                                 </div>
                             </td>
                             <td width="14%">
                                 <div class="form-group" id="ticketSelect">
-                                    <select data-placeholder="{{ __('input.placeholders.choose_todo') }}" style="" class="ticket-select" name="ticketId">
+                                    <x-global::forms.select width="sm" enhanced data-placeholder="{{ __('input.placeholders.choose_todo') }}" class="ticket-select" name="ticketId">
                                         <option value=""></option>
                                         @foreach ($allTickets as $ticketRow)
                                             @if (in_array($ticketRow['id'], $existingTicketIds))
@@ -350,15 +332,15 @@ jQuery(document).ready(function(){
                                                 )
                                             ) !!}
                                         @endforeach
-                                    </select>
+                                    </x-global::forms.select>
                                 </div>
                             </td>
                             <td width="14%">
-                                <select class="kind-select" name="kindId">
+                                <x-global::forms.select width="sm" class="kind-select" name="kindId">
                                     @foreach ($kind as $key => $kindRow)
                                         <option value="{{ $key }}">{!! __($kindRow) !!}</option>
                                     @endforeach
-                                </select>
+                                </x-global::forms.select>
                             </td>
 
                             @php $i = 0; @endphp

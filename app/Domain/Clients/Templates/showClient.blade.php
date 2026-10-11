@@ -24,9 +24,9 @@
         <div class="tabbedwidget tab-primary clientTabs">
 
             <ul>
-                <li><a href="#clientDetails">{!! __('label.client_details') !!}</a></li>
-                <li><a href="#comment">{!! sprintf(__('tabs.discussion_with_count'), count($comments)) !!}</a></li>
-                <li><a href="#files">{!! sprintf(__('tabs.files_with_count'), count($files)) !!}</a></li>
+                <li><a href="#clientDetails"><span class="fa fa-building"></span> {!! __('label.client_details') !!}</a></li>
+                <li><a href="#comment"><span class="fa fa-comments"></span> {!! sprintf(__('tabs.discussion_with_count'), count($comments)) !!}</a></li>
+                <li><a href="#files"><span class="fa fa-file"></span> {!! sprintf(__('tabs.files_with_count'), count($files)) !!}</a></li>
             </ul>
 
             <div id='clientDetails'>
@@ -228,21 +228,16 @@
                     <ul id='medialist' class='listfile'>
                                     @foreach ($files as $file)
                                         <li class="{{ $file['moduleId'] }}">
-                                            <div class="inlineDropDownContainer" style="float:right;">
+                                            <x-global::actions.dropdown style="float:right;">
+                                                <li class="nav-header">{!! __('subtitles.file') !!}</li>
+                                                <li><a href="{{ BASE_URL }}/files/get?module={{ $file['module'] }}&encName={{ $file['encName'] }}&ext={{ $file['extension'] }}&realName={{ $file['realName'] }}">{!! __('links.download') !!}</a></li>
 
-                                                <a href="javascript:void(0);" class="dropdown-toggle ticketDropDown" data-toggle="dropdown">
-                                                    <i class="fa fa-ellipsis-v" aria-hidden="true"></i>
-                                                </a>
-                                                <ul class="dropdown-menu">
-                                                    <li class="nav-header">{!! __('subtitles.file') !!}</li>
-                                                    <li><a href="{{ BASE_URL }}/files/get?module={{ $file['module'] }}&encName={{ $file['encName'] }}&ext={{ $file['extension'] }}&realName={{ $file['realName'] }}">{!! __('links.download') !!}</a></li>
+                                                @can('clients.edit')
+                                                    <li><a href="javascript:void(0);" data-post-url="{{ BASE_URL }}/clients/showClient/{{ (int) $_GET['id'] }}" data-post-field="delFile" data-post-value="{{ $file['id'] }}" class="delete"><i class="fa fa-trash"></i> {!! __('links.delete') !!}</a></li>
+                                                @endcan
 
-                                                    @can('clients.edit')
-                                                        <li><a href="{{ BASE_URL }}/clients/showClient/{{ $_GET['id'] }}?delFile={{ $file['id'] }}" class="delete"><i class="fa fa-trash"></i> {!! __('links.delete') !!}</a></li>
-                                                    @endcan
 
-                                                </ul>
-                                            </div>
+                                            </x-global::actions.dropdown>
                                               <a class="cboxElement" href="{{ BASE_URL }}/files/get?module={{ $file['module'] }}&encName={{ $file['encName'] }}&ext={{ $file['extension'] }}&realName={{ $file['realName'] }}">
                                                   @if (in_array(strtolower($file['extension']), $imgExtensions))
                                                       <img style='max-height: 50px; max-width: 70px;' src="{{ BASE_URL }}/files/get?module={{ $file['module'] }}&encName={{ $file['encName'] }}&ext={{ $file['extension'] }}&realName={{ $file['realName'] }}" alt="" />

@@ -6,6 +6,7 @@ use Illuminate\Support\Str;
 use Leantime\Core\Auth\Permissions\RequiresPermission;
 use Leantime\Core\Controller\Controller;
 use Leantime\Core\Controller\Frontcontroller;
+use Leantime\Core\Http\TrustedAppUrl;
 use Leantime\Core\Mailer as MailerCore;
 use Leantime\Domain\Blueprints\Permissions\BlueprintsPermissions;
 use Leantime\Domain\Blueprints\Services\Blueprints as BlueprintsService;
@@ -138,7 +139,13 @@ class BoardDialog extends Controller
             'projectId' => session('currentProject'),
         ];
         // createBoard authorizes CREATE against the target (current) project.
-        $currentCanvasId = $this->blueprintsService->createBoard($values, static::CANVAS_NAME.'canvas');
+        $newCanvasId = $this->blueprintsService->createBoard($values, static::CANVAS_NAME.'canvas');
+        if ($newCanvasId === false) {
+            $this->tpl->setNotification($this->language->__('notification.board_create_failed'), 'error');
+
+            return null;
+        }
+        $currentCanvasId = $newCanvasId;
 
         $this->notifyBoardCreated($values['title']);
 
@@ -185,7 +192,7 @@ class BoardDialog extends Controller
         $message = sprintf(
             $this->language->__('email_notifications.canvas_created_message'),
             session('userdata.name'),
-            "<a href='".CURRENT_URL."'>".strip_tags($title).'</a>'
+            "<a href='".\Leantime\Core\Mailer::notificationEmailUrl(app()->make(TrustedAppUrl::class)->rebase(CURRENT_URL), 'board_created')."'>".strip_tags($title).'</a>'
         );
         $mailer->setHtml($message);
 

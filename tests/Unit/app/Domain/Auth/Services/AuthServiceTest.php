@@ -313,4 +313,61 @@ class AuthServiceTest extends TestCase
             $this->makeService($noLdapConfig)->getLoginInputPlaceholder()
         );
     }
+
+    /**
+     * The login page caches the logged-out localization (server default timezone and formats) in the
+     * session. Logging in must drop that cache so the user's own timezone is loaded; otherwise
+     * calendars and the server disagree on the timezone and dropped events land hours off.
+     */
+    public function test_set_user_session_clears_the_logged_out_localization_cache(): void
+    {
+        session(['localization.cached' => true, 'usersettings.timezone' => null]);
+
+        $authRepo = $this->make(AuthRepository::class, ['updateUserSession' => fn () => true]);
+
+        $this->makeService(authRepo: $authRepo)->setUserSession([
+            'id' => 1,
+            'firstname' => 'Test',
+            'username' => 'test@leantime.io',
+            'password' => 'hash',
+            'profileId' => 0,
+            'clientId' => 0,
+            'role' => 20,
+            'settings' => '',
+            'twoFAEnabled' => false,
+            'twoFASecret' => '',
+            'createdOn' => '2026-01-01 00:00:00',
+            'modified' => '2026-01-01 00:00:00',
+        ]);
+
+        $this->assertFalse(session()->has('localization.cached'));
+    }
+
+    /**
+     * Behind a reverse proxy REMOTE_ADDR is the proxy; the failed-login log must carry the client's
+     * address from the trusted X-Forwarded-For header instead (#3779).
+     */
+    public function test_failed_login_log_records_the_client_ip_behind_a_trusted_proxy(): void
+    {
+        $previousProxies = \Illuminate\Http\Request::getTrustedProxies();
+        $previousHeaders = \Illuminate\Http\Request::getTrustedHeaderSet();
+
+        try {
+            \Illuminate\Http\Request::setTrustedProxies(['10.0.0.0/8'], \Illuminate\Http\Request::HEADER_X_FORWARDED_FOR);
+            $request = \Illuminate\Http\Request::create('/auth/login', 'POST', [], [], [], [
+                'REMOTE_ADDR' => '10.0.0.5',
+                'HTTP_X_FORWARDED_FOR' => '203.0.113.7',
+            ]);
+            app()->instance('request', $request);
+
+            \Illuminate\Support\Facades\Log::shouldReceive('info')
+                ->once()
+                ->with(\Mockery::on(fn (string $message) => str_contains($message, '[203.0.113.7]') && str_contains($message, 'someone@example.com')));
+
+            $logFailedLogin = new \ReflectionMethod(AuthService::class, 'logFailedLogin');
+            $logFailedLogin->invoke($this->makeService(), 'someone@example.com');
+        } finally {
+            \Illuminate\Http\Request::setTrustedProxies($previousProxies, $previousHeaders);
+        }
+    }
 }

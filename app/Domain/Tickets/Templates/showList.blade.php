@@ -31,15 +31,15 @@
             <div class="col-md-3">
                 <div class="quickAddForm" style="margin-top:15px;">
                     <form action="" method="post">
-                        <x-global::forms.text-input name="headline" autofocus placeholder="{{ __('input.placeholders.create_task') }}" style="width: 100%;" />
+                        <x-global::forms.text-input width="full" name="headline" autofocus placeholder="{{ __('input.placeholders.create_task') }}" />
                         @if (isset($availableProjects))
                             {{-- Program (cross-project) board: a task must belong to one child project. --}}
-                            <select name="quickaddProjectId" class="form-control tw-mb-s" required aria-label="{{ __('label.project') }}">
+                            <x-global::forms.select name="quickaddProjectId" class="form-control tw-mb-s" required aria-label="{{ __('label.project') }}">
                                 <option value="">{{ __('label.project') }}…</option>
                                 @foreach ($availableProjects as $quickAddProjectId => $quickAddProjectName)
                                     <option value="{{ $quickAddProjectId }}">{{ $tpl->escape($quickAddProjectName) }}</option>
                                 @endforeach
-                            </select>
+                            </x-global::forms.select>
                         @endif
                         <input type="hidden" name="sprint" value="{{ $currentSprint }}" />
                         <input type="hidden" name="milestone" value="{{ htmlspecialchars((string) ($searchCriteria['milestone'] ?? ''), ENT_QUOTES, 'UTF-8') }}" />
@@ -90,20 +90,7 @@
                                         : $statusLabels;
                                     @endphp
                                     <td data-order="{{ isset($rowStatusLabels[$row['status']]) ? $rowStatusLabels[$row['status']]['sortKey'] : '' }}" data-search="{{ isset($rowStatusLabels[$row['status']]) ? $rowStatusLabels[$row['status']]['name'] : '' }}" class="roundStatusBtn" style="width:20px">
-                                        <div class="dropdown ticketDropdown statusDropdown colorized show">
-                                            <a class="dropdown-toggle status {{ isset($rowStatusLabels[$row['status']]) ? $rowStatusLabels[$row['status']]['class'] : '' }}" href="javascript:void(0);" role="button" id="statusDropdownMenuLink{{ $row['id'] }}" data-toggle="dropdown" aria-haspopup="true" aria-expanded="false"><i class="fa fa-caret-down" aria-hidden="true"></i>
-                                            </a>
-                                            <ul class="dropdown-menu" aria-labelledby="statusDropdownMenuLink{{ $row['id'] }}">
-                                                <li class="nav-header border">{!! __('dropdown.choose_status') !!}</li>
-                                                @php
-                                                foreach ($rowStatusLabels as $key => $label) {
-                                                    echo "<li class='dropdown-item'>
-                                            <a href='javascript:void(0);' class='".$label['class']."' data-label='".$tpl->escape($label['name'])."' data-value='".$row['id'].'_'.$key.'_'.$label['class']."' id='ticketStatusChange".$row['id'].$key."' >".$tpl->escape($label['name']).'</a>';
-                                                    echo '</li>';
-                                                }
-                                                @endphp
-                                            </ul>
-                                        </div>
+                                        <x-tickets::chip-status :float="false" :icon-only="true" :ticket-id="$row['id']" :status="$row['status']" :labels="$rowStatusLabels" />
                                     </td>
 
                                     <td data-search="{{ isset($rowStatusLabels[$row['status']]) ? $rowStatusLabels[$row['status']]['name'] : '' }}" data-order="{{ $row['headline'] }}" >
@@ -152,7 +139,6 @@
 
 
         @if ($login::userIsAtLeast($roles::$editor))
-        leantime.ticketsController.initStatusDropdown();
         @else
         leantime.authController.makeInputReadonly(".maincontentinner");
         @endif

@@ -7,6 +7,7 @@ namespace Leantime\Domain\Blueprints\Controllers;
 use Leantime\Core\Auth\Permissions\RequiresPermission;
 use Leantime\Core\Controller\Frontcontroller;
 use Leantime\Core\Http\IncomingRequest;
+use Leantime\Core\Http\TrustedAppUrl;
 use Leantime\Core\Language;
 use Leantime\Core\Mailer as MailerCore;
 use Leantime\Core\UI\Template;
@@ -152,7 +153,7 @@ class ShowCanvas
         }
 
         // Edit board
-        if (isset($data['editCanvas']) && is_int($currentCanvasId) && $currentCanvasId > 0) {
+        if (isset($data['editCanvas']) && $currentCanvasId > 0) {
             if (isset($data['canvastitle']) && ! empty($data['canvastitle'])) {
                 if (! $this->blueprintsRepo->existCanvas(session('currentProject'), $data['canvastitle'], $canvasType)) {
                     // renameBoard authorizes EDIT against the board's real project.
@@ -170,7 +171,7 @@ class ShowCanvas
         }
 
         // Clone board
-        if (isset($data['cloneCanvas']) && is_int($currentCanvasId) && $currentCanvasId > 0) {
+        if (isset($data['cloneCanvas']) && $currentCanvasId > 0) {
             if (isset($data['canvastitle']) && ! empty($data['canvastitle'])) {
                 if (! $this->blueprintsRepo->existCanvas(session('currentProject'), $data['canvastitle'], $canvasType)) {
                     // copyBoard authorizes VIEW on the source board's real project and CREATE
@@ -197,7 +198,7 @@ class ShowCanvas
         }
 
         // Merge board
-        if (isset($data['mergeCanvas']) && is_int($currentCanvasId) && $currentCanvasId > 0) {
+        if (isset($data['mergeCanvas']) && $currentCanvasId > 0) {
             if (isset($data['canvasid']) && $data['canvasid'] > 0) {
                 // mergeBoard authorizes EDIT on the target board's project and VIEW on the
                 // source board's project — both resolved by id, so neither can cross projects.
@@ -215,31 +216,40 @@ class ShowCanvas
 
         // Import board
         if (isset($data['importCanvas']) && isset($_FILES['canvasfile']) && $_FILES['canvasfile']['error'] === 0) {
-            $uploadfile = tempnam(sys_get_temp_dir(), 'leantime.').'.xml';
+            // One unpredictable temp path carrying the .xml extension the importer requires (no
+            // tempnam(): it would create a second, never-deleted file). Always removed afterwards,
+            // even when the import throws.
+            $uploadfile = sys_get_temp_dir().DIRECTORY_SEPARATOR.'leantime.'.bin2hex(random_bytes(16)).'.xml';
+            $importCanvasId = false;
 
-            if (move_uploaded_file($_FILES['canvasfile']['tmp_name'], $uploadfile)) {
-                $importCanvasId = $this->blueprintsService->import(
-                    $uploadfile,
-                    $this->canvasSlug,
-                    projectId: session('currentProject'),
-                    authorId: session('userdata.id')
-                );
-                unlink($uploadfile);
-
-                if ($importCanvasId !== false) {
-                    session([$sessionKey => $importCanvasId]);
-                    $canvas = $this->blueprintsService->getBoard((int) $importCanvasId, $canvasType);
-
-                    $this->notifyBoardChange(
-                        'email_notifications.canvas_imported_message',
-                        'notification.board_imported',
-                        $canvas !== false ? ($canvas[0]['title'] ?? '') : ''
+            try {
+                if (move_uploaded_file($_FILES['canvasfile']['tmp_name'], $uploadfile)) {
+                    $importCanvasId = $this->blueprintsService->import(
+                        $uploadfile,
+                        $this->canvasSlug,
+                        projectId: session('currentProject'),
+                        authorId: session('userdata.id')
                     );
-
-                    $this->tpl->setNotification($this->language->__('notification.board_imported'), 'success');
-
-                    return Frontcontroller::redirect(BASE_URL.'/blueprints/'.$this->canvasSlug.'/showCanvas/');
                 }
+            } finally {
+                if (is_file($uploadfile)) {
+                    @unlink($uploadfile);
+                }
+            }
+
+            if ($importCanvasId !== false) {
+                session([$sessionKey => $importCanvasId]);
+                $canvas = $this->blueprintsService->getBoard((int) $importCanvasId, $canvasType);
+
+                $this->notifyBoardChange(
+                    'email_notifications.canvas_imported_message',
+                    'notification.board_imported',
+                    $canvas !== false ? ($canvas[0]['title'] ?? '') : ''
+                );
+
+                $this->tpl->setNotification($this->language->__('notification.board_imported'), 'success');
+
+                return Frontcontroller::redirect(BASE_URL.'/blueprints/'.$this->canvasSlug.'/showCanvas/');
             }
 
             $this->tpl->setNotification($this->language->__('notification.board_import_failed'), 'error');
@@ -332,6 +342,7 @@ class ShowCanvas
         $this->tpl->assign('filter', $filter);
         $this->tpl->assign('currentCanvas', $currentCanvasId);
         $this->tpl->assign('canvasSlug', $this->canvasSlug);
+        $this->tpl->assign('canvasType', $this->template->getDatabaseType());
         $this->tpl->assign('template', $this->template);
         $this->tpl->assign('canvasIcon', $this->template->icon);
         $this->tpl->assign('canvasTypes', $this->blueprintsService->getTranslatedBoxes($this->template));
@@ -365,7 +376,7 @@ class ShowCanvas
         $message = sprintf(
             $this->language->__($messageKey),
             session('userdata.name'),
-            "<a href='".CURRENT_URL."'>".strip_tags($boardTitle).'</a>'
+            "<a href='".\Leantime\Core\Mailer::notificationEmailUrl(app()->make(TrustedAppUrl::class)->rebase(CURRENT_URL), 'board_created')."'>".strip_tags($boardTitle).'</a>'
         );
         $mailer->setHtml($message);
 

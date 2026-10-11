@@ -63,7 +63,7 @@ class Language
     public array $ini_array_fallback;
 
     /**
-     * @var array
+     * @var array|bool Language list keyed by code, or false when no languagelist.ini could be read
      *
      * @static
      *
@@ -72,13 +72,13 @@ class Language
     public mixed $langlist;
 
     /**
-     * @var array|bool - debug value. Will highlight untranslated text
+     * @var bool - debug value. Will highlight untranslated text
      *
      * @static
      *
      * @final
      */
-    private array|bool $alert = false;
+    private bool $alert = false;
 
     public Environment $config;
 
@@ -139,36 +139,34 @@ class Language
     /**
      * Get the currently selected language.
      *
+     * Candidates are tried in order (user setting, language cookie, company setting, browser
+     * language) and only a code from the list of available languages is accepted. The value
+     * ends up in a file path when the language files are read, so anything else — e.g. a
+     * tampered cookie — is ignored and the configured default language is used instead.
+     *
      * @return string The currently selected language.
      */
     public function getCurrentLanguage(): string
     {
+        $browserLanguage = str_replace('_', '-', substr((string) ($_SERVER['HTTP_ACCEPT_LANGUAGE'] ?? ''), 0, 2));
 
-        if (session()->has('usersettings.language')) {
-            $this->language = session('usersettings.language');
+        $candidates = [
+            session('usersettings.language'),
+            $_COOKIE['language'] ?? null,
+            session('companysettings.language'),
+            $browserLanguage,
+        ];
 
-            return $this->language;
+        foreach ($candidates as $candidate) {
+            if (is_string($candidate) && $candidate !== '' && $this->isValidLanguage($candidate)) {
+                $this->language = $candidate;
+
+                return $this->language;
+            }
         }
 
-        if (isset($_COOKIE['language'])) {
-            $this->language = $_COOKIE['language'];
-
-            return $this->language;
-        }
-
-        if (session('companysettings.language')) {
-            $this->language = session('companysettings.language');
-
-            return $this->language;
-        }
-
-        $language = substr($_SERVER['HTTP_ACCEPT_LANGUAGE'] ?? 'en-US', 0, 2);
-        $language = str_replace('_', '-', $language);
-        if ($language && $this->isValidLanguage($language)) {
-            return $this->language;
-        }
-
-        $this->language = $this->config->language;
+        $configuredLanguage = (string) $this->config->language;
+        $this->language = $this->isValidLanguage($configuredLanguage) ? $configuredLanguage : 'en-US';
 
         return $this->language;
     }
@@ -181,7 +179,46 @@ class Language
      */
     public function isValidLanguage(string $langCode): bool
     {
-        return isset($this->langlist[$langCode]);
+        return is_array($this->langlist) && isset($this->langlist[$langCode]);
+    }
+
+    /**
+     * Cache key for a language's merged strings.
+     *
+     * Includes the app version: the installation cache is only flushed by database updates, so a
+     * release that adds strings without a migration kept serving the old cached file and new keys
+     * rendered raw (e.g. "tabs.history") until the cache was cleared by hand.
+     */
+    private function languageCacheKey(): string
+    {
+        return self::cacheKeyFor($this->language);
+    }
+
+    /**
+     * Cache key of a language's merged strings for the running app version.
+     *
+     * @param  string  $languageCode  e.g. "en-US"
+     */
+    public static function cacheKeyFor(string $languageCode): string
+    {
+        return 'languages.lang_'.$languageCode.'_'.app(\Leantime\Core\Configuration\AppSettings::class)->appVersion;
+    }
+
+    /**
+     * Remove a language's cached strings: the key of the running app version plus the legacy
+     * unversioned key used before the version was part of the key.
+     *
+     * Keys of other (older) versions are not removed: the installation store cannot list its keys
+     * cheaply, and they are never read again once the version changed.
+     *
+     * @param  string  $languageCode  e.g. "en-US"
+     * @return bool true when the current version's key was removed
+     */
+    public static function forgetCachedLanguage(string $languageCode): bool
+    {
+        Cache::store('installation')->forget('languages.lang_'.$languageCode);
+
+        return Cache::store('installation')->forget(self::cacheKeyFor($languageCode));
     }
 
     /**
@@ -193,16 +230,16 @@ class Language
      */
     public function readIni(): array
     {
-        if (@Cache::store('installation')->has('languages.lang_'.$this->language)) {
+        if (@Cache::store('installation')->has($this->languageCacheKey())) {
             $this->ini_array = self::dispatchFilter(
                 'language_resources',
-                Cache::store('installation')->get('languages.lang_'.$this->language),
+                Cache::store('installation')->get($this->languageCacheKey()),
                 [
                     'language' => $this->language,
                 ]
-            ) ?? Cache::store('installation')->get('languages.lang_'.$this->language);
+            ) ?? Cache::store('installation')->get($this->languageCacheKey());
 
-            Cache::store('installation')->set('languages.lang_'.$this->language, $this->ini_array);
+            Cache::store('installation')->set($this->languageCacheKey(), $this->ini_array);
 
             return $this->ini_array;
         }
@@ -237,7 +274,7 @@ class Language
             ]
         );
 
-        Cache::store('installation')->set('languages.lang_'.$this->language, $this->ini_array);
+        Cache::store('installation')->set($this->languageCacheKey(), $this->ini_array);
 
         return $this->ini_array;
     }

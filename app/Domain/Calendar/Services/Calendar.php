@@ -12,7 +12,9 @@ use Leantime\Core\Domains\BaseService;
 use Leantime\Core\Events\EventDispatcher;
 use Leantime\Core\Exceptions\MissingParameterException;
 use Leantime\Core\Language as LanguageCore;
-use Leantime\Core\Support\OutboundUrlGuard;
+use Leantime\Core\Support\OutboundHttpClient;
+use Leantime\Domain\Calendar\Events\CalendarConnected;
+use Leantime\Domain\Calendar\Events\CalendarEventCreated;
 use Leantime\Domain\Calendar\Permissions\CalendarPermissions;
 use Leantime\Domain\Calendar\Repositories\Calendar as CalendarRepository;
 use Leantime\Domain\Setting\Repositories\Setting;
@@ -34,6 +36,9 @@ use Spatie\IcalendarGenerator\Enums\Display;
  */
 class Calendar extends BaseService
 {
+    /** A valid, event-less calendar: served when a feed is unavailable so the client parser never sees an empty body. */
+    public const EMPTY_ICAL_CALENDAR = "BEGIN:VCALENDAR\r\nVERSION:2.0\r\nPRODID:-//Leantime//External Calendar//EN\r\nEND:VCALENDAR\r\n";
+
     private CalendarRepository $calendarRepo;
 
     private LanguageCore $language;
@@ -42,16 +47,20 @@ class Calendar extends BaseService
 
     private Environment $config;
 
+    private OutboundHttpClient $outboundHttpClient;
+
     public function __construct(
         CalendarRepository $calendarRepo,
         LanguageCore $language,
         Setting $settingsRepo,
         Environment $config,
+        OutboundHttpClient $outboundHttpClient,
     ) {
         $this->calendarRepo = $calendarRepo;
         $this->language = $language;
         $this->settingsRepo = $settingsRepo;
         $this->config = $config;
+        $this->outboundHttpClient = $outboundHttpClient;
     }
 
     /**
@@ -69,10 +78,16 @@ class Calendar extends BaseService
     }
 
     /**
+     * Columns of a calendar event a patch may change. Everything else (id, userId, ...) is
+     * dropped, so a patch can neither re-target another row nor reassign the event's owner.
+     */
+    private const PATCHABLE_EVENT_COLUMNS = ['dateFrom', 'dateTo', 'description', 'allDay'];
+
+    /**
      * Patches calendar event.
      *
      * @param  int  $id  Id of the event to update (only events; tickets are updated via the ticket API).
-     * @param  array  $params  Key/value array of columns to update.
+     * @param  array  $params  Key/value array of columns to update (limited to PATCHABLE_EVENT_COLUMNS).
      * @return bool true on success, false on failure
      *
      * @api
@@ -80,6 +95,12 @@ class Calendar extends BaseService
     #[RequiresPermission(CalendarPermissions::EDIT)]
     public function patch(int $id, array $params): bool
     {
+        $params = array_intersect_key($params, array_flip(self::PATCHABLE_EVENT_COLUMNS));
+
+        if ($params === []) {
+            return false;
+        }
+
         // The event's owner can always change it; a cross-user override needs calendar.manage (admin+).
         if ($this->userIsAllowedToUpdate($id)) {
             return $this->calendarRepo->patch($id, $params);
@@ -151,6 +172,13 @@ class Calendar extends BaseService
 
             // Trigger event for plugins
             EventDispatcher::dispatch_event('afterCalendarSave', ['eventId' => $result, 'values' => $values]);
+
+            if ($result !== false && (int) $result > 0) {
+                CalendarEventCreated::dispatch(
+                    eventId: (int) $result,
+                    allDay: filter_var($values['allDay'], FILTER_VALIDATE_BOOLEAN),
+                );
+            }
 
             return $result;
         } else {
@@ -290,13 +318,13 @@ class Calendar extends BaseService
      * returns it when still fresh. Otherwise it resolves the external
      * calendar's URL, fetches its content (with SSRF protection via
      * {@see loadIcalUrl()}), stores it in the session cache and returns it.
-     * Any fetch failure resolves to an empty string, matching the previous
-     * controller behaviour.
+     * Any fetch failure (or a body that is not iCal) is logged and resolves to an
+     * empty calendar, which the browser's iCal parser accepts.
      *
      * @param  int  $calId  The external calendar id.
      * @param  int  $userId  Retained for signature compatibility; the underlying read is pinned to
      *                       the session user via getExternalCalendar().
-     * @return string The iCal content, or an empty string when unavailable.
+     * @return string The iCal content, or an empty calendar when unavailable.
      *
      * @api
      */
@@ -320,19 +348,63 @@ class Calendar extends BaseService
         $cal = $this->getExternalCalendar($calId, $userId);
 
         if (! isset($cal['url'])) {
-            return '';
+            return self::EMPTY_ICAL_CALENDAR;
         }
 
         try {
             // loadIcalUrl includes SSRF protection.
-            $content = $this->loadIcalUrl($cal['url']);
-            session(['calendarCache.'.$calId.'.lastUpdate' => time()]);
-            session(['calendarCache.'.$calId.'.content' => $content]);
-
-            return $content;
+            $content = self::normalizeIcalContent($this->loadIcalUrl($cal['url']));
         } catch (\Exception $e) {
-            return '';
+            // The message can carry the feed URL, and private iCal URLs embed an access token.
+            Log::warning('External calendar '.$calId.' could not be loaded ('.$e::class.').');
+
+            return self::EMPTY_ICAL_CALENDAR;
         }
+
+        // A feed that isn't iCal (an HTML login/error page, e.g. a non-public Google Calendar
+        // address) crashed the browser's iCal parser and hid every event without any log (#3165).
+        if (! self::looksLikeIcalCalendar($content)) {
+            Log::warning('External calendar '.$calId.' did not return iCal data (check that the address is the public/secret iCal address).');
+
+            return self::EMPTY_ICAL_CALENDAR;
+        }
+
+        session(['calendarCache.'.$calId.'.lastUpdate' => time()]);
+        session(['calendarCache.'.$calId.'.content' => $content]);
+
+        return $content;
+    }
+
+    /**
+     * Whether a (normalized) feed body is a complete iCal calendar: it must start with
+     * BEGIN:VCALENDAR and end with END:VCALENDAR, so HTML pages and truncated downloads are
+     * rejected instead of being cached and handed to the browser parser.
+     *
+     * @param  string  $content  Feed body after {@see normalizeIcalContent()}.
+     */
+    public static function looksLikeIcalCalendar(string $content): bool
+    {
+        // RFC 5545 property names and values like VCALENDAR are case-insensitive.
+        $upperContent = strtoupper(rtrim($content));
+
+        return str_starts_with($upperContent, 'BEGIN:VCALENDAR')
+            && str_ends_with($upperContent, 'END:VCALENDAR');
+    }
+
+    /**
+     * Strip what the browser's iCal parser chokes on but servers commonly send: a UTF-8 byte
+     * order mark and leading whitespace before BEGIN:VCALENDAR.
+     *
+     * @param  string  $content  Raw feed body.
+     * @return string The feed body, starting at its first line.
+     */
+    public static function normalizeIcalContent(string $content): string
+    {
+        if (str_starts_with($content, "\xEF\xBB\xBF")) {
+            $content = substr($content, 3);
+        }
+
+        return ltrim($content);
     }
 
     /**
@@ -373,6 +445,8 @@ class Calendar extends BaseService
     public function addExternalCalendarUrl(array $values): void
     {
         $this->calendarRepo->addGUrl($values);
+
+        CalendarConnected::dispatch(kind: 'external_calendar');
     }
 
     /**
@@ -401,6 +475,10 @@ class Calendar extends BaseService
             throw new \Exception('Calendar could not be retrieved');
         }
 
+        // The feed is fetched without a login, so the owner's timezone comes from the session
+        // value the repository sets for the feed owner — not the request's (default) timezone.
+        $ownerTimezone = (string) (session('usersettings.timezone') ?: 'UTC');
+
         $eventObjects = [];
         // Create array of event objects for ical generator
         foreach ($calendarEvents as $event) {
@@ -409,16 +487,26 @@ class Calendar extends BaseService
 
                 $description = str_replace("\r\n", '\\n', strip_tags($event['description']));
 
+                // Timed events go out in UTC ("...Z"). A TZID-qualified local time is read as a
+                // floating wall-clock time by consumers that don't resolve VTIMEZONE (including
+                // Leantime's own calendar import), which shifted events by the zone offset
+                // (#3114). All-day events need the owner's calendar date, so they keep the
+                // owner's timezone.
+                $isAllDay = $event['allDay'] === true;
+                $eventTimezone = $isAllDay ? $ownerTimezone : 'UTC';
+                $startsAt = dtHelper()->parseDbDateTime($event['dateFrom'])->setTimezone($eventTimezone);
+                $endsAt = dtHelper()->parseDbDateTime($event['dateTo'])->setTimezone($eventTimezone);
+
                 $currentEvent = IcalEvent::create()
                     ->image(BASE_URL.'/dist/images/favicon.png', 'image/png', Display::badge())
-                    ->startsAt(dtHelper()->parseDbDateTime($event['dateFrom'])->setToUserTimezone())
-                    ->endsAt(dtHelper()->parseDbDateTime($event['dateTo'])->setToUserTimezone())
+                    ->startsAt($startsAt)
+                    ->endsAt($endsAt)
                     ->name($event['title'])
                     ->description($description)
                     ->uniqueIdentifier($event['id'])
                     ->url($event['url'] ?? '');
 
-                if ($event['allDay'] === true) {
+                if ($isAllDay) {
                     $currentEvent->fullDay();
                 }
 
@@ -451,21 +539,22 @@ class Calendar extends BaseService
      * @param  int  $userId  The user whose calendar to build
      * @param  null|string|CarbonImmutable  $from  Optional start of the window
      * @param  null|string|CarbonImmutable  $until  Optional end of the window
+     * @param  bool  $includeDoneTickets  Include To-Dos in a DONE status (dashboard widget can hide them)
      * @return array<int, array<string, mixed>> FullCalendar-shaped event arrays
      */
-    public function getCalendar(int $userId, null|string|CarbonImmutable $from = null, null|string|CarbonImmutable $until = null): array
+    public function getCalendar(int $userId, null|string|CarbonImmutable $from = null, null|string|CarbonImmutable $until = null, bool $includeDoneTickets = true): array
     {
         // Convert date parameters to Carbon instances if they're strings
         if (is_string($from)) {
-            $from = CarbonImmutable::parse($from);
+            $from = CarbonImmutable::parse($from, dtHelper()->userNow()->getTimezone());
         }
         if (is_string($until)) {
-            $until = CarbonImmutable::parse($until);
+            $until = CarbonImmutable::parse($until, dtHelper()->userNow()->getTimezone());
         }
 
         // Get tickets and filter by date range
         $ticketService = app()->make(Tickets::class);
-        $dbTickets = $ticketService->getOpenUserTicketsThisWeekAndLater($userId, '', true);
+        $dbTickets = $ticketService->getOpenUserTicketsThisWeekAndLater($userId, '', $includeDoneTickets);
 
         $tickets = [];
         if (isset($dbTickets['thisWeek']['tickets'])) {
@@ -761,10 +850,10 @@ class Calendar extends BaseService
         // Convert date parameters to Carbon instances if they're strings
         try {
             if (is_string($from)) {
-                $from = CarbonImmutable::parse($from);
+                $from = CarbonImmutable::parse($from, dtHelper()->userNow()->getTimezone());
             }
             if (is_string($until)) {
-                $until = CarbonImmutable::parse($until);
+                $until = CarbonImmutable::parse($until, dtHelper()->userNow()->getTimezone());
             }
         } catch (\Exception $e) {
             Log::error('Error converting date parameters to Carbon instances: '.$e->getMessage());
@@ -786,9 +875,10 @@ class Calendar extends BaseService
 
                 // Filter events by date range if specified
                 if ($from || $until) {
-                    $events = array_filter($events, function ($event) use ($from, $until) {
-                        $eventStart = CarbonImmutable::parse($event->dtstart);
-                        $eventEnd = isset($event->dtend) ? CarbonImmutable::parse($event->dtend) : $eventStart;
+                    $userTimezone = dtHelper()->userNow()->getTimezone(); // floating (no TZ) iCal times are local
+                    $events = array_filter($events, function ($event) use ($from, $until, $userTimezone) {
+                        $eventStart = CarbonImmutable::parse($event->dtstart, $userTimezone);
+                        $eventEnd = isset($event->dtend) ? CarbonImmutable::parse($event->dtend, $userTimezone) : $eventStart;
 
                         if ($from && $eventEnd < $from) {
                             return false;
@@ -849,7 +939,9 @@ class Calendar extends BaseService
     /**
      * Load an iCal URL and return its contents.
      *
-     * Validates the URL against SSRF attacks before making the request.
+     * The fetch goes through {@see OutboundHttpClient}: the URL (and every redirect hop) is checked
+     * by the SSRF guard, the connection is pinned to the validated address so the host can't be
+     * re-resolved to an internal one, and connect/total timeouts bound the request.
      *
      * @param  string  $url  The URL of the iCal feed.
      * @return string The iCal content.
@@ -862,29 +954,24 @@ class Calendar extends BaseService
             $url = str_replace('webcal://', 'https://', $url);
         }
 
-        if (! OutboundUrlGuard::isAllowedUrl($url)) {
-            throw new \Exception('Refused to fetch iCal feed: URL failed SSRF safety check');
-        }
-
-        $client = new \GuzzleHttp\Client;
-
         try {
-            $response = $client->get($url, [
-                'allow_redirects' => OutboundUrlGuard::redirectOptions(),
+            $response = $this->outboundHttpClient->get($url, [
                 'headers' => [
                     'Accept' => 'text/calendar',
                     'User-Agent' => 'Leantime Calendar Integration v'.$this->config->appVersion,
                 ],
             ]);
-
-            if ($response->getStatusCode() == 200) {
-                return (string) $response->getBody();
-            }
-
-            throw new \Exception('Failed to load iCal feed: HTTP '.$response->getStatusCode());
-        } catch (\Exception $e) {
+        } catch (\InvalidArgumentException) {
+            throw new \Exception('Refused to fetch iCal feed: URL failed SSRF safety check');
+        } catch (\Throwable $e) {
             throw new \Exception('Error loading iCal feed: '.$e->getMessage());
         }
+
+        if ($response->getStatusCode() == 200) {
+            return (string) $response->getBody();
+        }
+
+        throw new \Exception('Failed to load iCal feed: HTTP '.$response->getStatusCode());
     }
 
     public function generateIcalHash()
@@ -898,6 +985,8 @@ class Calendar extends BaseService
         $icalHash = $uuid->toString();
 
         $this->settingsRepo->saveSetting('usersettings.'.session('userdata.id').'.icalSecret', $icalHash);
+
+        CalendarConnected::dispatch(kind: 'ical_feed');
 
     }
 

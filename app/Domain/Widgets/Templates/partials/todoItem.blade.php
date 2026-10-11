@@ -79,8 +79,8 @@
                     </div>
                 </div>
 
-                <div class="tw-flex-1 ticket-title ticket-title-wrapper">
-                    <div class="title-text">
+                <div class="tw-flex-1 tw-min-w-0 ticket-title ticket-title-wrapper">
+                    <div class="title-text tw-truncate">
                         <small style="display:inline-block; ">{{ $ticket['projectName'] }}</small> <br/>
                         <strong><a href="#/tickets/showTicket/{{ $ticket['id'] }}" preload="mouseover"
                                    class="ticket-headline-{{ $ticket['id'] }}">{{ $ticket['headline'] }}</a></strong>
@@ -119,11 +119,16 @@
                 </div>
 
                 @dispatchEvent('beforeDueDate', ['ticket' => (object)$ticket])
+                @php $isOverdue = $ticket['isOverdue'] ?? false; @endphp
                 <div
                     class="due-date-container tw-flex-1 tw-justify-right tw-flex tw-flex-row tw-justify-end tw-content-center due-date-wrapper">
                     <div class="tw-content-center">
                         <div class="date-picker-form-control">
+                            @if ($isOverdue)
+                                <span class="sr-only">{{ __("label.overdue") }}</span>
+                            @endif
                             <i class="fa-solid fa-business-time infoIcon"
+                               style="{{ $isOverdue ? 'color:var(--red);' : '' }}"
                                data-tippy-content="{{ __("label.due") }}"></i>
 
                             <input id="due-date-picker-{{ $ticket['id'] }}"
@@ -131,7 +136,7 @@
                                    title="{{ __("label.due") }}"
                                    value="{{ format($ticket['dateToFinish'])->date(__("text.anytime")) }}"
                                    class="duedates secretInput"
-                                   style="margin-left:0px; width:100px;"
+                                   style="margin-left:0px; width:140px;{{ $isOverdue ? ' color:var(--red); font-weight:600;' : '' }}"
                                    data-id="{{ $ticket['id'] }}"
                                    onchange="jQuery('#due-date-picker-trigger-{{ $ticket['id'] }}').text(this.value);"
                                    name="date"
@@ -158,42 +163,7 @@
                 @dispatchEvent('beforeStatusUpdate')
                 <div
                     class="status-container tw-flex-1 tw-justify-items-end tw-flex tw-flex-row tw-justify-end tw-gap-2 tw-content-center">
-                    <div class="tw-content-center tw-mr-[10px] dropdown ticketDropdown statusDropdown colorized show">
-                        <a class="dropdown-toggle f-left status {{ $statusLabels[$ticket['projectId']][$ticket['status']]["class"] ?? 'label-default' }}"
-                           href="javascript:void(0);"
-                           role="button"
-                           id="statusDropdownMenuLink{{ $ticket['id'] }}"
-                           data-toggle="dropdown"
-                           aria-haspopup="true"
-                           aria-expanded="false">
-                            <span class="text">
-                                @if(isset($statusLabels[$ticket['projectId']][$ticket['status']]))
-                                    {{ $statusLabels[$ticket['projectId']][$ticket['status']]["name"] }}
-                                @else
-                                    unknown
-                                @endif
-                            </span>
-                            &nbsp;<i class="fa fa-caret-down" aria-hidden="true"></i>
-                        </a>
-                        <ul class="dropdown-menu pull-right"
-                            aria-labelledby="statusDropdownMenuLink{{ $ticket['id'] }}">
-                            <li class="nav-header border">{{ __("dropdown.choose_status") }}</li>
-                            @foreach ($statusLabels[$ticket['projectId']] as $key => $label)
-                                <li class='dropdown-item'>
-                                    <a href='javascript:void(0);'
-                                       class='{{ $label["class"] }}'
-                                       data-label='{{ $label["name"] }}'
-                                       data-value='{{ $ticket['id'] }}_{{ $key }}_{{ $label["class"] }}'
-                                       id='ticketStatusChange{{$ticket['id'] . $key }}'
-                                       hx-post="{{ BASE_URL }}/widgets/myToDos/updateStatus"
-                                       hx-swap="none"
-                                       hx-vals='{"id": "{{ $ticket['id'] }}", "status": "{{ $key }}"}'>
-                                        {{ $label["name"] }}
-                                    </a>
-                                </li>
-                            @endforeach
-                        </ul>
-                    </div>
+                    <x-tickets::chip-status class="tw-self-center tw-mr-[10px]" align="end" :ticket-id="$ticket['id']" :status="$ticket['status']" :labels="$statusLabels[$ticket['projectId']] ?? []" />
 
                     <div class="tw-content-center">
                         <div class="scheduler">

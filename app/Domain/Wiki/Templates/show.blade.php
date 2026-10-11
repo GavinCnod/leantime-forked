@@ -79,15 +79,13 @@
          vertically centered — never floated inside the title block. --}}
     @if(count($wikis) > 0)
         <div class="pageheader-right">
-            <span class="dropdown dropdownWrapper headerEditDropdown">
-                <a href="javascript:void(0)" class="dropdown-toggle btn btn-transparent" data-toggle="dropdown"><i class="fa-solid fa-ellipsis-v"></i></a>
-                <ul class="dropdown-menu editCanvasDropdown">
-                    @if($login::userIsAtLeast($roles::$editor) && $currentWiki)
-                        <li><a class="inlineEdit" href="#/wiki/wikiModal/{{ $currentWiki->id }}">{!! __('link.edit_wiki') !!}</a></li>
-                        <li><a class="delete" href="#/wiki/delWiki/{{ $currentWiki->id }}"><i class="fa fa-trash"></i> {!! __('links.delete_wiki') !!}</a></li>
-                    @endif
-                </ul>
-            </span>
+            <x-global::actions.dropdown variant="header-menu">
+                @if($login::userIsAtLeast($roles::$editor) && $currentWiki)
+                    <li><a class="inlineEdit" href="#/wiki/wikiModal/{{ $currentWiki->id }}">{!! __('link.edit_wiki') !!}</a></li>
+                    <li><a class="delete" href="#/wiki/delWiki/{{ $currentWiki->id }}"><i class="fa fa-trash"></i> {!! __('links.delete_wiki') !!}</a></li>
+                @endif
+
+            </x-global::actions.dropdown>
         </div>
     @endif
 </div>
@@ -267,10 +265,10 @@
                             <label class="control-label">{!! __('label.status') !!}</label>
                             <div class="">
                                 @if($login::userIsAtLeast($roles::$editor))
-                                    <select id="wikiStatusSelect" class="span11">
+                                    <x-global::forms.select width="full" id="wikiStatusSelect">
                                         <option value="draft" @selected($currentArticle->status === 'draft')>Draft</option>
                                         <option value="published" @selected($currentArticle->status !== 'draft')>Published</option>
-                                    </select>
+                                    </x-global::forms.select>
                                 @else
                                     {{ ucfirst($currentArticle->status) }}
                                 @endif
@@ -300,12 +298,12 @@
                                             return $h->id != $currentArticle->id;
                                         });
                                     @endphp
-                                    <select id="wikiParentSelect" class="span11">
+                                    <x-global::forms.select width="full" id="wikiParentSelect">
                                         <option value="0" @selected(! $currentArticle->parent || $currentArticle->parent == 0)>None</option>
                                         @foreach($parentOptions as $headline)
                                             <option value="{{ $headline->id }}" @selected($currentArticle->parent == $headline->id)>{{ $headline->title }}@if($headline->status === 'draft') ({!! __('label.draft') !!})@endif</option>
                                         @endforeach
-                                    </select>
+                                    </x-global::forms.select>
                                 @else
                                     @if($currentArticle->parent && $currentArticle->parent > 0)
                                         <a href="{{ BASE_URL }}/wiki/show/{{ $currentArticle->parent }}">
@@ -323,12 +321,12 @@
                             <label class="control-label">{!! __('label.milestone') !!}</label>
                             <div class="">
                                 @if($login::userIsAtLeast($roles::$editor))
-                                    <select id="wikiMilestoneSelect" class="span11">
+                                    <x-global::forms.select width="full" id="wikiMilestoneSelect">
                                         <option value="">{!! __('label.not_assigned_to_milestone') !!}</option>
                                         @foreach($milestones as $milestone)
                                             <option value="{{ $milestone->id }}" @selected($currentArticle->milestoneId == $milestone->id)>{{ $milestone->headline }}</option>
                                         @endforeach
-                                    </select>
+                                    </x-global::forms.select>
                                 @else
                                     @if(! empty($currentArticle->milestoneHeadline))
                                         <a href="{{ BASE_URL }}/tickets/roadmap#/tickets/editMilestone/{{ $currentArticle->milestoneId }}">

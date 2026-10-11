@@ -36,18 +36,13 @@ if (! session()->exists('usersettings.submenuToggle.myCalendarView')) {
                 @foreach ($externalCalendars as $calendars)
                     <li>
                         @if (empty($calendars['managedByPlugin']))
-                        <div class="inlineDropDownContainer" style="float:right;">
-                            <a href="javascript:void(0);" class="dropdown-toggle ticketDropDown editHeadline" data-toggle="dropdown">
-                                <i class="fa fa-ellipsis-h" aria-hidden="true"></i>
-                            </a>
+                        <x-global::actions.dropdown icon="fa fa-ellipsis-h" trigger-class="editHeadline" style="float:right;">
+                            <li>
+                                <a href="#/calendar/editExternal/{{ $calendars['id'] }}"><i class="fa-solid fa-pen-to-square"></i> {!! __('links.edit_calendar') !!}</a>
+                            </li>
+                            <li><a href="#/calendar/delExternalCalendar/{{ $calendars['id'] }}" class="delete"><i class="fa fa-trash"></i> {!! __('links.delete_external_calendar') !!}</a></li>
 
-                            <ul class="dropdown-menu">
-                                <li>
-                                    <a href="#/calendar/editExternal/{{ $calendars['id'] }}"><i class="fa-solid fa-pen-to-square"></i> {!! __('links.edit_calendar') !!}</a>
-                                </li>
-                                <li><a href="#/calendar/delExternalCalendar/{{ $calendars['id'] }}" class="delete"><i class="fa fa-trash"></i> {!! __('links.delete_external_calendar') !!}</a></li>
-                            </ul>
-                        </div>
+                        </x-global::actions.dropdown>
                         @endif
                         <span class="indicatorCircle" style="background:{{ $calendars['colorClass'] }}"></span>{{ $calendars['name'] }}
 
@@ -83,12 +78,12 @@ if (! session()->exists('usersettings.submenuToggle.myCalendarView')) {
                         <button class="fc-today-button btn btn-default right" style="margin-right:5px;">today</button>
 
 
-                        <select id="my-select" style="margin-right:5px;" class="right">
+                        <x-global::forms.select id="my-select" style="margin-right:5px;" class="right">
                             <option class="fc-timeGridDay-button fc-button fc-state-default fc-corner-right" value="timeGridDay" {{ session('usersettings.submenuToggle.myCalendarView') == 'timeGridDay' ? 'selected' : '' }}>Day</option>
                             <option class="fc-timeGridWeek-button fc-button fc-state-default fc-corner-right" value="timeGridWeek" {{ session('usersettings.submenuToggle.myCalendarView') == 'timeGridWeek' ? 'selected' : '' }}>Week</option>
                             <option class="fc-dayGridMonth-button fc-button fc-state-default fc-corner-right" value="dayGridMonth" {{ session('usersettings.submenuToggle.myCalendarView') == 'dayGridMonth' ? 'selected' : '' }}>Month</option>
                             <option class="fc-multiMonthYear-button fc-button fc-state-default fc-corner-right" value="multiMonthYear" {{ session('usersettings.submenuToggle.myCalendarView') == 'multiMonthYear' ? 'selected' : '' }}>Year</option>
-                        </select>
+                        </x-global::forms.select>
                     </div>
                 </div>
                 <div id="calendar"></div>

@@ -162,7 +162,7 @@ class Ideas
         $id = $this->db->table('zp_canvas')->insertGetId([
             'title' => $values['title'],
             'author' => $values['author'],
-            'created' => now(),
+            'created' => dtHelper()->dbNow()->formatDateTimeForDb(),
             'type' => 'idea',
             'projectId' => $values['projectId'],
         ]);
@@ -182,13 +182,13 @@ class Ideas
     public function editCanvasItem(array $values): void
     {
         $this->db->table('zp_canvas_items')
-            ->where('id', $values['itemId'])
+            ->where('id', (int) $values['itemId'])
             ->update([
                 'description' => $values['description'],
                 'assumptions' => $values['assumptions'],
                 'data' => $values['data'],
                 'conclusion' => $values['conclusion'],
-                'modified' => now(),
+                'modified' => dtHelper()->dbNow()->formatDateTimeForDb(),
                 'status' => $values['status'],
                 'milestoneId' => $values['milestoneId'],
                 'tags' => $values['tags'],
@@ -240,6 +240,7 @@ class Ideas
                 'zp_canvas_items.modified',
                 'zp_canvas_items.canvasId',
                 'zp_canvas_items.sortindex',
+                'zp_canvas_items.tags',
                 'zp_canvas_items.milestoneId',
                 't1.firstname AS authorFirstname',
                 't1.lastname AS authorLastname',
@@ -315,8 +316,8 @@ class Ideas
             'conclusion' => $values['conclusion'] ?? '',
             'box' => $values['box'] ?? 'idea',
             'author' => $values['author'] ?? session('userdata.id'),
-            'created' => now(),
-            'modified' => now(),
+            'created' => dtHelper()->dbNow()->formatDateTimeForDb(),
+            'modified' => dtHelper()->dbNow()->formatDateTimeForDb(),
             'canvasId' => $values['canvasId'],
             'status' => $values['status'] ?? '',
             'milestoneId' => $values['milestoneId'] ?? '',

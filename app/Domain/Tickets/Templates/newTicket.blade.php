@@ -24,7 +24,7 @@
 
             <ul>
                 <li>
-                    <a href="#ticketdetails">{!! __('tabs.ticketDetails') !!}</a>
+                    <a href="#ticketdetails"><span class="fa fa-star"></span> {!! __('tabs.ticketDetails') !!}</a>
                 </li>
             </ul>
 
@@ -44,10 +44,6 @@
     jQuery(document).ready(function() {
         leantime.ticketsController.initTicketTabs();
         leantime.ticketsController.initTagsInput();
-    });
-
-
-    jQuery(window).load(function () {
         jQuery(window).resize();
     });
 

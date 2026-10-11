@@ -6,6 +6,7 @@ use Endroid\QrCode\Color\Color;
 use Endroid\QrCode\Label\Label;
 use Endroid\QrCode\QrCode;
 use Endroid\QrCode\Writer\PngWriter;
+use Leantime\Domain\TwoFA\Events\TwoFactorEnabled;
 use Leantime\Domain\Users\Repositories\Users as UserRepository;
 use RobThree\Auth\Providers\Qr\IQRCodeProvider;
 use RobThree\Auth\TwoFactorAuth;
@@ -17,7 +18,9 @@ use RobThree\Auth\TwoFactorAuthException;
  * Owns TOTP secret generation, QR-code construction, code verification, and
  * persistence of the user's 2FA state so controllers stay thin.
  *
- * @api
+ * Deliberately NOT part of the JSON-RPC surface: every method takes a caller-supplied
+ * $userId with no ownership check. The only caller is TwoFA\Controllers\Edit acting on
+ * the session user.
  */
 class TwoFA
 {
@@ -36,7 +39,7 @@ class TwoFA
      *
      * @throws TwoFactorAuthException
      *
-     * @api
+     * @internal Not exposed over JSON-RPC: $userId is caller-supplied and unverified.
      */
     public function getSetupData(int $userId): array
     {
@@ -66,7 +69,7 @@ class TwoFA
      * @param  int  $userId  The user to store the secret for
      * @param  string  $secret  The TOTP secret
      *
-     * @api
+     * @internal Not exposed over JSON-RPC: $userId is caller-supplied and unverified.
      */
     public function saveSecret(int $userId, string $secret): void
     {
@@ -83,7 +86,7 @@ class TwoFA
      *
      * @throws TwoFactorAuthException
      *
-     * @api
+     * @internal Not exposed over JSON-RPC: $userId is caller-supplied and unverified.
      */
     public function verifyAndEnable(int $userId, string $secret, string $code): bool
     {
@@ -93,10 +96,16 @@ class TwoFA
             return false;
         }
 
-        $this->userRepo->patchUser($userId, [
+        $saved = $this->userRepo->patchUser($userId, [
             'twoFAEnabled' => 1,
             'twoFASecret' => $secret,
         ]);
+
+        if (! $saved) {
+            return false;
+        }
+
+        TwoFactorEnabled::dispatch(userId: $userId);
 
         return true;
     }
@@ -106,7 +115,7 @@ class TwoFA
      *
      * @param  int  $userId  The user to disable 2FA for
      *
-     * @api
+     * @internal Not exposed over JSON-RPC: $userId is caller-supplied and unverified.
      */
     public function disable2FA(int $userId): void
     {

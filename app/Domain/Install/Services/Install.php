@@ -6,6 +6,7 @@ use Illuminate\Contracts\Container\BindingResolutionException;
 use Leantime\Core\Configuration\AppSettings;
 use Leantime\Domain\Install\Repositories\Install as InstallRepository;
 use Leantime\Domain\Setting\Services\Setting as SettingService;
+use Leantime\Domain\Users\Events\UserCreated;
 
 class Install
 {
@@ -79,14 +80,23 @@ class Install
     /**
      * runInstall - executes the database setup for a fresh installation.
      *
+     * The installer seeds the first (owner) account with id 1 (see SchemaBuilder), reported as
+     * {@see UserCreated} with source 'install' once the setup succeeded.
+     *
      * @param  array  $values  Validated install values (email, firstname, lastname, company).
      * @return bool True on successful setup, false otherwise.
      *
-     * @api
+     * @internal Not exposed over JSON-RPC: only the Install controller may run the installer.
      */
     public function runInstall(array $values): bool
     {
-        return $this->installRepo->setupDB($values);
+        $installed = $this->installRepo->setupDB($values);
+
+        if ($installed) {
+            UserCreated::dispatch(userId: 1, role: 50, source: 'install');
+        }
+
+        return $installed;
     }
 
     /**
@@ -114,7 +124,7 @@ class Install
      *
      * @throws BindingResolutionException
      *
-     * @api
+     * @internal Not exposed over JSON-RPC: only the Install/Update controllers may run migrations.
      */
     public function runUpdate(): bool|array
     {

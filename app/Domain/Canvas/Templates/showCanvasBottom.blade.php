@@ -31,10 +31,6 @@
 
     jQuery(document).ready(function() {
 
-        if(jQuery('#searchCanvas').length > 0) {
-            new SlimSelect({ select: '#searchCanvas' });
-        }
-
         @if(isset($_GET['closeModal']))
             jQuery.nmTop().close();
         @endif
@@ -45,9 +41,6 @@
 
         @if($login::userIsAtLeast($roles::$editor))
             leantime.canvasController.initCanvasLinks();
-            leantime.canvasController.initUserDropdown();
-            leantime.canvasController.initStatusDropdown();
-            leantime.canvasController.initRelatesDropdown();
         @else
             leantime.authController.makeInputReadonly(".maincontentinner");
         @endif

@@ -8,17 +8,21 @@ use Illuminate\Http\Exceptions\HttpResponseException;
 use Illuminate\Session\SessionManager;
 use Illuminate\Support\Facades\Log;
 use Laravel\Sanctum\HasApiTokens;
+use Leantime\Core\Auth\PasswordFingerprint;
 use Leantime\Core\Configuration\Environment as EnvironmentCore;
 use Leantime\Core\Controller\Frontcontroller as FrontcontrollerCore;
 use Leantime\Core\Events\DispatchesEvents;
+use Leantime\Core\Http\TrustedAppUrl;
 use Leantime\Core\Language as LanguageCore;
 use Leantime\Core\Mailer as MailerCore;
 use Leantime\Core\UI\Theme;
+use Leantime\Domain\Auth\Events\LoginSucceeded;
 use Leantime\Domain\Auth\Models\Roles;
 use Leantime\Domain\Auth\Repositories\AccessTokenRepository;
 use Leantime\Domain\Auth\Repositories\Auth as AuthRepository;
 use Leantime\Domain\Ldap\Services\Ldap;
 use Leantime\Domain\Setting\Repositories\Setting as SettingRepository;
+use Leantime\Domain\Users\Events\UserCreated;
 use Leantime\Domain\Users\Repositories\Users as UserRepository;
 use Ramsey\Uuid\Uuid;
 use RobThree\Auth\TwoFactorAuth;
@@ -26,13 +30,6 @@ use RobThree\Auth\TwoFactorAuth;
 class Auth implements Authenticatable
 {
     use DispatchesEvents, HasApiTokens, \Illuminate\Auth\Authenticatable;
-
-    /**
-     * @var int|null user id from DB
-     */
-    private ?int $userId = null;
-
-    private ?string $password = null;
 
     private ?SessionManager $session = null;
 
@@ -186,6 +183,8 @@ class Auth implements Authenticatable
                     $userId = $this->userRepo->addUser($userArray);
 
                     if ($userId !== false) {
+                        UserCreated::dispatch(userId: (int) $userId, role: (int) $userArray['role'], source: 'ldap');
+
                         $user = $this->userRepo->getUserByEmail($usernameWDomain);
                     } else {
 
@@ -207,8 +206,10 @@ class Auth implements Authenticatable
                     $this->userRepo->editUser($user, $user['id']);
                 }
 
-                if ($user !== false && is_array($user)) {
+                if ($user !== false) {
                     $this->setUserSession($user, true);
+                    $this->learnTrustedAppUrl($user);
+                    $this->dispatchLoginSucceeded($user, 'ldap');
 
                     return true;
                 } else {
@@ -231,8 +232,10 @@ class Auth implements Authenticatable
         // Check even if ldap is turned on to allow contractors and clients to have an account
         $user = $this->authRepo->getUserByLogin($username, $password);
 
-        if ($user !== false && is_array($user)) {
+        if ($user !== false) {
             $this->setUserSession($user);
+            $this->learnTrustedAppUrl($user);
+            $this->dispatchLoginSucceeded($user, 'password');
 
             self::dispatch_event('afterLoginCheck', ['username' => $username, 'password' => $password, 'authService' => app()->make(self::class)]);
 
@@ -242,6 +245,84 @@ class Auth implements Authenticatable
             self::dispatch_event('afterLoginCheck', ['username' => $username, 'password' => $password, 'authService' => app()->make(self::class)]);
 
             return false;
+        }
+    }
+
+    /**
+     * dispatchLoginSucceeded - reports a completed sign-in as {@see LoginSucceeded}.
+     *
+     * Accounts with two-factor authentication have not finished signing in after the first factor,
+     * so for them the method is parked in the session and the event fires from
+     * {@see self::set2FAVerified()} once the second factor passed. Otherwise it fires right away
+     * (and any method parked by an abandoned 2FA sign-in is dropped).
+     *
+     * @internal Not exposed over JSON-RPC; called by the interactive login flows only.
+     *
+     * @param  array  $user  the zp_user row that just signed in
+     * @param  string  $method  how the user authenticated ('password', 'ldap', 'oidc', 'token', ...)
+     */
+    public function dispatchLoginSucceeded(array $user, string $method): void
+    {
+        if (! empty($user['twoFAEnabled'])) {
+            session(['auth.pendingLoginMethod' => $method]);
+
+            return;
+        }
+
+        session()->forget('auth.pendingLoginMethod');
+
+        LoginSucceeded::dispatch(userId: (int) $user['id'], method: $method);
+    }
+
+    /**
+     * learnTrustedAppUrl - records the URL of this sign-in as the trusted app URL for email links
+     * when the user is an owner/admin and no URL is known yet (see {@see TrustedAppUrl}).
+     *
+     * Accounts with two-factor authentication are skipped here: their sign-in is not complete
+     * until the second factor is verified, so the URL is learned then instead
+     * ({@see self::learnTrustedAppUrlAfter2FA()}). A password alone never teaches the URL.
+     *
+     * Never interrupts the login: a failure is logged and ignored.
+     *
+     * @internal Not exposed over JSON-RPC; called by the interactive login flows only.
+     *
+     * @param  array  $user  the zp_user row that just signed in
+     */
+    public function learnTrustedAppUrl(array $user): void
+    {
+        if (! empty($user['twoFAEnabled'])) {
+            return;
+        }
+
+        $this->recordTrustedAppUrl($user['role'] ?? null);
+    }
+
+    /**
+     * learnTrustedAppUrlAfter2FA - records the trusted app URL once the current session has
+     * passed its second factor (same rules as {@see self::learnTrustedAppUrl()}).
+     *
+     * @internal Not exposed over JSON-RPC; called by the 2FA verification flow only.
+     */
+    public function learnTrustedAppUrlAfter2FA(): void
+    {
+        if (! session('userdata.twoFAVerified')) {
+            return;
+        }
+
+        $this->recordTrustedAppUrl(session('userdata.role'));
+    }
+
+    /**
+     * Hands the role and current request to {@see TrustedAppUrl::learnFromAdminLogin()}; never throws.
+     *
+     * @param  mixed  $role  the signed-in user's role (numeric key or role name)
+     */
+    private function recordTrustedAppUrl(mixed $role): void
+    {
+        try {
+            app()->make(TrustedAppUrl::class)->learnFromAdminLogin($role, request());
+        } catch (\Throwable $e) {
+            Log::warning('Could not record the application URL at login: '.$e->getMessage());
         }
     }
 
@@ -258,6 +339,15 @@ class Auth implements Authenticatable
     }
 
     /**
+     * setUserSession - establishes the web session for an authenticated user.
+     *
+     * When the session does not already belong to this user (a fresh login) the session id is
+     * regenerated first, so an id planted before authentication can never be carried into the
+     * authenticated session. The session is also pinned to the user's current password hash
+     * (see {@see PasswordFingerprint}) so a later password change logs it out.
+     *
+     * @param  mixed  $user  the zp_user row
+     * @param  bool  $isExternalAuth  true when an external identity provider authenticated the user
      * @return false|void
      *
      * @throws BindingResolutionException
@@ -268,6 +358,10 @@ class Auth implements Authenticatable
             return false;
         }
 
+        if ((int) session('userdata.id') !== (int) $user['id']) {
+            session()->regenerate(true);
+        }
+
         // Web-login session. twoFAVerified: false — the web flow enforces interactive 2FA via the
         // AuthCheck gate. Built via the shared factory (role NAME string + consistent fields), with
         // the web-only globalUserId added on top.
@@ -276,8 +370,21 @@ class Auth implements Authenticatable
 
         $currentUser = self::dispatch_filter('user_session_vars', $currentUser);
 
+        // Set after the filter so plugins can't drop it. The row may come from a stripped source
+        // without the hash; fall back to the repository so the fingerprint is always real.
+        $passwordHash = array_key_exists('password', $user)
+            ? $user['password']
+            : ($this->userRepo->getUser((int) $user['id'], false)['password'] ?? '');
+        $currentUser['pwfp'] = PasswordFingerprint::of($passwordHash);
+
         session(['userdata' => $currentUser]);
         session(['usersettings' => $currentUser['settings']]);
+
+        // The login page itself ran the Localization middleware without a user and cached that,
+        // so drop the flag: the next request then loads this user's timezone, language and date/time
+        // formats. Without it the session kept the server defaults, and calendars ran in the browser's
+        // zone while the server read dates in the default one.
+        session()->forget('localization.cached');
 
         $this->updateUserSessionDB($currentUser['id'], session()->getId());
 
@@ -347,6 +454,11 @@ class Auth implements Authenticatable
             session()->forget($key);
         }
 
+        // Drop the whole session and issue a new id + CSRF token so nothing from the
+        // authenticated session (including its id) survives the logout.
+        session()->invalidate();
+        session()->regenerateToken();
+
         self::dispatch_event('afterSessionDestroy', ['authService' => app()->make(self::class)]);
 
     }
@@ -354,12 +466,32 @@ class Auth implements Authenticatable
     /**
      * validateResetLink - validates that the password reset link belongs to a user account in the database
      *
-     * @param  string  $hash  invite link hash
+     * Only a hash of the reset token is stored, so the token from the link is hashed
+     * before it is looked up.
+     *
+     * @param  string  $token  the reset token from the password reset link
      */
-    public function validateResetLink(string $hash): bool
+    public function validateResetLink(string $token): bool
     {
+        if ($token === '') {
+            return false;
+        }
 
-        return $this->authRepo->validateResetLink($hash);
+        return $this->authRepo->validateResetLink($this->hashResetToken($token));
+    }
+
+    /**
+     * hashResetToken - one-way hash of a password reset token as it is stored in the database.
+     *
+     * The token itself is only ever sent to the user by email; a database read therefore
+     * never yields a usable reset link.
+     *
+     * @param  string  $token  the plain reset token
+     * @return string the sha256 hex digest stored in zp_user.pwReset
+     */
+    private function hashResetToken(string $token): string
+    {
+        return hash('sha256', $token);
     }
 
     /**
@@ -373,9 +505,12 @@ class Auth implements Authenticatable
     }
 
     /**
-     * generateLinkAndSendEmail - generates an invitation link (hash) and sends email to user
+     * generateLinkAndSendEmail - generates a password reset link and emails it to the user
      *
-     * @param  string  $username  new user to be invited (email)
+     * The link is built from the trusted application URL ({@see TrustedAppUrl}), never from the
+     * request host. When no trusted URL is known no email is sent and a warning is logged.
+     *
+     * @param  string  $username  the account's email address
      * @return bool returns true on success, false on failure
      *
      * @throws BindingResolutionException
@@ -383,21 +518,32 @@ class Auth implements Authenticatable
     public function generateLinkAndSendEmail(string $username): bool
     {
 
+        // The emailed link carries the reset token, so it must point at a URL we trust. Without
+        // one, the only other source is the request's Host header, which the (unauthenticated)
+        // caller controls. The caller sees the same response either way.
+        $trustedAppUrl = app()->make(TrustedAppUrl::class)->get();
+        if ($trustedAppUrl === null) {
+            Log::warning('Password reset email not sent: the application URL is unknown. Set LEAN_APP_URL to your public URL (e.g. https://pm.example.com), or sign in once as an administrator on that URL.');
+
+            return false;
+        }
+
         $userFromDB = $this->userRepo->getUserByEmail($username);
 
         if ($userFromDB !== false && count($userFromDB) > 0) {
             if ($userFromDB['pwResetCount'] < $this->pwResetLimit) {
-                $permitted_chars = '0123456789abcdefghijklmnopqrstuvwxyz';
-                $resetLink = substr(str_shuffle($permitted_chars), 0, 32);
+                // 256 bits from the CSPRNG. Only the hash is persisted; the plain token
+                // exists solely in the emailed link.
+                $resetToken = bin2hex(random_bytes(32));
 
-                $result = $this->authRepo->setPWResetLink($username, $resetLink);
+                $result = $this->authRepo->setPWResetLink($username, $this->hashResetToken($resetToken));
 
                 if ($result) {
                     // Don't queue, send right away
                     $mailer = app()->make(MailerCore::class);
                     $mailer->setContext('password_reset');
                     $mailer->setSubject($this->language->__('email_notifications.password_reset_subject'));
-                    $actual_link = ''.BASE_URL.'/auth/resetPw/'.$resetLink;
+                    $actual_link = $trustedAppUrl.'/auth/resetPw/'.$resetToken;
                     $mailer->setHtml(sprintf($this->language->__('email_notifications.password_reset_message'), $actual_link));
                     $to = [$username];
                     $mailer->sendMail($to, 'Leantime System');
@@ -413,9 +559,20 @@ class Auth implements Authenticatable
         return false;
     }
 
-    public function changePw(string $password, string $hash): bool
+    /**
+     * changePw - sets a new password for the account the reset token belongs to.
+     *
+     * @param  string  $password  the new plain password
+     * @param  string  $token  the reset token from the password reset link
+     * @return bool true when a matching, unexpired reset request was found and updated
+     */
+    public function changePw(string $password, string $token): bool
     {
-        return $this->authRepo->changePW($password, $hash);
+        if ($token === '') {
+            return false;
+        }
+
+        return $this->authRepo->changePW($password, $this->hashResetToken($token));
     }
 
     /**
@@ -672,9 +829,23 @@ class Auth implements Authenticatable
         return session('userdata.twoFAVerified');
     }
 
+    /**
+     * set2FAVerified - marks the session as having passed the second factor.
+     *
+     * The session id is regenerated because the session gains privileges at this point.
+     */
     public function set2FAVerified(): void
     {
+        session()->regenerate(true);
         session(['userdata.twoFAVerified' => true]);
+
+        // The sign-in is complete now: report it with the first factor's method (parked by
+        // dispatchLoginSucceeded()).
+        $pendingLoginMethod = session()->pull('auth.pendingLoginMethod');
+        $userId = (int) session('userdata.id');
+        if (is_string($pendingLoginMethod) && $userId > 0) {
+            LoginSucceeded::dispatch(userId: $userId, method: $pendingLoginMethod);
+        }
     }
 
     private function logFailedLogin(string $user): void
@@ -683,7 +854,9 @@ class Auth implements Authenticatable
         $date = new \DateTime;
         $date = $date->format('y:m:d h:i:s');
 
-        $ip = $_SERVER['REMOTE_ADDR'];
+        // The client's address, honouring the trusted-proxy configuration (LEAN_TRUSTED_PROXIES); behind
+        // a reverse proxy REMOTE_ADDR is always the proxy, so every failed login looked like one host.
+        $ip = request()->getClientIp() ?? 'unknown';
         $msg = '['.$date.']['.$ip.'] Login failed for user: '.$user;
 
         Log::info($msg);
@@ -694,14 +867,23 @@ class Auth implements Authenticatable
         return 'id';
     }
 
+    /**
+     * Not implemented yet: the Auth service is never used as the authenticated user object.
+     *
+     * @return null
+     */
     public function getAuthIdentifier()
     {
-        return $this->userId;
+        return null;
     }
 
+    /**
+     * Not implemented yet: the Auth service is never used as the authenticated user object.
+     * Authenticatable::getAuthPassword is contractually a string.
+     */
     public function getAuthPassword()
     {
-        return $this->password;
+        return '';
     }
 
     public function getAuthPasswordName()
@@ -735,6 +917,7 @@ class Auth implements Authenticatable
 
         if ($user) {
             $this->setUserSession($user);
+            $this->dispatchLoginSucceeded($user, 'token');
 
             // Turn off 2FA for token verification
             $this->set2FAVerified();

@@ -10,7 +10,7 @@
             <div class="row">
                 <div class="col-md-12">
                     <div class="form-group">
-                        <x-global::forms.text-input variant="headline" name="name" id="name" style="width:99%"  value="{{ $project['name'] }}" placeholder="{{ __('input.placeholders.enter_title_of_project') }}" />
+                        <x-global::forms.text-input width="full" variant="headline" name="name" id="name" value="{{ $project['name'] }}" placeholder="{{ __('input.placeholders.enter_title_of_project') }}" />
                     </div>
                 </div>
             </div>
@@ -41,7 +41,7 @@
                 <div class="col-md-12 center">
                     <h4 class="widgettitle title-light"><i class="fa-regular fa-rectangle-list"></i> Project Type</h4>
                     <p>The type of the project. This will determine which features are available.</p>
-                    <select name="type">
+                    <x-global::forms.select enhanced name="type">
                         @foreach ($projectTypes as $key => $type)
                             <option value="{{ $tpl->escape($key) }}"
                             @if ($project['type'] == $key)
@@ -49,7 +49,7 @@
                             @endif
                             >{!! __($tpl->escape($type)) !!}</option>
                         @endforeach
-                    </select>
+                    </x-global::forms.select>
                     <br /><br />
                 </div>
                 @endif
@@ -109,13 +109,13 @@
 
                         <label class="control-label">{!! __('label.project_start') !!}</label>
                         <div class="">
-                            <input type="text" class="dates" style="width:100px;" name="start" autocomplete="off"
+                            <input type="text" class="field-width-sm dates" name="start" autocomplete="off"
                                    value="{{ format($project['start'])->date() }}" placeholder="{{ __('language.dateformat') }}"/>
 
                         </div>
                         <label class="control-label">{!! __('label.project_end') !!}</label>
                         <div class="">
-                            <input type="text" class="dates" style="width:100px;" name="end" autocomplete="off"
+                            <input type="text" class="field-width-sm dates" name="end" autocomplete="off"
                                    value="{{ format($project['end'])->date() }}" placeholder="{{ __('language.dateformat') }}"/>
 
                         </div>
@@ -129,7 +129,7 @@
                     <div class="col-md-12 " style="margin-bottom: 30px;">
                     <h4 class="widgettitle title-light"><span
                             class="fa fa-building"></span>{!! __('label.client_product') !!}</h4>
-                    <select name="clientId" id="clientId">
+                    <x-global::forms.select enhanced name="clientId" id="clientId" aria-label="{{ __('label.client_product') }}">
 
                         @foreach ($clients as $row)
                             <option value="{{ $row['id'] }}"
@@ -139,7 +139,7 @@
                             >{{ $row['name'] }}</option>
                         @endforeach
 
-                    </select>
+                    </x-global::forms.select>
                     @if ($login::userIsAtLeast('manager'))
                         <br /><a href="{{ BASE_URL }}/clients/newClient" target="_blank">{!! __('label.client_not_listed') !!}</a>
                     @endif
@@ -162,12 +162,12 @@
 
                 <label class="col-md-4 control-label" for="projectState">{!! __('label.project_state') !!}</label>
                 <div class="col-md-6">
-                    <select name="projectState" id="projectState">
+                    <x-global::forms.select enhanced name="projectState" id="projectState">
                         <option value="0" @if ($project['state'] == 0) selected=selected @endif>{!! __('label.open') !!}</option>
 
                         <option value="-1" @if ($project['state'] == -1) selected=selected @endif>{!! __('label.closed') !!}</option>
 
-                    </select>
+                    </x-global::forms.select>
                 </div>
             </div>
 
@@ -181,11 +181,11 @@
                     {!! __('text.who_can_access') !!}
                     <br /><br />
 
-                    <select name="globalProjectUserAccess" style="max-width:300px;">
+                    <x-global::forms.select enhanced name="globalProjectUserAccess" aria-label="{{ __('labels.defaultaccess') }}">
                         <option value="restricted" {{ $project['psettings'] == 'restricted' ? "selected='selected'" : '' }}>{!! __('labels.only_chose') !!}</option>
                         <option value="clients" {{ $project['psettings'] == 'clients' ? "selected='selected'" : '' }}>{!! __('labels.everyone_in_client') !!}</option>
                         <option value="all" {{ $project['psettings'] == 'all' ? "selected='selected'" : '' }}>{!! __('labels.everyone_in_org') !!}</option>
-                    </select>
+                    </x-global::forms.select>
 
                 </div>
             </div>
@@ -197,7 +197,7 @@
                     <div class="form-group">
                         <label class="col-md-4 control-label"for="hourBudget">{!! __('label.hourly_budget') !!}</label>
                         <div class="col-md-6">
-                            <x-global::forms.text-input variant="large" name="hourBudget" id="hourBudget" value="{{ $project['hourBudget'] }}" />
+                            <x-global::forms.text-input name="hourBudget" id="hourBudget" value="{{ $project['hourBudget'] }}" />
 
                         </div>
                     </div>
@@ -205,7 +205,7 @@
                     <div class="form-group">
                         <label class="col-md-4 control-label" for="dollarBudget">{!! __('label.budget_cost') !!}</label>
                         <div class="col-md-6">
-                            <x-global::forms.text-input variant="large" name="dollarBudget" id="dollarBudget" value="{{ $project['dollarBudget'] }}" />
+                            <x-global::forms.text-input name="dollarBudget" id="dollarBudget" value="{{ $project['dollarBudget'] }}" />
 
                         </div>
                     </div>

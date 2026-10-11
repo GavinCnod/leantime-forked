@@ -22,6 +22,26 @@
     padding: 5px 10px;
     border-radius: 0px;
 }
+
+/* List menus inset their items so a hovered item's background stays inside the menu's rounded
+   corners. Content panels (div.dropdown-menu) keep their own padding. */
+ul.dropdown-menu {
+    padding: 8px;
+}
+
+ul.dropdown-menu > li > a,
+ul.dropdown-menu > li > .dropdown-item-wrapper,
+.dropdown-menu span.radio,
+.dropdown-menu span.checkbox {
+    border-radius: var(--box-radius-small);
+}
+
+/* .btn-group sets white-space: nowrap for its buttons; panels inside one (filters, view settings)
+   hold labels and fields that must wrap. */
+.btn-group > div.dropdown-menu {
+    white-space: normal;
+}
+
 .pagetitle .dropdown-menu > li > a {
     color:var(--primary-font-color);
     text-decoration:none;
@@ -97,6 +117,11 @@ body .maincontentinner .viewDropDown .dropdown-menu li a.active,
     text-transform:none;
 }
 
+/* A chip while its pick is being saved (core/chips.js). */
+.ticketDropdown .dropdown-toggle.lt-chip-saving {
+    opacity: 0.6;
+}
+
 .ticketDropdown.show {
     display:inline-block;
 }
@@ -106,10 +131,22 @@ body .maincontentinner .viewDropDown .dropdown-menu li a.active,
 
 }
 
-.ticketDropdown ul,
 .ticketDropdown ul li a{
-    top: 22px;
     font-size:var(--font-size-m);
+}
+
+/* Open the menu just below the chip itself: the chip's wrapper can be taller than the chip (e.g. when
+   it's centered in a flex row), and a fixed offset then put the menu over the chip. */
+.ticketDropdown ul {
+    top: calc(100% + 1px);
+    font-size:var(--font-size-m);
+}
+
+/* A chip with its menu open shows the focus ring, the same as a focused input or select (some pages move
+   focus off the chip on click, which used to drop the ring there). */
+.ticketDropdown.open > .dropdown-toggle {
+    outline: 2px solid var(--focus-ring-color, var(--accent1));
+    outline-offset: 2px;
 }
 
 .ticketDropdown.userDropdown {
@@ -179,7 +216,8 @@ body .maincontentinner .viewDropDown .dropdown-menu li a.active,
     margin-top:-1px;
 }
 
-.maincontent .dropdown img {
+.maincontent .dropdown img,
+.authorAvatar img {
     width:23px;
     border-radius: 12px;
     border: 1px solid var(--neutral);
@@ -202,16 +240,10 @@ body .maincontentinner .viewDropDown .dropdown-menu li a.active,
     display:block;
 }
 
-.chosen-results li[class*=" label-"] {
-    color:#fff;
-}
 
-.chosen-results li[class*=" label-"]:hover {
-    color:#555;
-}
-
-.chosen-results li.label-warning,
 .maincontent .ticketDropdown a.label-warning,
+.ss-values span.label-warning,
+.ss-list span.label-warning,
 .nyroModalCont .ticketDropdown a.label-warning,
 .label-warning,
 .label-yellow{
@@ -219,23 +251,26 @@ body .maincontentinner .viewDropDown .dropdown-menu li a.active,
     color:var(--yellow-text-color);
 }
 
-.chosen-results li.label-info,
 .maincontent .ticketDropdown a.label-info,
+.ss-values span.label-info,
+.ss-list span.label-info,
 .nyroModalCont .ticketDropdown a.label-info{
     background:var(--dark-blue);
     color:var(--dark-blue-text-color);
 }
 
-.chosen-results li.label-important,
 .maincontent .ticketDropdown a.label-important,
+.ss-values span.label-important,
+.ss-list span.label-important,
 .nyroModalCont .ticketDropdown a.label-important,
 .label-important{
     background:var(--red);
     color:var(--red-text-color);
 }
 
-.chosen-results li.label-danger,
 .maincontent .ticketDropdown a.label-danger,
+.ss-values span.label-danger,
+.ss-list span.label-danger,
 .nyroModalCont .ticketDropdown a.label-danger,
 .label-danger,
 .label-red{
@@ -243,8 +278,9 @@ body .maincontentinner .viewDropDown .dropdown-menu li a.active,
     color:var(--dark-red-text-color);
 }
 
-.chosen-results li.label-success,
 .maincontent .ticketDropdown a.label-success,
+.ss-values span.label-success,
+.ss-list span.label-success,
 .nyroModalCont .ticketDropdown a.label-success,
 .label-success,
 .label-green {
@@ -252,92 +288,103 @@ body .maincontentinner .viewDropDown .dropdown-menu li a.active,
     color:var(--green-text-color);
 }
 
-.chosen-results li.label-default,
 .maincontent .ticketDropdown a.label-default,
+.ss-values span.label-default,
+.ss-list span.label-default,
 .nyroModalCont .ticketDropdown a.label-default,
 .label-default{
     background: var(--grey);
     color:var(--grey-text-color);
 }
 
-.chosen-results li.label-default.milestone,
 .maincontent .ticketDropdown a.label-default.milestone,
 .nyroModalCont .ticketDropdown a.label-default.milestone {
     color:var(--blue-text-color);
 }
 
-.chosen-results li.label-purple,
 .maincontent .ticketDropdown a.label-purple,
+.ss-values span.label-purple,
+.ss-list span.label-purple,
 .nyroModalCont .ticketDropdown a.label-purple{
     background:var(--purple);
     color:var(--purple-text-color);
 }
 
-.chosen-results li.label-pink,
 .maincontent .ticketDropdown a.label-pink,
+.ss-values span.label-pink,
+.ss-list span.label-pink,
 .nyroModalCont .ticketDropdown a.label-pink{
     background:var(--pink);
     color:var(--pink-text-color);
 }
 
-.chosen-results li.label-brown,
 .maincontent .ticketDropdown a.label-brown,
+.ss-values span.label-brown,
+.ss-list span.label-brown,
 .nyroModalCont .ticketDropdown a.label-brown{
     background:var(--brown);
     color:var(--brown-text-color);
 }
 
-.chosen-results li.label-blue,
 .maincontent .ticketDropdown a.label-blue,
+.ss-values span.label-blue,
+.ss-list span.label-blue,
 .nyroModalCont .ticketDropdown a.label-blue{
     background:var(--blue);
     color:var(--blue-text-color);
 }
 
-.chosen-results li.label-dark-blue,
 .maincontent .ticketDropdown a.label-dark-blue,
+.ss-values span.label-dark-blue,
+.ss-list span.label-dark-blue,
 .nyroModalCont .ticketDropdown a.label-dark-blue{
     background:var(--dark-blue);
     color:var(--dark-blue-text-color);
 }
 
-.chosen-results li.label-darker-blue,
 .maincontent .ticketDropdown a.label-darker-blue,
+.ss-values span.label-darker-blue,
+.ss-list span.label-darker-blue,
 .nyroModalCont .ticketDropdown a.label-darker-blue{
     background:var(--darker-blue);
     color:var(--darker-blue-text-color);
 }
 
-.chosen-results li.label-green,
 .maincontent .ticketDropdown a.label-green,
+.ss-values span.label-green,
+.ss-list span.label-green,
 .nyroModalCont .ticketDropdown a.label-green{
     background:var(--green);
     color:var(--green-text-color);
 }
 
-.chosen-results li.label-dark-green,
 .maincontent .ticketDropdown a.label-dark-green,
+.ss-values span.label-dark-green,
+.ss-list span.label-dark-green,
 .nyroModalCont .ticketDropdown a.label-dark-green{
     background:var(--dark-green);
     color:var(--dark-green-text-color);
 }
 
-.chosen-results li.label-red,
 .maincontent .ticketDropdown a.label-red,
+.ss-values span.label-red,
+.ss-list span.label-red,
 .nyroModalCont .ticketDropdown a.label-red{
     background:var(--red);
     color:var(--red-text-color);
 }
 
-.chosen-results li.label-dark-red,
 .maincontent .ticketDropdown a.label-dark-red,
+.ss-values span.label-dark-red,
+.ss-list span.label-dark-red,
 .nyroModalCont .ticketDropdown a.label-dark-red{
     background:var(--dark-red);
     color:var(--dark-red-text-color);
 }
 
-.chosen-results li.label-grey,
 .maincontent .ticketDropdown a.label-grey,
+.ss-values span.label-grey,
+.ss-list span.label-grey,
 .nyroModalCont .ticketDropdown a.label-grey{
     background:var(--grey);
     color:var(--grey-text-color);
@@ -486,29 +533,41 @@ body .maincontentinner .viewDropDown .dropdown-menu li a.active,
     color:#fff;
 }
 
-.dropdown-menu span.radio input[type="radio"] {
-    float:left;
-    vertical-align: middle;
-    margin-top: 9px;
-    margin-right:5px;
+/* Checkbox / radio rows in menus and panels: input and label side by side on one line, label
+   wrapping next to the input (not under it). Replaces Bootstrap 2's float + negative-margin layout. */
+.dropdown-menu span.radio,
+.dropdown-menu span.checkbox {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    min-height: 0;
+    padding: 5px 10px;
+}
+
+.dropdown-menu span.radio input[type="radio"],
+.dropdown-menu span.checkbox input[type="checkbox"] {
+    float: none;
+    flex: 0 0 auto;
+    margin: 0;
+}
+
+.dropdown-menu span.radio label,
+.dropdown-menu span.checkbox label {
+    display: block;
+    flex: 1 1 auto;
+    margin: 0;
+    padding: 0;
 }
 
 .dropdown-menu span.radio {
-    display:block;
     font-size: 12px;
     color: var(--main-menu-link-color);
     margin: 0px;
-    padding: 5px 10px;
 }
 
 .dropdown-menu span.radio:hover {
     color: var(--dropdown-link-hover-color);
     background:var(--dropdown-link-hover-bg);
-}
-
-.dropdown-menu span.radio label {
-    display:inline-block;
-    width:100%;
 }
 
 .wikiSelect {

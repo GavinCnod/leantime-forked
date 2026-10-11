@@ -214,6 +214,10 @@ class Frontcontroller
     public function getValidControllerCall(string $moduleName, string $actionName, string $methodName, string $controllerType): array
     {
 
+        // Must run before the route cache lookup: a cached POST resolution would otherwise be
+        // returned for a GET that names the verb in the URL.
+        $this->assertVerbSegmentMatchesRequestMethod($methodName);
+
         $moduleName = Str::studly($moduleName);
         $actionName = Str::studly($actionName);
         $methodNameLower = Str::lower($methodName);
@@ -350,6 +354,8 @@ class Frontcontroller
      */
     public function getValidControllerMethod(string $controllerClass, string $method): string
     {
+        $this->assertVerbSegmentMatchesRequestMethod($method);
+
         $methodFormatted = Str::camel($method);
         $httpMethod = Str::lower($this->incomingRequest->getMethod());
 
@@ -378,6 +384,41 @@ class Frontcontroller
     }
 
     /**
+     * Refuses a URL segment that names an HTTP verb other than the one actually used.
+     *
+     * `/module/action/{method}` lets the URL pick a controller method. Custom action names
+     * keep working, but a segment like `post` or `delete` must not run that handler on a
+     * GET request: browsers treat GET as safe (it is sent cross-site with SameSite=Lax
+     * cookies), so a state-changing handler reached that way could be triggered by a link.
+     *
+     * @param  string  $methodName  The method segment taken from the URL (or the request verb).
+     *
+     * @throws NotFoundHttpException When the segment is a verb that differs from the request method.
+     */
+    private function assertVerbSegmentMatchesRequestMethod(string $methodName): void
+    {
+        $httpVerbs = ['get', 'post', 'put', 'patch', 'delete'];
+        $requestedVerb = Str::lower($methodName);
+
+        if (! in_array($requestedVerb, $httpVerbs, true)) {
+            return;
+        }
+
+        $actualVerb = Str::lower($this->incomingRequest->getMethod());
+
+        // HEAD is answered by the GET handler.
+        if ($actualVerb === 'head') {
+            $actualVerb = 'get';
+        }
+
+        if ($requestedVerb === $actualVerb) {
+            return;
+        }
+
+        throw new NotFoundHttpException('Method '.strip_tags($methodName).' does not match the request method');
+    }
+
+    /**
      * getActionName - split string to get actionName
      *
      * @throws BindingResolutionException
@@ -388,9 +429,9 @@ class Frontcontroller
         $actionParts = explode('.', empty($completeName) ? currentRoute() : $completeName);
 
         // If not action name was given, call index controller
-        if (is_array($actionParts) && count($actionParts) == 1) {
+        if (count($actionParts) == 1) {
             return 'index';
-        } elseif (is_array($actionParts) && count($actionParts) >= 2) {
+        } elseif (count($actionParts) >= 2) {
             return $actionParts[1];
         }
 
@@ -412,9 +453,9 @@ class Frontcontroller
         $actionParts = explode('.', empty($completeName) ? currentRoute() : $completeName);
 
         // If not action name was given, call index controller
-        if (is_array($actionParts) && count($actionParts) == 2) {
+        if (count($actionParts) == 2) {
             return strtolower(app('request')->getMethod());
-        } elseif (is_array($actionParts) && count($actionParts) == 3) {
+        } elseif (count($actionParts) == 3) {
             return $actionParts[2];
         }
 
@@ -431,9 +472,7 @@ class Frontcontroller
         $completeName ??= currentRoute();
         $actionParts = explode('.', empty($completeName) ? currentRoute() : $completeName);
 
-        if (is_array($actionParts)) {
-            return $actionParts[0];
-        }
+        return $actionParts[0];
     }
 
     /**

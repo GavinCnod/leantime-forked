@@ -17,60 +17,40 @@
 <!-- page header -->
 
 <div class="maincontent">
+    <x-global::navigation.view-tabs :tabs="[
+        ['url' => BASE_URL.'/timesheets/showMy', 'label' => __('links.week_view'), 'active' => false],
+        ['url' => BASE_URL.'/timesheets/showMyList', 'label' => __('links.list_view'), 'active' => true],
+    ]">
+        <x-slot:actions>
+            {{-- The filter fields belong to the #form form below (form="…"). --}}
+            <x-global::actions.dropdown variant="filter" menu-as="div" menu-class="filterBar" menu-style="width:250px;" keep-open class="filterWrapper">
+                <x-slot:trigger class="btn-link">{!! __('links.filter') !!} <span class="badge badge-primary">1</span></x-slot:trigger>
+                <label for="dateFrom">{!! __('label.date_from') !!}</label>
+                <input type="text" id="dateFrom" class="dateFrom" name="dateFrom" form="form" value="{{ $dateFrom->formatDateForUser() }}" />
+                <label for="dateTo">{!! __('label.until') !!}</label>
+                <input type="text" id="dateTo" class="dateTo" name="dateTo" form="form" value="{{ $dateTo->formatDateForUser() }}" />
+                <label for="kind">{!! __('label.type') !!}</label>
+                <x-global::forms.select id="kind" name="kind" form="form" onchange="this.form.submit();">
+                    <option value="all">{!! __('label.all_types') !!}</option>
+                    @foreach($kind as $key => $row)
+                        <option value="{{ $key }}" @selected($key == $actKind)>{!! __($row) !!}</option>
+                    @endforeach
+                </x-global::forms.select>
+                <div class="tw-mt-2">
+                    <x-global::forms.button tag="input" inputType="submit" form="form" contentRole="primary" :labelText="__('buttons.search')" class="reload" />
+                </div>
+            </x-global::actions.dropdown>
+        </x-slot:actions>
+    </x-global::navigation.view-tabs>
+
     <div class="maincontentinner">
         {!! $tpl->displayNotification() !!}
 
         <form action="{{ BASE_URL }}/timesheets/showMyList" method="post" id="form" name="form">
-            <div class="filterWrapper tw-relative">
-                <a onclick="jQuery('.filterBar').toggle();" class="btn btn-default pull-left">{!! __('links.filter') !!} (1)</a>
-                <div class="filterBar" style="display:none; top:30px;">
-
-                    <div class="filterBoxLeft">
-                        <label for="dateFrom">{!! __('label.date_from') !!} {!! __('label.date_to') !!}</label>
-                        <input type="text"
-                               id="dateFrom"
-                               class="dateFrom"
-                               name="dateFrom"
-                               value="{{ $dateFrom->formatDateForUser() }}"
-                               style="margin-bottom:10px; width:90px; float:left; margin-right:10px"/>
-                        <input type="text"
-                               id="dateTo"
-                               class="dateTo"
-                               name="dateTo"
-                               value="{{ $dateTo->formatDateForUser() }}"
-                               style="margin-bottom:10px; width:90px" />
-                    </div>
-
-                    <div class="filterBoxLeft">
-                        <label for="kind">{!! __('label.type') !!}</label>
-                        <select id="kind" name="kind" onchange="submit();">
-                            <option value="all">{!! __('label.all_types') !!}</option>
-                            @foreach($kind as $key => $row)
-                                <option value="{{ $key }}" @selected($key == $actKind)>{!! __($row) !!}</option>
-                            @endforeach
-                        </select>
-                    </div>
-                    <div class="filterBoxLeft">
-                        <label>&nbsp;</label>
-                        <x-global::forms.button tag="input" inputType="submit" contentRole="primary" :labelText="__('buttons.search')" class="reload" />
-                    </div>
-                    <div class="clearall"></div>
-                </div>
-            </div>
+            {{-- Export / column visibility act on the table, so they stay with it (like the To-Do table). --}}
             <div class="pull-right">
-                <div class="btn-group viewDropDown">
-                    <button class="btn dropdown-toggle" data-toggle="dropdown">{!! __('links.list_view') !!} {!! __('links.view') !!}</button>
-                    <ul class="dropdown-menu">
-                        <li><a href="{{ BASE_URL }}/timesheets/showMy">{!! __('links.week_view') !!}</a></li>
-                        <li><a href="{{ BASE_URL }}/timesheets/showMyList" class="active">{!! __('links.list_view') !!}</a></li>
-                    </ul>
-                </div>
-            </div>
-
-            <div class="pull-right" style="margin-right:3px;">
                 <div id="tableButtons" style="display:inline-block"></div>
             </div>
-
             <div class="clearfix"></div>
 
             <table cellpadding="0" cellspacing="0" border="0" class="table table-bordered display" id="allTimesheetsTable">
@@ -119,6 +99,7 @@
                         </td>
                         <td data-order="{{ $row['hours'] }}">
                             {{ $row['hours'] ?: 0 }}
+                            <small class="tw-opacity-60 tw-whitespace-nowrap">({{ \Leantime\Core\Support\Format::hoursMinutes($row['hours'] ?: 0, __('text.hours_minutes_short')) }})</small>
                         </td>
                         <td data-order="{{ $row['planHours'] }}">
                             {{ $row['planHours'] ?: 0 }}
@@ -170,7 +151,7 @@
                     <tr>
                         <td></td>
                         <td colspan="1"><strong>{!! __('label.total_hours') !!}</strong></td>
-                        <td colspan="11"><strong>{{ $sum }}</strong></td>
+                        <td colspan="11"><strong>{{ $sum }}</strong> <small class="tw-opacity-60 tw-whitespace-nowrap">({{ \Leantime\Core\Support\Format::hoursMinutes($sum, __('text.hours_minutes_short')) }})</small></td>
                     </tr>
                 </tfoot>
             </table>
