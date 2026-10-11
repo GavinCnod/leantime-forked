@@ -17,9 +17,9 @@ use Unit\TestCase;
  * missing. Leantime does not require intl and its Docker images do not install it, so the
  * project report page 500'd in production the moment a tile had a non-zero delta.
  *
- * The tile now formats via the intl-free format_number() helper. This test renders the real
- * component with a delta in a process that lacks intl, pinning the regression. (The companion
- * FormatNumberHelperTest covers the formatting semantics directly.)
+ * The tile now formats via the intl-free \Leantime\Core\Support\Format::number() (upstream
+ * 3.11). This test renders the real component with a delta in a process that lacks intl,
+ * pinning the regression. (FormatTest covers the formatting semantics directly.)
  */
 class StatTileDeltaFormattingTest extends TestCase
 {
