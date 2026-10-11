@@ -138,7 +138,18 @@ git merge upstream/master --no-edit
 | `TimesheetCest::deleteTimesheet` | failure（确认弹窗未出现） | **基线同款失败** |
 
 基线为 1E+1F（同样全部在 TimesheetCest）。本环境页面响应 ~10s（selenium 等待阈值 10–120s），该类失败高度时序敏感。
-**二轮全量复跑进行中**，用于判定新增 2 例是环境时序抖动还是确定性回归（结果见文末补充）。
+
+**验收测试（第二轮全量复跑）**：49 tests, 171 assertions, 5 skipped, **2 errors + 1 failure**（全部 TimesheetCest）。两轮对照：
+
+| 用例 | 一轮 | 二轮 | 基线 | 判定 |
+|---|---|---|---|---|
+| `showAllEditsTimesheet` | E | E | E | 环境既存（基线同款 WebDriver 超时） |
+| `deleteTimesheet` | F | F | F | 环境既存（基线同款） |
+| `changeTimezone` | E | E | 通过 | 两轮同一失败点：保存后 `waitForText(..., 20)` 超时；**失败产物证明时区已正确保存**（`America/Los_Angeles selected="selected"`），保存往返 ~20–25s 处于 20s 阈值边缘 → 慢环境时序，非功能回归 |
+| `logTimeOnTicketTimesheet` | F | 通过 | 通过 | **抖动**（一轮 4h 未入账 `finalSum=7`；二轮通过） |
+
+**结论**：升级后验收失败集合 = 基线既存 2 例 + 慢环境时序抖动（失败集两轮不一致，changeTimezone 产物证明功能正确）。
+**未发现与 3.11 升级相关的确定性功能回归**。建议在正常速度环境复跑该文件确认；4 例记入 §15 观察项。
 
 ## 11. P7 数据库升级端到端（PG / MySQL）
 
@@ -212,7 +223,45 @@ CostTracking / TeamDocs 已启用。工具：gstack browse（headless Chromium�
 
 ## 14. P10 收尾与提交清单
 
-（待填）
+### 分支提交（first-parent，基于 `dev-self-hosted` @ `130d4c7c4`）
+
+| 提交 | 说明 |
+|---|---|
+| `0cdb62935` | `chore(upgrade): merge upstream v3.11.0 (b0268c95b) into fork`（含 10 项冲突解决） |
+| `fa2969f69` | `refactor(core): retire fork format_number() in favor of upstream Format::number()` |
+| `3e1222670` | `fix(i18n): repair zh-CN.ini syntax error that broke parse_ini_file` |
+| `b6d71de48` | `docs(upgrade): record 3.11.0 merge, sync CLAUDE.md and deploy env template` |
+| `96891b96c` | `docs(upgrade): fill verification log (P1-P8) and add 3.11 revision note to dev guide` |
+| 本次收尾 | `chore(deps): re-lock composer.lock after the merge` / `chore: ignore gstack tooling state` / `docs(upgrade): finalize acceptance two-run comparison` |
+
+### 最终状态
+
+- `upgrade/3.11.0`：`git status` 干净；已推送 `origin/upgrade/3.11.0` 备份（**待负责人确认后合入 `dev-self-hosted`**，直接 merge 即可）
+- `dev-self-hosted` 未改动（`130d4c7c4`）；`master` 已同步 `upstream/master`（`b0268c95b`）
+- 构建产物（`blocklist.json`、`public/dist/mix-manifest.json`）保持上游合并版本不提交——两者均由构建流程
+  （`npx mix` + `node generateBlocklist.mjs` / `Dockerfile.prod`）再生
+
+### 测试环境清单（保留供复验；清理命令附后）
+
+| 资源 | 名称 | 说明 |
+|---|---|---|
+| 验收/单元栈 | `leantime-dev` / `leantime-db` / `leantime-redis` / `selenium` / `maildev` / `s3ninja` | `.dev` compose（MySQL 8.4） |
+| PG 升级测试库 | `leantime-pg-test`（postgres:16-alpine） | 已升级至 3.5.29 |
+| 浏览器 QA 实例 | `leantime-qa-pg`（端口 5081） | 已升级 PG 库 + 插件启用；登录 `admin@example.com` / `Admin123!` |
+| MySQL 升级测试库 | `leantime_upgrade_test`（dev MySQL 内） | 已升级至 3.5.29 |
+
+```bash
+# 清理命令（按需执行）
+docker rm -f leantime-qa-pg leantime-pg-test
+docker exec dev-leantime-db-1 mysql -uroot -pleantime -e "DROP DATABASE IF EXISTS leantime_upgrade_test"
+docker compose --file .dev/docker-compose.yaml --file .dev/docker-compose.tests.yaml down
+```
+
+### 回滚
+
+- 本分支不合入即零影响（`dev-self-hosted` 未动）
+- 若已合入：`git revert -m 1 0cdb62935`（或整体 reset 到 `130d4c7c4`）
+- 数据库：测试库均在容器/独立库内；生产升级前建议 `php bin/leantime db:backup`（本次未触碰生产）
 
 ## 15. 遗留事项
 
@@ -224,6 +273,9 @@ CostTracking / TeamDocs 已启用。工具：gstack browse（headless Chromium�
       最终不合入，需将该修复 cherry-pick 回 `dev-self-hosted`（该 bug 存在于 `130d4c7c4`）。
 - [ ] `upstream/master` 之后的新提交（v3.11.x 补丁）跟进策略待定（本次已建立 merge 血缘，
       后续可继续以 merge 方式跟进）。
+- [ ] **验收 `TimesheetCest` 时序敏感用例观察项**：`showAllEditsTimesheet` / `deleteTimesheet`
+      为基线既存失败；`changeTimezone` 为 20s 等待阈值边缘超时（产物证明功能正确）；
+      `logTimeOnTicketTimesheet` 一轮抖动。建议在正常速度环境复跑（详见 §10）。
 - [ ] 本地 tag 未推送 origin（仅 `master` 分支已同步；`v3.10.x`/`v3.11.0` tag 已在本地 fetch）。
 
 ## 附录 A — 基线失败用例（升级后对比基准，不得新增）
