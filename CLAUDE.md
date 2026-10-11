@@ -6,8 +6,8 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 A **self-hosted fork** of [Leantime](https://github.com/Leantime/leantime) (open source project management system), maintained by one team for their own use.
 
-- **Branch strategy**: `dev-self-hosted` is the working branch (fork-only commits on top of upstream). Since the 2026-10-11 upgrade, the fork **does track upstream via merges**: `master` mirrors `upstream/master` (synced to v3.11.0+10, `b0268c95b`), and `upgrade/3.11.0` is the merge-and-validate branch that upgrades `dev-self-hosted` from the old 3.10.0-era base to 3.11.0 (see `.docs/upgrade-1011/README.md`; merge into `dev-self-hosted` pending owner sign-off). Treat `dev-self-hosted` as the source of truth once the upgrade lands.
-- **Version**: Leantime **3.11.0** on `upgrade/3.11.0` (`app/Core/Configuration/AppSettings.php` → `$appVersion`; also `package.json`); `dev-self-hosted` is still 3.9.8 until the upgrade merges. The app version is read at *makefile parse time*, so bumping it changes build artifact names.
+- **Branch strategy**: `dev-self-hosted` is the working branch (fork-only commits on top of upstream). Since the 2026-10-11 upgrade, the fork **tracks upstream via merges**: `master` mirrors `upstream/master` (synced to v3.11.0+10, `b0268c95b`), and the validated `upgrade/3.11.0` branch was fast-forward merged into `dev-self-hosted` (see `.docs/upgrade-1011/README.md`). Follow the same merge-and-validate flow for future upstream releases.
+- **Version**: Leantime **3.11.0** (`app/Core/Configuration/AppSettings.php` → `$appVersion`; also `package.json`). The app version is read at *makefile parse time*, so bumping it changes build artifact names.
 - **Upstream**: `upstream` remote = `Leantime/leantime`; `origin` = `GavinCnod/leantime-forked`.
 - **Language**: the team works in Chinese. `docs/` and `.docs/` hold the Chinese operating guides, glossary, and design records — see [Team docs](#team-docs-and-chinese-documentation).
 

@@ -236,8 +236,8 @@ CostTracking / TeamDocs 已启用。工具：gstack browse（headless Chromium�
 
 ### 最终状态
 
-- `upgrade/3.11.0`：`git status` 干净；已推送 `origin/upgrade/3.11.0` 备份（**待负责人确认后合入 `dev-self-hosted`**，直接 merge 即可）
-- `dev-self-hosted` 未改动（`130d4c7c4`）；`master` 已同步 `upstream/master`（`b0268c95b`）
+- `upgrade/3.11.0`：已推送 origin 备份；**2026-10-11 已 fast-forward 合入 `dev-self-hosted`（`dev-self-hosted` @ `8b965e956`）并推送 origin**
+- `master` 已同步 `upstream/master`（`b0268c95b`）
 - 构建产物（`blocklist.json`、`public/dist/mix-manifest.json`）保持上游合并版本不提交——两者均由构建流程
   （`npx mix` + `node generateBlocklist.mjs` / `Dockerfile.prod`）再生
 
@@ -259,8 +259,7 @@ docker compose --file .dev/docker-compose.yaml --file .dev/docker-compose.tests.
 
 ### 回滚
 
-- 本分支不合入即零影响（`dev-self-hosted` 未动）
-- 若已合入：`git revert -m 1 0cdb62935`（或整体 reset 到 `130d4c7c4`）
+- 已合入 `dev-self-hosted`；回滚方式：`git reset --hard 130d4c7c4`（回到升级前）或 `git revert -m 1 0cdb62935`（撤销整个上游合并）
 - 数据库：测试库均在容器/独立库内；生产升级前建议 `php bin/leantime db:backup`（本次未触碰生产）
 
 ## 15. 遗留事项
