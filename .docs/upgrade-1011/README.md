@@ -128,7 +128,17 @@ git merge upstream/master --no-edit
 - 运行观察（操作性问题，非代码问题）：首轮全量单测因工具中止导致 stdout 管道失去读取端，
   进程写满管道后阻塞（`Ds` 状态）；改为容器内 `nohup` 后台运行 + 轮询日志后正常完成。
 
-**验收测试**：`codecept clean && run Acceptance --steps`（结果见下方补充）。
+**验收测试（第一轮）**：`codecept clean && run Acceptance --steps` → **49 tests, 168 assertions, 6 skipped, 2 errors + 2 failures**，全部集中在 `TimesheetCest`：
+
+| 用例 | 类型 | 基线对照 |
+|---|---|---|
+| `TimesheetCest::changeTimezone` | error（`waitForText('America/Los_Angeles', 20)` 超时） | 基线通过（3.11 该文件随新 select UI 有更新） |
+| `TimesheetCest::showAllEditsTimesheet` | error（WebDriver 超时） | **基线同款失败** |
+| `TimesheetCest::logTimeOnTicketTimesheet` | failure（`finalSum=11` 断言） | 基线通过 |
+| `TimesheetCest::deleteTimesheet` | failure（确认弹窗未出现） | **基线同款失败** |
+
+基线为 1E+1F（同样全部在 TimesheetCest）。本环境页面响应 ~10s（selenium 等待阈值 10–120s），该类失败高度时序敏感。
+**二轮全量复跑进行中**，用于判定新增 2 例是环境时序抖动还是确定性回归（结果见文末补充）。
 
 ## 11. P7 数据库升级端到端（PG / MySQL）
 
@@ -166,7 +176,27 @@ CLI 对**空库**执行 `db:migrate`：`setupDB()` 建库成功后 `updateDB()` 
 
 ## 12. P8 浏览器 QA
 
-（待填）
+实例：`leantime-qa-pg`（`docker run` 单容器，upgrade 分支代码 + 已升级 PG 库 3.5.29，端口 5081），
+CostTracking / TeamDocs 已启用。工具：gstack browse（headless Chromium）。
+
+| 检查项 | 结果 |
+|---|---|
+| 登录 + Dashboard | ✅ |
+| 帮助菜单版本显示 | ✅ `Leantime V3.11.0`（headMenu 重写为 dropdown 组件后正常） |
+| TeamDocs：帮助菜单三项 + 弹窗 + Markdown 渲染 | ✅ 标题「团队费用记账规矩」+ 2532 字正文（截图 `qa-teamdocs.png`） |
+| 新建任务弹窗成本字段（`beforeEndRightColumn`） | ✅ Planned/Actual Cost 输入渲染（`name=costtracking_*`），保存返回 303 |
+| showAll 成本列（`afterHeadCell` / `beforeRowEnd` / `afterClose`） | ✅ 表头/行 14:14 对齐；追加 `PLANNED COST`/`ACTUAL COST` 两列；行值 `1,234.50`/`800.00`；合计行 `Total: Planned 1,234.50 Actual 800.00` |
+| showList 行内徽标（`afterTitleCell`） | ✅ 标题格内 `1,234.50` / `800.00`（截图 `qa-showlist.png`） |
+| 看板卡片徽标（`ticketCard.meta`） | ✅ `1,234.50` / `800.00`（截图 `qa-kanban.png`） |
+| 项目卡成本（`projectCard.afterProgress`） | ✅ `<strong>1,234.50</strong>`（截图 `qa-projecthub.png`） |
+| 项目 Cost Tab（`projectTabsList`/`projectTabsContent`） | ✅ Project Cost Summary：Planned 1,234.50 / Actual 800.00 / Budget 0.00 / Remaining 800.00 / Costed tasks 1 |
+| 项目报表页（`Format::number` 无 intl 回退） | ✅ 渲染正常（`±0` delta 即该路径），无 500；dev 镜像无 ext-intl |
+| 搜索页（3.11 新功能） | ✅ 加载正常（`SearchCest` 验收亦通过） |
+| 控制台错误 | 仅早期（权限缓存修复前）的 500；修复后无新错误 |
+
+> 环境说明：QA 实例首次访问曾 500——`storage/framework/cache/installation` 目录由 root 身份的
+> CLI 操作创建，www-data 无权写入；清除该缓存目录后恢复。运维注意：在同一代码目录上混用
+> root CLI 与 web 容器时，注意 `storage/framework/cache` 属主。
 
 ## 13. P9 文档与部署配置同步
 
