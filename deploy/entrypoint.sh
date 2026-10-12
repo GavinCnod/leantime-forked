@@ -85,6 +85,12 @@ if [ -n "${PERSIST_ROOT}" ] && [ -d "${PERSIST_ROOT}" ]; then
     link_into_persist /var/www/html/storage              storage
 
     sync_builtin_plugins "${PERSIST_ROOT}/plugins"
+
+    # 镜像升级后，旧版本写入持久卷的视图命名空间清单可能缺少新域/新插件的组件，
+    # 导致 "Unable to locate a class or view for component [...]"（升级后登录 500）。
+    # 两个清单按需重建（原子写入，多 worker 并发重建安全），启动时删除即可。
+    rm -f "${PERSIST_ROOT}/storage/framework/viewPaths.php" \
+          "${PERSIST_ROOT}/storage/framework/composerPaths.php"
 else
     sync_builtin_plugins /var/www/html/app/Plugins
 fi

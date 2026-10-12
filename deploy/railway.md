@@ -208,6 +208,7 @@ Railway 卷**不能**被第二个服务共享，因此无法像单机那样跑�
 - 把改动 `git push` 到 Railway 关联分支 → 自动重新部署
 - 也可在 **Deployments** 手动点 **Deploy**
 - 带卷的服务重部署会有短暂停机（Railway 限制，正常现象）
+- 镜像升级后无需手动清缓存：单卷模式下入口脚本每次启动会删除持久卷里的 `storage/framework/viewPaths.php` 与 `composerPaths.php`，首次请求自动按新代码重建；老镜像升级到本改动之前的版本时仍需手动清理，见排错表
 
 ---
 
@@ -234,5 +235,6 @@ Railway 按**实际用量**秒级计费（2026 现行价）：CPU $20/vCPU/月�
 | 部署成功但打不开 | 确认已 Generate Domain，且目标端口为 8080、变量 `PORT=8080` |
 | 卷内写入权限错误 | 本镜像以 root 启动并 `chown`，一般不会遇到；若 Railway 强制非 root，添加变量 `RAILWAY_RUN_UID=0` |
 | 登录后重部署掉线 | 确认 `LEAN_SESSION_PASSWORD` 已固定；建议按步骤 9 启用 Redis |
+| 升级后能登录但页面 500，报 `Unable to locate a class or view for component [xxx::yyy]` | 持久卷里旧版本生成的视图命名空间清单过期（本次升级到 3.11 后缺 `search` 域即为此例）。在 app 服务终端执行 `rm -f /data/storage/framework/viewPaths.php /data/storage/framework/composerPaths.php`，刷新页面即可；包含本次修复的镜像启动时会自动清理 |
 | 数据库连不上 | 确认变量引用的服务名与 Postgres 服务名一致，且 `LEAN_DB_DEFAULT_CONNECTION=pgsql` |
 | 首次部署健康检查失败 | 不要配置 Healthcheck Path，等安装完成后再加 |
