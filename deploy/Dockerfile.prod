@@ -83,7 +83,7 @@ COPY .docker/config/php-fpm.conf     /usr/local/etc/php-fpm.d/www.conf
 COPY .docker/config/supervisord.conf /etc/supervisor/conf.d/supervisord.conf
 COPY .docker/start.sh                /start.sh
 COPY deploy/entrypoint.sh            /entrypoint.sh
-RUN chmod +x /start.sh /entrypoint.sh
+RUN sed -i 's/\r$//' /start.sh /entrypoint.sh && chmod +x /start.sh /entrypoint.sh
 
 # 目录与权限
 RUN mkdir -p \

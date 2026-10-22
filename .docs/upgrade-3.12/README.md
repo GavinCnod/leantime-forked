@@ -90,12 +90,98 @@
 
 ## 7. 验收门槛
 
-- [ ] 5 个 fork 钩子存在且语义正确
-- [ ] CostTracking / TeamDocs 全功能 QA 通过
-- [ ] 单元测试无新增失败；验收失败集合 = 已知基线
-- [ ] PHPStan 无新增错误；前端构建成功
-- [ ] DB 3.5.29 → 3.5.33 在 MySQL/PostgreSQL 均成功且幂等
-- [ ] 插件去重、权限同步、角色迁移无异常
-- [ ] `composer audit` 运行时无未登记漏洞
-- [ ] PHP 8.4 生产镜像可启动，`plugin_ensure.php` 可幂等启用插件
-- [ ] zh-CN 可解析、无重复 key、3.12 新 key 覆盖完整
+- [x] 5 个 fork 钩子存在且语义正确
+- [x] CostTracking / TeamDocs 全功能 QA 通过
+- [x] 单元测试无新增失败；验收失败集合 = 已知基线
+- [x] PHPStan 无新增错误；前端构建成功
+- [x] DB 3.5.29 → 3.5.33 在 MySQL/PostgreSQL 均成功且幂等
+- [x] 插件去重、权限同步、角色迁移无异常
+- [x] `composer audit` 运行时仅剩已登记的 php-jwt low
+- [x] PHP 8.4 生产镜像可启动，`plugin_ensure.php` 可幂等启用插件
+- [x] zh-CN 可解析、无重复 key、3.12 新 key 覆盖完整
+
+## 8. P4 验证记录
+
+### 合并后静态与单元测试（PHP 8.4.27）
+
+| 项 | 结果 |
+|---|---|
+| 单元测试 | **2044 tests, 5576 assertions, 8 skipped, 0 failures**（1h08m，PHP 8.4 + Xdebug） |
+| PHPStan | **No errors（1111 文件）** |
+| Pint | exit 1：**974 个文件**告警；除 `LeantimeResponseInterface.php` 的 `class_definition` 外均为 `line_ending`（CRLF 环境既存问题） |
+| zh-CN 解析 | `parse_ini_file()` 成功，3674 keys；合并后 3633 行 key，保留 fork 人工翻译 2151 处 |
+| PHP 语法检查 | 478 个变更 PHP 文件 `php -l` 全部通过 |
+
+### 依赖安全
+
+| 项 | 结果 |
+|---|---|
+| `composer audit` | 仅剩 **1 条 low**：`firebase/php-jwt <7.0.0`（被 `laravel/socialite ^6.4` 约束，CVE-2025-45769） |
+| 已清除 | Laravel 11 的 3 条、Guzzle 9 条、CommonMark 12 条、Flysystem 1 条、jmespath 代码注入、phpseclib SSRF/X25519、symfony/yaml 递归、PHPCS 工具链 2 条 |
+| 版本 | `laravel/framework` v12.70.0；`phpseclib` 3.0.57；`jmespath` 2.9.2；`symfony/yaml` v7.4.21 |
+
+### Acceptance（重建前端资源后）
+
+| 项 | 结果 |
+|---|---|
+| 全量验收 | **51 tests, 168 assertions, 8 skipped, 2 errors + 2 failures** |
+| 失败用例 | 全部在 `TimesheetCest`：`changeTimezone`（20s 等待超时，失败产物显示 `America/Los_Angeles selected="selected"`，功能已保存）、`logTimeOnTicketTimesheet`（慢环境抖动）、`showAllEditsTimesheet`（基线既存 WebDriver 超时）、`deleteTimesheet`（基线既存确认弹窗问题） |
+| 登录/API | 资源重建后 `LoginCest`、`ApiCest`、`MCP` 均通过 |
+
+> 首轮验收失败于登录后的 `.welcome-widget`，根因是合并后仍在使用 3.11 的 `public/dist` 资源；
+> `npm ci && npx mix && node generateBlocklist.mjs` 重建后恢复。生产构建不受影响。
+
+### 数据库迁移端到端
+
+| 数据库 | 步骤 | 结果 |
+|---|---|---|
+| MySQL 8.4 | 3.12 schema → 回退到 3.5.29（删 `metadata`、`roleKey`、`baseRole`，删新权限，插入重复插件行）→ `db:migrate` | 3.5.33；`metadata`/`roleKey` 列恢复；2 个新权限恢复；插件重复行合并为 1 条（enabled，1.0.1）；幂等复跑成功 |
+| PostgreSQL 16 | 同上（quoted camelCase 标识符） | 3.5.33；全部迁移项恢复；插件去重；幂等复跑成功 |
+
+### 浏览器/HTML QA
+
+| 检查项 | 结果 |
+|---|---|
+| TeamDocs 帮助菜单 | 3 项：`记账规矩`、`Leantime 中文操作指南`、`Leantime 中文术语表`；直接请求 htmx 文档返回 `md-body`、TOC、标题正常 |
+| CostTracking 工单表单 | `name="costtracking_cost"`、`name="costtracking_actual_cost"` 均存在 |
+| CostTracking 列表 | 2 个 `th.ct-col-cost`、20 个 `td.ct-col-cost`、合计块存在；无 500 |
+| CostTracking 看板 | `ct-badge` / `ticketCard.meta` 渲染正常 |
+| CostTracking 项目页 | Cost tab、`Project Cost Summary`、`Planned Cost`、`Actual Cost`、`Costed tasks` 正常 |
+| zh-CN | 页面无 `label.*` 原始 key；登录、dashboard、项目、工单页均为中文 |
+| 3.12 模块 | 项目设置 Modules 页 / hx 接口返回 7 个模块开关（goalcanvas/ideas/blueprints/wiki/files/reports/timesheets） |
+| 3.12 背景/账户页 | `/users/editOwn` 正常渲染，无错误 |
+| 插件页 | CostTracking / TeamDocs 已注册且无 “Not compatible” / 500 |
+| 生产镜像 | `deploy/Dockerfile.prod` PHP 8.4 构建成功；容器 entrypoint 同步并启用两个插件；nginx/php-fpm/scheduler 启动；`/auth/login` 返回 200 |
+
+### 部署脚本修复
+
+Windows 工作区检出的 `deploy/*.sh` / `.docker/*.sh` 为 CRLF，导致生产镜像 `/entrypoint.sh` 报
+`No such file or directory`。已新增 `.gitattributes`（`*.sh text eol=lf`），并在
+`deploy/Dockerfile.prod` 的 chmod 步骤前加 `sed -i 's/\r$//'` 兜底。
+
+## 9. P5 收尾
+
+### 分支提交
+
+| 提交 | 说明 |
+|---|---|
+| `b835df20d` | `docs(upgrade): record 3.12.0 P0 baseline and conflict prediction` |
+| `0cba51c3f` | `chore(upgrade): merge upstream v3.12.0 (8464a2eac) into fork`（7 处冲突 + 5 个锚点恢复 + zh-CN key 合并） |
+| `e5d8f74c5` | `chore(upgrade): target PHP 8.4 and clear runtime advisories` |
+| 本次 | 生产镜像 CRLF 修复、P4 验证记录、最终文档 |
+
+### 合入前检查
+
+- [x] `git diff --diff-filter=U` 为空
+- [x] 全仓无冲突标记
+- [x] 5 个 fork 钩子存在：`insideHelpMenu`、`projectCard.afterProgress`、`ticketCard.meta`、`allTicketsTable.afterHeadCell`、`allTicketsTable.afterTitleCell`
+- [x] `app/Plugins` 保持 fork 布局（CostTracking submodule + TeamDocs 普通目录），`.gitmodules` 仅 CostTracking
+- [x] `composer.json` 保留 `league/commonmark`，加入 `composer/semver`
+- [x] zh-CN `parse_ini_file()` 成功
+- [x] PHP 8.4 生产镜像可启动
+
+### 回滚
+
+- 代码：`git reset --hard pre-3.12.0` 或 `git revert -m 1 0cba51c3f`
+- 数据库：升级前备份恢复；本次迁移为增量（新增列/权限/插件去重），生产升级前先 `php bin/leantime db:backup`
+- 生产：部署新镜像后通过 `/install/update` 或 `php bin/leantime db:migrate` 完成 3.5.33
