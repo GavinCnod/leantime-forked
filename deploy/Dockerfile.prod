@@ -17,7 +17,7 @@ COPY . .
 RUN npx mix --production
 
 ########## Stage 2: 运行时 ##########
-FROM php:8.3-fpm-alpine
+FROM php:8.4-fpm-alpine
 
 # 运行时依赖
 RUN apk add --no-cache \

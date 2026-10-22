@@ -22,7 +22,7 @@ Self-hosted container deployment, **PostgreSQL 16 + Redis 7 + Caddy** (not the u
 | File | Purpose |
 |---|---|
 | `docker-compose.prod.yml` | db (Postgres) + redis + app + caddy. MySQL swap documented in a trailing comment block. |
-| `Dockerfile.prod` | 2-stage: `node:20-alpine` builds assets (`npx mix --production`), `php:8.3-fpm-alpine` runs nginx+php-fpm+scheduler under supervisord. |
+| `Dockerfile.prod` | 2-stage: `node:20-alpine` builds assets (`npx mix --production`), `php:8.4-fpm-alpine` runs nginx+php-fpm+scheduler under supervisord. |
 | `entrypoint.sh` | Boot: symlink persistence dirs, sync built-in plugins, auto-enable plugins, chown, `exec /start.sh`. |
 | `plugin_ensure.php` | Idempotent plugin install/enable by composer package name. Called by the entrypoint with retry (30×2s). |
 | `Caddyfile` | TLS terminating reverse proxy → `app:8080`. |
