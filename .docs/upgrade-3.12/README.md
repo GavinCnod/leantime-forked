@@ -185,3 +185,9 @@ Windows 工作区检出的 `deploy/*.sh` / `.docker/*.sh` 为 CRLF，导致生�
 - 代码：`git reset --hard pre-3.12.0` 或 `git revert -m 1 0cba51c3f`
 - 数据库：升级前备份恢复；本次迁移为增量（新增列/权限/插件去重），生产升级前先 `php bin/leantime db:backup`
 - 生产：部署新镜像后通过 `/install/update` 或 `php bin/leantime db:migrate` 完成 3.5.33
+
+### 最终状态
+
+- `dev-self-hosted` @ `f6fcfba85`（3.12.0 / dbVersion 3.5.33），已推送 `origin/dev-self-hosted`
+- `upgrade/3.12.0` 已推送备份；tag `fork-3.12.0` 已推送
+- 复验环境保留：`leantime-qa`（http://localhost:5081）、`leantime-pg-upgrade`（PostgreSQL 16）；生产数据库尚未执行升级
