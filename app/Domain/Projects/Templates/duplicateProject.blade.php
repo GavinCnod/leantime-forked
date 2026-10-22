@@ -1,16 +1,16 @@
-<h4 class="widgettitle title-light">{!! sprintf(__('headlines.duplicate_project_x'), e($project['name'])) !!}</h4>
-
-{!! $tpl->displayNotification() !!}
+<x-global::actions.modal-header>
+    <x-slot:title>{!! sprintf(__('headlines.duplicate_project_x'), e($project['name'])) !!}</x-slot:title>
+</x-global::actions.modal-header>{!! $tpl->displayNotification() !!}
 
 <form class="formModal" method="post" action="{{ BASE_URL }}/projects/duplicateProject/{{ $project['id'] }}">
 
-    <label>{!! __('label.newProjectName') !!}</label>
+    <x-global::forms.label>{!! __('label.newProjectName') !!}</x-global::forms.label>
     <x-global::forms.text-input name="projectName" value="{!! __('label.copy_of') !!} {{ $project['name'] }}" /><br />
 
-    <label>{!! __('label.planned_start_date') !!}</label>
+    <x-global::forms.label>{!! __('label.planned_start_date') !!}</x-global::forms.label>
     <input type="text" name="startDate" class="projectDateFrom" value="{{ dtHelper()->userNow()->formatDateForUser() }}" placeholder="{{ __('language.dateformat') }}" id="sprintStart" /><br />
 
-    <label>{!! __('label.client_product') !!}</label>
+    <x-global::forms.label>{!! __('label.client_product') !!}</x-global::forms.label>
     <x-global::forms.select name="clientId" id="clientId">
         @foreach ($allClients as $row)
             <option value="{{ $row['id'] }}"

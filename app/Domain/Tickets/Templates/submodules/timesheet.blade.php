@@ -10,12 +10,12 @@ $currentPay = $userHours * $userInfo['wage'];
             <div class="col-md-6">
 
 
-                <h4 class="widgettitle title-light"><span class="fa fa-clock-o"></span>{!! __('headline.add_time_entry', false) !!}</h4>
+                <x-global::elements.section-header icon="fa fa-clock-o">{!! __('headline.add_time_entry', false) !!}</x-global::elements.section-header>
                 <br />
 
                 <form method="post" action="{{ BASE_URL }}/tickets/showTicket/{{ $ticket->id }}#timesheet" class="formModal">
 
-                    <label for="kind">{!! __('label.timesheet_kind') !!}</label>
+                    <x-global::forms.label for="kind">{!! __('label.timesheet_kind') !!}</x-global::forms.label>
                     <span class="field">
                     <x-global::forms.select enhanced id="kind" name="kind">
                     @foreach ($kind as $key => $row)
@@ -26,14 +26,14 @@ $currentPay = $userHours * $userInfo['wage'];
                     </x-global::forms.select>
                     </span>
 
-                    <label for="timesheetdate">{!! __('label.date') !!}:</label>
+                    <x-global::forms.label for="timesheetdate">{!! __('label.date') !!}:</x-global::forms.label>
                     <input type="text" id="timesheetdate" name="date" class="dates" value="{{ format($values['date'])->date() }}" /><br/>
 
-                    <label for="hours">{!! __('label.hours') !!}</label>
+                    <x-global::forms.label for="hours">{!! __('label.hours') !!}</x-global::forms.label>
                     <span class="field">
                         <x-global::forms.text-input id="hours" name="hours" value="{{ $values['hours'] }}" size="7" width="sm" />
                     </span>
-                    <label for="description">{!! __('label.description') !!}</label>
+                    <x-global::forms.label for="description">{!! __('label.description') !!}</x-global::forms.label>
                     <span class="field">
                         <x-global::forms.textarea rows="5" cols="50" id="description" name="description">{{ $values['description'] }}</x-global::forms.textarea><br />
                     </span>
@@ -44,7 +44,7 @@ $currentPay = $userHours * $userInfo['wage'];
 
             </div>
             <div class="col-md-6">
-                <h4 class="widgettitle title-light"><span class="fa fa-bar-chart"></span>{!! __('subtitles.logged_hours_chart') !!}</h4>
+                <x-global::elements.section-header icon="fa fa-bar-chart">{!! __('subtitles.logged_hours_chart') !!}</x-global::elements.section-header>
 
                 <br />
                 <canvas id="canvas"></canvas>

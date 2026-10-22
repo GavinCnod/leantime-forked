@@ -11,16 +11,21 @@
     $currentProject = session('currentProject');
 @endphp
 
-<h4 class="widgettitle title-light"><i class="fa fa-list-1-2"></i> {!! __('label.sprint') !!} {{ $currentSprint->name }}</h4>
-
-{!! $tpl->displayNotification() !!}
+<x-global::actions.modal-header>
+    <x-slot:title><i class="fa fa-list-1-2"></i> {!! __('label.sprint') !!} {{ $currentSprint->name }}</x-slot:title>
+    @if (isset($currentSprint->id) && $currentSprint->id != '' && $login::userIsAtLeast($roles::$editor))
+        <x-slot:actions>
+            <li><a href="#/sprints/delSprint/{{ $currentSprint->id }}" class="delete"><i class="fa fa-trash-can"></i> {!! __('links.delete_sprint') !!}</a></li>
+        </x-slot:actions>
+    @endif
+</x-global::actions.modal-header>{!! $tpl->displayNotification() !!}
 
 <form class="formModal" method="post" action="{{ BASE_URL }}/sprints/editSprint/{{ $id }}">
 
-    <label>{!! __('label.sprint_name') !!}</label>
+    <x-global::forms.label>{!! __('label.sprint_name') !!}</x-global::forms.label>
     <x-global::forms.text-input name="name" value="{{ $currentSprint->name }}" placeholder="{{ __('label.sprint_name') }}" /><br />
 
-    <label>{!! __('label.project') !!}</label>
+    <x-global::forms.label>{!! __('label.project') !!}</x-global::forms.label>
     @if (! empty($lockProject))
         {{-- Program sprint: project is fixed to the owning program and cannot be reassigned. --}}
         @php $lockedProject = $allAssignedprojects[0] ?? null; @endphp
@@ -42,10 +47,10 @@
 
     <br /><br />
     <p>{!! __('label.sprint_dates') !!}</p><br/>
-    <label>{!! __('label.first_day') !!}</label>
+    <x-global::forms.label>{!! __('label.first_day') !!}</x-global::forms.label>
     <input type="text" name="startDate" autocomplete="off" value="{{ format($currentSprint->startDate)->date() }}" placeholder="{{ __('language.dateformat') }}" id="sprintStart" /><br />
 
-    <label>{!! __('label.last_day') !!}</label>
+    <x-global::forms.label>{!! __('label.last_day') !!}</x-global::forms.label>
     <input type="text" name="endDate" autocomplete="off" value="{{ format($currentSprint->endDate)->date() }} " placeholder="{{ __('language.dateformat') }}" id="sprintEnd" />
 
     <br />
@@ -55,9 +60,6 @@
             <x-global::forms.button tag="input" inputType="submit" contentRole="primary" :labelText="__('buttons.save')" />
         </div>
         <div class="col-md-6 align-right padding-top-sm">
-            @if (isset($currentSprint->id) && $currentSprint->id != '' && $login::userIsAtLeast($roles::$editor))
-                <a href="{{ BASE_URL }}/sprints/delSprint/{{ $currentSprint->id }}" class="delete formModal sprintModal"><i class="fa fa-trash"></i> {!! __('links.delete_sprint') !!}</a>
-            @endif
         </div>
     </div>
 

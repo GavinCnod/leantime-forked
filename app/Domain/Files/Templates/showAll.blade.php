@@ -20,17 +20,17 @@
                                         <i class="fa-file fileupload-exists"></i><span class="fileupload-preview"></span>
                                     </div>
                                     <span class="btn btn-file">
-                                    <span class="fileupload-new">Select file</span>
-                                    <span class='fileupload-exists'>Change</span>
+                                    <span class="fileupload-new">{{ __('label.select_file') }}</span>
+                                    <span class='fileupload-exists'>{{ __('buttons.change') }}</span>
                                     <input type='file' name='file' />
                                 </span>
 
-                                    <a href='#' class='btn fileupload-exists' data-dismiss='fileupload'>Remove</a>
+                                    <a href='#' class='btn fileupload-exists' data-dismiss='fileupload'>{{ __('buttons.remove') }}</a>
                                 </div>
                             </div>
                         </div>
 
-                        <x-global::forms.button tag="input" inputType="submit" contentRole="primary" :labelText="__('UPLOAD')" name="upload" />
+                        <x-global::forms.button tag="input" inputType="submit" contentRole="primary" :labelText="__('buttons.upload')" name="upload" />
 
                     </form>
 
@@ -40,7 +40,7 @@
 
                     <ul id='medialist' class='listfile'>
                         @foreach ($files as $file)
-                            <li class="{{ $file['moduleId'] }}">
+                            <x-global::elements.card as="li" compact class="{{ $file['moduleId'] }}">
                                 <x-global::actions.dropdown class="dropright" style="float:right;">
                                     <li class="nav-header">{!! __('subtitles.file') !!}</li>
                                     <li><a target="_blank" href="{{ BASE_URL }}/files/get?module={{ $file['module'] }}&encName={{ $file['encName'] }}&ext={{ $file['extension'] }}&realName={{ $file['realName'] }}">{!! __('links.download') !!}</a></li>
@@ -65,7 +65,7 @@
                                     @endif
                                     <x-files::fileName :file="$file" />
                                 </a>
-                            </li>
+                            </x-global::elements.card>
                         @endforeach
                         <br class="clearall" />
                     </ul>

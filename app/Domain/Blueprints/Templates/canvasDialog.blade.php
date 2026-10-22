@@ -31,8 +31,14 @@
 
 <div class="" style="width:900px;">
 
-    <h4 class="widgettitle title-light" style="padding-bottom: 0"><i class="fas {{ $boxMeta['icon'] }}"></i> {{ $boxMeta['title'] }}</h4>
-    <hr style="margin-top: 5px; margin-bottom: 15px;">
+    <x-global::actions.modal-header>
+    <x-slot:title><i class="fas {{ $boxMeta['icon'] }}"></i> {{ $boxMeta['title'] }}</x-slot:title>
+    @if ($id != '')
+        <x-slot:actions>
+            <li><a href="#/blueprints/{{ $canvasSlug }}/delCanvasItem/{{ $id }}" class="delete"><i class="fa fa-trash-can"></i> {!! __('links.delete') !!}</a></li>
+        </x-slot:actions>
+    @endif
+</x-global::actions.modal-header>
     {!! $tpl->displayNotification() !!}
 
     <form class="formModal" method="post" action="{{ BASE_URL }}/blueprints/{{ $canvasSlug }}/editCanvasItem/{{ $id }}">
@@ -41,24 +47,25 @@
         <input type="hidden" value="{{ $canvasItem['box'] }}" name="box" id="box"/>
         <input type="hidden" value="{{ $id }}" name="itemId" id="itemId"/>
 
-        <label>{!! __('label.description') !!}</label>
-        <x-global::forms.text-input name="description" value="{{ $canvasItem['description'] }}" style="width:100%" /><br />
+        {{-- The item's `description` column is its title; the long text is the data field below. --}}
+        <x-global::forms.label for="canvasItemTitle">{!! __('label.title') !!}</x-global::forms.label>
+        <x-global::forms.text-input name="description" id="canvasItemTitle" value="{{ $canvasItem['description'] }}" width="full" /><br />
 
         @if(! empty($statusLabels))
-            <label>{!! __('label.status') !!}</label>
+            <x-global::forms.label>{!! __('label.status') !!}</x-global::forms.label>
             <x-global::forms.select name="status" style="width: 50%" id="statusCanvas" enhanced :search="false">
                 @foreach($statusLabels as $key => $data)
                     @if($data['active'])
                         <x-global::forms.select.option :value="$key" :selected="$canvasItem['status'] == $key" icon="fas {{ $data['icon'] }}">{{ $data['title'] }}</x-global::forms.select.option>
                     @endif
                 @endforeach
-            </x-global::forms.select><br /><br />
+            </x-global::forms.select><br />
         @else
             <input type="hidden" name="status" value="{{ $canvasItem['status'] ?? array_key_first($hiddenStatusLabels) }}" />
         @endif
 
         @if(! empty($relatesLabels))
-            <label>{!! __('label.relates') !!}</label>
+            <x-global::forms.label>{!! __('label.relates') !!}</x-global::forms.label>
             <x-global::forms.select name="relates" style="width: 50%" id="relatesCanvas" enhanced :search="false">
                 @foreach($relatesLabels as $key => $data)
                     @if($data['active'])
@@ -71,7 +78,7 @@
         @endif
 
         @if($dataLabels[1]['active'])
-            <label>{!! __($dataLabels[1]['title']) !!}</label>
+            <x-global::forms.label>{!! __($dataLabels[1]['title']) !!}</x-global::forms.label>
             @if(isset($dataLabels[1]['type']) && $dataLabels[1]['type'] == 'int')
                 <x-global::forms.text-input type="number" name="{{ $dataLabels[1]['field'] }}" value="{{ $canvasItem[$dataLabels[1]['field']] }}"/><br />
             @elseif(isset($dataLabels[1]['type']) && $dataLabels[1]['type'] == 'string')
@@ -84,7 +91,7 @@
         @endif
 
         @if($dataLabels[2]['active'])
-            <label>{!! __($dataLabels[2]['title']) !!}</label>
+            <x-global::forms.label>{!! __($dataLabels[2]['title']) !!}</x-global::forms.label>
             @if(isset($dataLabels[2]['type']) && $dataLabels[2]['type'] == 'int')
                 <x-global::forms.text-input type="number" name="{{ $dataLabels[2]['field'] }}" value="{{ $canvasItem[$dataLabels[2]['field']] }}"/><br />
             @elseif(isset($dataLabels[2]['type']) && $dataLabels[2]['type'] == 'string')
@@ -97,7 +104,7 @@
         @endif
 
         @if($dataLabels[3]['active'])
-            <label>{!! __($dataLabels[3]['title']) !!}</label>
+            <x-global::forms.label>{!! __($dataLabels[3]['title']) !!}</x-global::forms.label>
             @if(isset($dataLabels[3]['type']) && $dataLabels[3]['type'] == 'int')
                 <x-global::forms.text-input type="number" name="{{ $dataLabels[3]['field'] }}" value="{{ $canvasItem[$dataLabels[3]['field']] }}"/><br />
             @elseif(isset($dataLabels[3]['type']) && $dataLabels[3]['type'] == 'string')
@@ -112,9 +119,6 @@
         <input type="hidden" name="milestoneId" value="{{ $canvasItem['milestoneId'] }}" />
         <input type="hidden" name="changeItem" value="1" />
 
-        @if($id != '')
-            <x-global::forms.button tag="a" link="{{ BASE_URL }}/blueprints/{{ $canvasSlug }}/delCanvasItem/{{ $id }}" class="blueprintsCanvasModal delete right" state="danger" variant="outline"><i class='fa fa-trash-can'></i> {!! __('links.delete') !!}</x-global::forms.button>
-        @endif
 
         @if($login::userIsAtLeast($roles::$editor))
             <x-global::forms.button tag="input" inputType="submit" contentRole="primary" :labelText="__('buttons.save')" id="primaryCanvasSubmitButton" />
@@ -123,7 +127,7 @@
 
         @if($id !== '')
             <br /><br />
-            <h4 class="widgettitle title-light"><span class="fa fa-link"></span> {!! __('headlines.linked_milestone') !!} <i class="fa fa-question-circle-o helperTooltip" data-tippy-content="{{ __('tooltip.link_milestones_tooltip') }}"></i></h4>
+            <x-global::elements.section-header icon="fa fa-link">{!! __('headlines.linked_milestone') !!} <x-global::elements.info-tip :text="__('tooltip.link_milestones_tooltip')" /></x-global::elements.section-header>
 
             @if($canvasItem['milestoneId'] == '')
                 <center>
@@ -183,7 +187,7 @@
     @if($id !== '')
         <br />
         <input type="hidden" name="comment" value="1" />
-        <h4 class="widgettitle title-light"><span class="fa fa-comments"></span>{!! __('subtitles.discussion') !!}</h4>
+        <x-global::elements.section-header icon="fa fa-comments">{!! __('subtitles.discussion') !!}</x-global::elements.section-header>
         @include('comments::submodules.generalComment', ['formUrl' => '/blueprints/' . $canvasSlug . '/editCanvasItem/' . $id])
     @endif
 </div>

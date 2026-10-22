@@ -46,13 +46,20 @@
 
 <div style="width:1000px; padding-bottom:20px;">
 
-    {{-- Header: stage pill --}}
-    <div style="display:flex; align-items:center; gap:12px; margin-bottom:8px;">
+    {{-- Header: the stage pill is the title --}}
+    <x-global::actions.modal-header>
+        <x-slot:title>
         <span style="display:inline-flex; align-items:center; gap:5px; padding:4px 14px; border-radius:20px; font-size:var(--font-size-s); font-weight:600; color:{{ $stageColor }}; background:{{ $stageBg }};">
             <i class="fas {{ $canvasTypes[$canvasItem['box']]['icon'] ?? 'fa-diagram-project' }}"></i>
             {{ isset($canvasTypes[$canvasItem['box']]) ? $tpl->__($canvasTypes[$canvasItem['box']]['title']) : '' }}
         </span>
-    </div>
+        </x-slot:title>
+        @if ($id != '')
+        <x-slot:actions>
+            <li><a href="#/{{ $canvasName }}canvas/delCanvasItem/{{ $id }}" class="delete"><i class="fa fa-trash-can"></i> {{ $tpl->__('links.delete') }}</a></li>
+        </x-slot:actions>
+    @endif
+</x-global::actions.modal-header>
 
     {!! $tpl->displayNotification() !!}
 
@@ -74,14 +81,14 @@
                     placeholder="{{ $tpl->__('input.placeholders.short_name') }}" /><br /><br />
 
                 @if ($dataLabels[1]['active'])
-                    <label>{{ $tpl->__($dataLabels[1]['title']) }}</label>
+                    <x-global::forms.label>{{ $tpl->__($dataLabels[1]['title']) }}</x-global::forms.label>
                     <textarea style="width:100%" rows="5" cols="10" name="{{ $dataLabels[1]['field'] }}" class="modalTextArea tiptapSimple">{{ $canvasItem[$dataLabels[1]['field']] }}</textarea><br />
                 @else
                     <input type="hidden" name="{{ $dataLabels[1]['field'] }}" value="" />
                 @endif
 
                 @if ($dataLabels[2]['active'])
-                    <label>{{ $tpl->__($dataLabels[2]['title']) }}</label>
+                    <x-global::forms.label>{{ $tpl->__($dataLabels[2]['title']) }}</x-global::forms.label>
                     <textarea style="width:100%" rows="3" cols="10" name="{{ $dataLabels[2]['field'] }}" class="modalTextArea tiptapSimple">{{ $canvasItem[$dataLabels[2]['field']] }}</textarea><br />
                 @else
                     <input type="hidden" name="{{ $dataLabels[2]['field'] }}" value="" />
@@ -103,7 +110,7 @@
                 @endphp
 
                 @if ($showWhy)
-                    <label for="whyThisMatters" style="display:block;margin-top:8px;">{{ $tpl->__('logicmodel.field.why_this_matters') }}</label>
+                    <x-global::forms.label for="whyThisMatters" style="display:block;margin-top:8px;">{{ $tpl->__('logicmodel.field.why_this_matters') }}</x-global::forms.label>
                     <textarea id="whyThisMatters" style="width:100%" rows="3" name="why_this_matters"
                         maxlength="500"
                         placeholder="{{ $tpl->__('logicmodel.field.why_this_matters.placeholder') }}"
@@ -127,7 +134,7 @@
                 @endif
 
                 @if ($showStart)
-                    <label for="startingPicture" style="display:block;margin-top:8px;">{{ $tpl->__('logicmodel.field.starting_picture') }}</label>
+                    <x-global::forms.label for="startingPicture" style="display:block;margin-top:8px;">{{ $tpl->__('logicmodel.field.starting_picture') }}</x-global::forms.label>
                     <textarea id="startingPicture" style="width:100%" rows="3" name="starting_picture"
                         maxlength="500"
                         placeholder="{{ $tpl->__('logicmodel.field.starting_picture.placeholder') }}"
@@ -271,9 +278,6 @@
                 <x-global::forms.button inputType="submit" contentRole="secondary" value="closeModal" id="saveAndClose" onclick="leantime.canvasController.setCloseModal();">{!! $tpl->__('buttons.save_and_close') !!}</x-global::forms.button>
             @endif
 
-            @if ($id != '')
-                <x-global::forms.button tag="a" link="{{ BASE_URL }}/{{ $canvasName }}canvas/delCanvasItem/{{ $id }}" class="{{ $canvasName }}CanvasModal delete" style="margin-left:auto;" state="danger" variant="outline"><i class="fa fa-trash-can"></i> {{ $tpl->__('links.delete') }}</x-global::forms.button>
-            @endif
         </div>
 
     </form>
@@ -282,7 +286,7 @@
          The comments submodule has its own <form> which would break the outer form. --}}
     @if ($id !== '')
         <div style="margin-top:16px; padding-top:16px; border-top:1px solid var(--main-border-color);">
-            <h4 class="widgettitle title-light"><span class="fa fa-comments"></span>{{ $tpl->__('subtitles.discussion') }}</h4>
+            <x-global::elements.section-header icon="fa fa-comments">{{ $tpl->__('subtitles.discussion') }}</x-global::elements.section-header>
             <input type="hidden" name="comment" value="1" />
             @include('comments::submodules.generalComment', ['formUrl' => '/' . $canvasName . 'canvas/editCanvasItem/' . $id])
         </div>

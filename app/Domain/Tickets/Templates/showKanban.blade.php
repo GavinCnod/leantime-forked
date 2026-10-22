@@ -33,7 +33,7 @@
 
     @include('tickets::submodules.ticketBoardTabs')
 
-    <div class="maincontentinner kanban-board-wrapper" >
+    <x-global::layout.content-box class="kanban-board-wrapper">
 
         {{-- Board actions (New / Filter / Group By) moved into the nav bar
              (ticketBoardTabs) so there's no separate toolbar row here. --}}
@@ -149,7 +149,7 @@
                             <div class="column">
                                 <div class="contentInner status_{{ $key }} {{ isset($emptyColumns[$key]) ? 'empty-column' : '' }}"
                                      data-empty-text="{{ isset($emptyColumns[$key]) ? 'Empty' : '' }}"
-                                     aria-label="{{ isset($emptyColumns[$key]) ? 'Empty column' : htmlspecialchars($statusRow['name']).' column items' }}"
+                                     aria-label="{{ isset($emptyColumns[$key]) ? __('label.empty_column') : sprintf(__('label.column_items'), $statusRow['name']) }}"
                                      role="list">
 
                                     @include('tickets::partials.quickadd-form', [
@@ -163,7 +163,7 @@
 
                                     @foreach ($allTickets as $row)
                                         @if (($row[$placementField] ?? null) == $key)
-                                        <div class="ticketBox moveable container priority-border-{{ $row['priority'] }}" id="ticket_{{ $row['id'] }}">
+                                        <x-global::elements.card compact class="ticketBox moveable container priority-border-{{ $row['priority'] }}" id="ticket_{{ $row['id'] }}">
 
                                             <div class="row" >
                                                 <div class="col-md-12">
@@ -272,11 +272,7 @@
                                                         @php $tagsArray = explode(',', $row['tags']); @endphp
                                                         <x-global::actions.dropdown variant="panel" as="span" class="dropdown" menu-as="ul">
                                                             <x-slot:trigger><i class="fa fa-tags" aria-hidden="true"></i> {{ count($tagsArray) }}</x-slot:trigger>
-                                                            <li style="padding:10px"><div class="tagsinput readonly">
-                                                                @foreach ($tagsArray as $tag)
-                                                                    <span class="tag"><span>{{ $tag }}</span></span>
-                                                                @endforeach
-                                                            </div></li>
+                                                            <li style="padding:10px"><x-global::elements.tag-list :tags="$tagsArray" /></li>
                                                         </x-global::actions.dropdown>
                                                     @endif
 
@@ -285,7 +281,7 @@
                                             </div>
                                             @endif
 
-                                        </div>
+                                        </x-global::elements.card>
                                         @endif
                                     @endforeach
                                 </div>
@@ -304,7 +300,7 @@
 
         @endforeach
 
-    </div>
+    </x-global::layout.content-box>
 
 </div>
 

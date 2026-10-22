@@ -40,50 +40,49 @@
         }
     </style>
 
-    <div class="pageheader">
-        <div class="pageicon"><span class="fas {{ $canvasIcon }}"></span></div>
-        <div class="pagetitle">
-            @if (count($allCanvas) > 0)
-                <x-global::subjectSwitcher
-                    :parent="__('headline.goal.board')"
-                    :current="$canvasTitle">
-                    @if ($login::userIsAtLeast($roles::$editor))
-                        <li><a href="#/goalcanvas/bigRock">{!! __('links.icon.create_new_bigrock') !!}</a></li>
-                    @endif
-                    <li class="border"></li>
-                    @foreach ($allCanvas as $canvasRow)
-                        <li><a
-                                href='{{ BASE_URL }}/goalcanvas/showCanvas/{{ $canvasRow['id'] }}'>{{ $canvasRow['title'] }}</a>
-                        </li>
-                    @endforeach
-                </x-global::subjectSwitcher>
-            @else
-                <h1>{{ __('headline.goal.board') }}</h1>
-            @endif
-        </div>
-        @if (count($allCanvas) > 0)
-            <div class="pageheader-right">
-                <x-global::actions.dropdown variant="header-menu">
-                    @if ($login::userIsAtLeast($roles::$editor))
-                        <li><a href="#/goalcanvas/bigRock/{{ $currentCanvas }}">{!! __('links.icon.edit') !!}</a></li>
-                        <li><a href="javascript:void(0)" class="cloneCanvasLink ">{!! __('links.icon.clone') !!}</a></li>
-                        <li><a href="javascript:void(0)" class="mergeCanvasLink ">{!! __('links.icon.merge') !!}</a></li>
-                        <li><a href="javascript:void(0)" class="importCanvasLink ">{!! __('links.icon.import') !!}</a>
-                        </li>
-                    @endif
+    <x-global::layout.page-header icon="fas {{ $canvasIcon }}">
+    @if (count($allCanvas) > 0)
+        <x-slot:switcher>
+            <x-global::subjectSwitcher
+                :parent="__('headline.goal.board')"
+                :current="$canvasTitle">
+                @if ($login::userIsAtLeast($roles::$editor))
+                    <li><a href="#/goalcanvas/bigRock">{!! __('links.icon.create_new_bigrock') !!}</a></li>
+                @endif
+                <li class="border"></li>
+                @foreach ($allCanvas as $canvasRow)
                     <li><a
-                            href="{{ BASE_URL }}/goalcanvas/export/{{ $currentCanvas }}">{!! __('links.icon.export') !!}</a>
+                            href='{{ BASE_URL }}/goalcanvas/showCanvas/{{ $canvasRow['id'] }}'>{{ $canvasRow['title'] }}</a>
                     </li>
-                    <li><a href="javascript:window.print();">{!! __('links.icon.print') !!}</a></li>
-                    @if ($login::userIsAtLeast($roles::$editor))
-                        <li><a href="#/goalcanvas/delCanvas/{{ $currentCanvas }}"
-                                class="delete">{!!__('links.icon.delete') !!}</a></li>
-                    @endif
+                @endforeach
+            </x-global::subjectSwitcher>
+        </x-slot:switcher>
+    @else
+        {{ __('headline.goal.board') }}
+    @endif
+    @if (count($allCanvas) > 0)
+        <x-slot:actions>
+            <x-global::actions.dropdown variant="header-menu">
+                @if ($login::userIsAtLeast($roles::$editor))
+                    <li><a href="#/goalcanvas/bigRock/{{ $currentCanvas }}">{!! __('links.icon.edit') !!}</a></li>
+                    <li><a href="javascript:void(0)" class="cloneCanvasLink ">{!! __('links.icon.clone') !!}</a></li>
+                    <li><a href="javascript:void(0)" class="mergeCanvasLink ">{!! __('links.icon.merge') !!}</a></li>
+                    <li><a href="javascript:void(0)" class="importCanvasLink ">{!! __('links.icon.import') !!}</a>
+                    </li>
+                @endif
+                <li><a
+                        href="{{ BASE_URL }}/goalcanvas/export/{{ $currentCanvas }}">{!! __('links.icon.export') !!}</a>
+                </li>
+                <li><a href="javascript:window.print();">{!! __('links.icon.print') !!}</a></li>
+                @if ($login::userIsAtLeast($roles::$editor))
+                    <li><a href="#/goalcanvas/delCanvas/{{ $currentCanvas }}"
+                            class="delete">{!!__('links.icon.delete') !!}</a></li>
+                @endif
 
-                </x-global::actions.dropdown>
-            </div>
-        @endif
-    </div>
+            </x-global::actions.dropdown>
+        </x-slot:actions>
+    @endif
+</x-global::layout.page-header>
     <!--pageheader-->
 
     <div class="maincontent">
@@ -153,7 +152,7 @@
             </x-slot:actions>
         </x-global::navigation.view-tabs>
 
-        <div class="maincontentinner">
+        <x-global::layout.content-box>
 
             <?php echo $tpl->displayNotification(); ?>
 
@@ -179,7 +178,7 @@
                                             $nbcomments = $comments->countComments(moduleId: $row['id']);
                                         @endphp
                                         <div class="col-md-4">
-                                            <div class="ticketBox" id="item_{{ $row['id'] }}">
+                                            <x-global::elements.card compact class="ticketBox" id="item_{{ $row['id'] }}">
                                                 <div class="row">
                                                     <div class="col-md-12">
                                                         @if ($login::userIsAtLeast($roles::$editor))
@@ -195,12 +194,12 @@
                                                             </x-global::actions.dropdown>
                                                         @endif
 
-                                            <h4><strong>Goal:</strong> <a
+                                            <h4><strong>{{ __('label.goal_colon') }}</strong> <a
                                                     href="#/goalcanvas/editCanvasItem/{{ $row['id'] }}"
                                                     data="item_{{ $row['id'] }}">{{ $row['title'] }}</a>
                                             </h4>
                                             <br />
-                                            <strong>Metric:</strong> {{ $row['description'] }}
+                                            <strong>{{ __('label.metric_colon') }}</strong> {{ $row['description'] }}
                                             <br /><br />
 
                                             @php
@@ -221,18 +220,10 @@
                                                 </div>
                                                 <div class="col-md-4"></div>
                                             </div>
-                                            <div class="progress" style="margin-bottom:0px;">
-                                                <div class="progress-bar progress-bar-success"
-                                                    role="progressbar" aria-valuenow="{{ $percentDone }}"
-                                                    aria-valuemin="0" aria-valuemax="100"
-                                                    style="width: {{ $percentDone }}%">
-                                                    <span
-                                                        class="sr-only">{{ sprintf(__('text.percent_complete'), $percentDone) }}</span>
-                                                </div>
-                                            </div>
+                                            <x-global::feedback.progress :value="$percentDone" />
                                             <div class="row" style="padding-bottom:0px;">
                                                 <div class="col-md-4">
-                                                    <small>Start:<br />{{ $metricTypeFront . $row['startValue'] . $metricTypeBack }}</small>
+                                                    <small>{{ __('label.start_colon') }}<br />{{ $metricTypeFront . $row['startValue'] . $metricTypeBack }}</small>
                                                 </div>
                                                 <div class="col-md-4 center">
                                                     <small>{{ __('label.current') }}:<br />{{ $metricTypeFront . $row['currentValue'] . $metricTypeBack }}</small>
@@ -266,7 +257,7 @@
                                     </div>
 
                                     @include('goalcanvas::partials.milestoneChips', ['milestones' => $row['milestones'] ?? []])
-                                </div>
+                                </x-global::elements.card>
                             </div>
                         @endif
                     @endforeach
@@ -321,7 +312,7 @@
             @endif
 
             {!! $tpl->viewFactory->make($tpl->getTemplatePath('canvas', 'modals'), $__data)->render() !!}
-        </div>
+        </x-global::layout.content-box>
     </div>
 
 

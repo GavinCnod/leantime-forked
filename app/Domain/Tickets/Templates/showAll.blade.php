@@ -17,25 +17,9 @@
 
 <div class="maincontent">
 
-    @include('tickets::submodules.ticketBoardTabs')
+    @include('tickets::submodules.ticketBoardTabs', ['tableButtons' => true])
 
-    <div class="maincontentinner">
-
-        {{-- Board actions (New / Filter / Group By) moved into the nav bar
-             (ticketBoardTabs). Only the table-specific DataTables buttons remain
-             here, right-aligned above the table. --}}
-        <div class="row">
-            <div class="col-md-12">
-                <div class="pull-right">
-                    @dispatchEvent('filters.afterRighthandSectionOpen')
-                    <div id="tableButtons" style="display:inline-block"></div>
-                    @dispatchEvent('filters.beforeRighthandSectionClose')
-                </div>
-            </div>
-
-        </div>
-
-        <div class="clearfix" style="margin-bottom: 20px;"></div>
+    <x-global::layout.content-box>
 
         @if (isset($availableProjects))
             {{-- Program (cross-project) board: consistent inline quick-add with a required
@@ -60,16 +44,7 @@
         @endif
 
         @foreach ($allTicketGroups as $group)
-            @if ($group['label'] != 'all')
-                <h5 class="accordionTitle {{ $group['class'] }}" @if (!empty($group['color'])) style="color:{{ htmlspecialchars($group['color']) }}" @endif id="accordion_link_{{ $group['id'] }}">
-                    <a href="javascript:void(0)" class="accordion-toggle" id="accordion_toggle_{{ $group['id'] }}" onclick="leantime.snippets.accordionToggle('{{ $group['id'] }}');">
-                        <i class="fa fa-angle-down"></i>{!! $group['label'] !!}({{ count($group['items']) }})
-                    </a><br />
-                    <small style="padding-left:20px; color:var(--primary-font-color); font-size:var(--font-size-s);">{{ $group['more-info'] }}</small>
-                </h5>
-
-                <div class="simpleAccordionContainer" id="accordion_content-{{ $group['id'] }}">
-            @endif
+            <x-tickets::group-section :group="$group" :groupBy="$searchCriteria['groupBy'] ?? ''" :subtitle="$group['more-info'] ?? ''">
 
                 @php $allTickets = $group['items']; @endphp
 
@@ -193,11 +168,7 @@
                             <td data-order="{{ $row['tags'] }}">
                                 @if ($row['tags'] != '')
                                     @php $tagsArray = explode(',', $row['tags']); @endphp
-                                    <div class='tagsinput readonly'>
-                                        @foreach ($tagsArray as $tag)
-                                            <span class='tag'><span>{{ $tag }}</span></span>
-                                        @endforeach
-                                    </div>
+                                    <x-global::elements.tag-list :tags="$tagsArray" />
                                 @endif
                             </td>
 
@@ -240,15 +211,13 @@
                 </table>
                 @dispatchEvent('allTicketsTable.afterClose', ['tickets' => $allTickets])
 
-            @if ($group['label'] != 'all')
-                </div>
-            @endif
+            </x-tickets::group-section>
         @endforeach
 
 
 
 
-    </div>
+    </x-global::layout.content-box>
 </div>
 
 @once @push('scripts')

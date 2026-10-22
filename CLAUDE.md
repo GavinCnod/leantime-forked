@@ -6,8 +6,8 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 A **self-hosted fork** of [Leantime](https://github.com/Leantime/leantime) (open source project management system), maintained by one team for their own use.
 
-- **Branch strategy**: `dev-self-hosted` is the working branch (fork-only commits on top of upstream). Since the 2026-10-11 upgrade, the fork **tracks upstream via merges**: `master` mirrors `upstream/master` (synced to v3.11.0+10, `b0268c95b`), and the validated `upgrade/3.11.0` branch was fast-forward merged into `dev-self-hosted` (see `.docs/upgrade-1011/README.md`). Follow the same merge-and-validate flow for future upstream releases.
-- **Version**: Leantime **3.11.0** (`app/Core/Configuration/AppSettings.php` → `$appVersion`; also `package.json`). The app version is read at *makefile parse time*, so bumping it changes build artifact names.
+- **Branch strategy**: `dev-self-hosted` is the working branch (fork-only commits on top of upstream). Since the 2026-10-11 upgrade, the fork **tracks upstream via merges**: `master` mirrors `upstream/master` (synced to v3.12.0+33, `8464a2eac`), and the validated upgrade branch is merged into `dev-self-hosted` (see `.docs/upgrade-1011/README.md` and `.docs/upgrade-3.12/README.md`). Follow the same merge-and-validate flow for future upstream releases.
+- **Version**: Leantime **3.12.0** (`app/Core/Configuration/AppSettings.php` → `$appVersion`; also `package.json`). The app version is read at *makefile parse time*, so bumping it changes build artifact names.
 - **Upstream**: `upstream` remote = `Leantime/leantime`; `origin` = `GavinCnod/leantime-forked`.
 - **Language**: the team works in Chinese. `docs/` and `.docs/` hold the Chinese operating guides, glossary, and design records — see [Team docs](#team-docs-and-chinese-documentation).
 
@@ -51,6 +51,9 @@ Plugin mechanics worth knowing:
 - Discovery scans `app/Plugins/*/` for directories; a plugin is identified by `composer.json`. Marketplace plugins may be phars. The main class name is **derived, not configurable**: `Leantime\Plugins\{Studly(folder)}\Services\{Studly(folder)}`.
 - **Permission classes are globbed from `app/Plugins/*/Permissions/*Permissions.php`** — path convention, no registration. Neither plugin in this repo declares one yet, but plugin routes *are* wrapped by the permission middleware, so the mechanism is live.
 - Plugin `register.php` files are discovered at boot for system plugins, and later (after session/install/update checks) for user-enabled plugins.
+- **3.12 compatibility guard** (`app/Core/Plugins/PluginCompatibility.php`): plugins declare `"extra": {"leantime": {"requires": ">=3.12 <4.0"}}`; undeclared means `>=3.0 <4.0`. Incompatible plugins are skipped at load, shown as "Not compatible", and admins are notified once. System plugins (`LEAN_PLUGINS`) are not guarded.
+- **3.12 crash breaker** (`PluginCrashBreaker`, called from `ExceptionHandler::render`): 5 request-failing errors within 10 minutes disable a plugin locally (license stays active) and notify admins.
+- **3.12 plugin updates**: My Apps shows update notices and one-click updates with rollback; automatic updates are opt-in, minor/patch only. Updates keep one `zp_plugins` row per folder (migration 30530 merged older duplicates).
 
 Installing a plugin (`php bin/leantime plugin:install|enable|disable|remove`):
 
@@ -160,6 +163,8 @@ final class TicketUpdated implements LeantimeEvent
 
 Dispatch with named args — `TicketCreated::dispatch(ticketId: $id, legacyHook: __FUNCTION__)`. Class **filters** implement `LeantimeFilter` and return the payload: `$tickets = TicketListFilter::dispatch(tickets: $tickets, legacyHook: __FUNCTION__)`.
 
+Since 3.12 a domain event can also emit a **client event** over htmx: implement `EmitsClientEvent`, use `InteractsWithClientEvents`, and declare `public const CLIENT_EVENT = 'lt:{domain}:{entity}.{verb}'`; `clientScope()` adds a `#{id}` suffix. `EventDispatcher` queues it on the `HX-Trigger` header only during htmx requests — JSON-RPC, MCP, full page loads and queue jobs never get it. Controllers don't emit data events by hand. `EventVocabularyTest` enforces the wire-name format. `HxComponent` subclasses declare `listensTo()`/`emits()` and are mounted with `<x-global::hx :for="..."/>`; plugins that need the wire string call `HtmxEvents::name(EventClass::class)` rather than reading `CLIENT_EVENT` directly, so they degrade on older cores.
+
 Listen with the FQCN; the closure receives the **typed object**:
 
 ```php
@@ -192,6 +197,10 @@ The async/DOM-update layer. **Use HTMX for data loading and refreshes; use JS on
 - Prefer `<x-global::hx :for="...HxController::class">` over hand-written `hx-get`/`hx-trigger`. Declaring the contract on an `HxComponent` (`listensTo()`/`emits()`) means the emit side and listen side reference the same enum and cannot drift. Note how early this pattern is: there is exactly **one** `HxComponent` subclass today (`Tickets/Hxcontrollers/Subtasks`) and one mount — treat it as a new convention, and expect most components to still be anonymous Blade.
 
 PHP enums can't implement `__toString` — use `->event()` / `->value` in PHP; Blade `{{ Events::Case }}` renders the value via Laravel's `e()`.
+
+### Project Modules (`app/Core/Modules/`)
+
+Since 3.12 admins can switch features on/off per project (Project settings → Modules). It is a blanket switch, not role-based: off means off for everyone in that project; content is never deleted. Infrastructure lives in Core: `ModuleRegistry` (switchable modules), `ProjectModules` (per-project state), `Middleware/ProjectModuleGate` (blocks pages and `/hx` fragments after `CurrentProject`), the `@module('id', $projectId)` Blade condition, and a `PermissionService::currentUserCan` hook that denies project-scoped permissions of a switched-off module's `permissionDomain` (covers JSON-RPC/MCP). UI/API lives in `app/Domain/Modulemanager` (settings tab, `getProjectModules`/`saveProjectModules`, "not available" page, `register.php`). State is stored in `zp_projects.metadata` as `{"modules": {"wiki": false}}`, holding only choices that differ from defaults; `duplicateProject()` copies it. Plugins register modules with `$registration->registerModule([...])`; menu items carry `module` automatically via `addMenuItem()`. The old `menuType` column is retired (core no longer reads or writes it; column stays for plugins).
 
 ### WorkStructure (`app/Core/WorkStructure/`)
 
@@ -283,7 +292,7 @@ Auth: Leantime API keys (`x-api-key`, format `lt_{user}_{key}`, acts as a servic
 
 Three guards: `leantime` (web session), `sanctum` (token), `jsonRpc` (API). Native LDAP and OIDC support, plus Laravel Socialite providers (Authentik, Auth0, Gitea, GitHub, GitLab, Google, Keycloak, Microsoft, Okta, PropelAuth, EduID, SAML2).
 
-Each user has one client and a role; projects are visible to everyone, to the user's client, or to explicitly assigned users. Admins/owners see all projects. **For new authorization logic use the [permission engine](#permission-engine-appcoreauthpermissions), not role-name comparisons.**
+Each user has one client and a role; projects are visible to everyone, to the user's client, or to explicitly assigned users. Admins/owners see all projects. Since 3.12 roles are **stored as data** with a separate `roleKey`, `level` and `baseRole` (`zp_roles`), so custom roles can exist; built-in keys 5..50 are unchanged. New permissions `projects.viewAll` (see every project without membership) and `roles.manage` reach custom roles through the base role. **For new authorization logic use the [permission engine](#permission-engine-appcoreauthpermissions), not role-name comparisons.**
 
 ### CLI commands
 

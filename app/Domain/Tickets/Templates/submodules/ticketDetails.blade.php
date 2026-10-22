@@ -10,7 +10,7 @@
                 </div>
                 <!-- Status -->
                 <div class="form-group tw-flex tw-w-3/5">
-                    <label class="control-label tw-mx-m tw-w-[100px] tw-shrink-0">{!! __('label.todo_status') !!}</label>
+                    <x-global::forms.label class="tw-mx-m tw-w-[100px] tw-shrink-0">{!! __('label.todo_status') !!}</x-global::forms.label>
                     <div class="">
                         <x-global::forms.select enhanced
                             id="status-select"
@@ -29,7 +29,7 @@
 
                 <!-- Priority -->
                 <div class="form-group tw-flex tw-w-3/5">
-                    <label class="control-label tw-mx-m tw-w-[100px] tw-shrink-0">{!! __('label.priority') !!}</label>
+                    <x-global::forms.label class="tw-mx-m tw-w-[100px] tw-shrink-0">{!! __('label.priority') !!}</x-global::forms.label>
                     <div class="">
                         <x-global::forms.select enhanced id='priority' name='priority' class="">
                             <option value="">{!! __('label.priority_not_defined') !!}</option>
@@ -44,7 +44,7 @@
 
                 <!-- Effort -->
                 <div class="form-group tw-flex tw-w-3/5">
-                    <label class="control-label tw-mx-m tw-w-[100px] tw-shrink-0">{!! __('label.effort') !!}</label>
+                    <x-global::forms.label class="tw-mx-m tw-w-[100px] tw-shrink-0">{!! __('label.effort') !!}</x-global::forms.label>
                     <div class="">
                         <x-global::forms.select enhanced id='storypoints' name='storypoints' class="">
                             <option value="">{!! __('label.effort_not_defined') !!}</option>
@@ -59,7 +59,7 @@
 
                 <!-- Editor -->
                 <div class="form-group tw-flex tw-w-3/5">
-                    <label class="control-label tw-mx-m tw-w-[100px] tw-shrink-0">{!! __('label.editor') !!}</label>
+                    <x-global::forms.label class="tw-mx-m tw-w-[100px] tw-shrink-0">{!! __('label.editor') !!}</x-global::forms.label>
                     <div class="">
 
                         <x-global::forms.select enhanced data-placeholder="{{ __('label.filter_by_user') }}"
@@ -81,7 +81,7 @@
 
                 <!-- Collaborators -->
                 <div class="form-group tw-flex tw-w-3/5">
-                    <label class="control-label tw-mx-m tw-w-[100px] tw-shrink-0">{!! __('label.collaborators') !!}</label>
+                    <x-global::forms.label class="tw-mx-m tw-w-[100px] tw-shrink-0">{!! __('label.collaborators') !!}</x-global::forms.label>
                     <div class="">
                         {{-- An empty multi-select posts nothing; this keeps "collaborators" in the
                              request so clearing them all still clears them (omitted = preserved). --}}
@@ -104,7 +104,7 @@
 
                 <!-- Due Date -->
                 <div class="form-group tw-flex tw-w-3/5">
-                    <label class="control-label tw-mx-m tw-w-[100px] tw-shrink-0">{!! __('label.due_date') !!}</label>
+                    <x-global::forms.label class="tw-mx-m tw-w-[100px] tw-shrink-0">{!! __('label.due_date') !!}</x-global::forms.label>
                     <div class="">
                         <input type="text" class="field-width-sm dates" id="deadline" autocomplete="off"
                                value="{{ format($ticket->dateToFinish)->date() }}"
@@ -120,9 +120,9 @@
                 </div>
 
                 <div class="form-group tw-flex tw-w-3/5">
-                    <label class="control-label tw-mx-m tw-w-[100px] tw-shrink-0">{!! __('label.tags') !!}</label>
+                    <x-global::forms.label class="tw-mx-m tw-w-[100px] tw-shrink-0">{!! __('label.tags') !!}</x-global::forms.label>
                     <div class="">
-                        <input type="text" value="{{ $ticket->tags }}" name="tags" id="tags" />
+                        <x-global::forms.tags :value="$ticket->tags" />
                     </div>
                 </div>
                 <br />
@@ -152,7 +152,7 @@
             <br />
             <hr />
             @dispatchEvent('beforeSubtasks', ['ticketId' => $ticket->id])
-            <h4 class="widgettitle title-light"><i class="fa-solid fa-sitemap"></i> {!! __('subtitles.subtasks') !!}</h4>
+            <x-global::elements.section-header icon="fa-solid fa-sitemap">{!! __('subtitles.subtasks') !!}</x-global::elements.section-header>
 
             <x-global::hx
                 wrapperId="ticketSubtasks"
@@ -165,8 +165,7 @@
                 {{ __('label.loadingSubtasks', 'Loading Subtasks ...') }}<br /><br />
             </div>
 
-        <h4 class="widgettitle title-light"><span
-                    class="fa-solid fa-comments"></span>{!! __('subtitles.discussion') !!}</h4>
+        <x-global::elements.section-header icon="fa-solid fa-comments">{!! __('subtitles.discussion') !!}</x-global::elements.section-header>
 
         <div class="row-fluid">
         <form method="post" action="{{ BASE_URL }}/tickets/showTicket/{{ $ticket->id }}" class="formModal">
@@ -180,21 +179,11 @@
 
         <div class="row marginBottom">
             <div class="col-md-12">
-                <h5 class="accordionTitle" id="accordion_link_tickets-organization" style="padding-bottom:15px; font-size:var(--font-size-l)">
-                    <a href="javascript:void(0)"
-                       class="accordion-toggle"
-                       id="accordion_toggle_tickets-organization"
-                       onclick="leantime.snippets.accordionToggle('tickets-organization');">
-                            <i class="fa fa-angle-down"></i>
-                            <span class="fa fa-folder-open"></span>
-                            {!! __('subtitles.organization') !!}
-                    </a>
-                </h5>
-                <div class="simpleAccordionContainer" id="accordion_content-tickets-organization" style="padding-left:0">
+                <x-global::elements.accordion id="tickets-organization" icon="fa fa-folder-open" :title="__('subtitles.organization')" open>
 
                     <!-- Type -->
                     <div class="form-group">
-                        <label class="control-label">{!! __('label.todo_type') !!}</label>
+                        <x-global::forms.label>{!! __('label.todo_type') !!}</x-global::forms.label>
                         <div class="">
                             <x-global::forms.select width="full" enhanced id='type' name='type'>
                                 @foreach ($ticketTypes as $types)
@@ -208,7 +197,7 @@
 
                     <!-- Project -->
                     <div class="form-group">
-                        <label class="control-label">{!! __('label.project') !!}</label>
+                        <x-global::forms.label>{!! __('label.project') !!}</x-global::forms.label>
                         <x-global::forms.select width="full" enhanced name="projectId">
                             @foreach ($allAssignedprojects as $project)
                                 <option value="{{ $project['id'] }}"
@@ -224,7 +213,7 @@
 
                     <!-- Milestones -->
                     <div class="form-group">
-                        <label class="control-label">{!! __('label.milestone') !!}</label>
+                        <x-global::forms.label>{!! __('label.milestone') !!}</x-global::forms.label>
                         <div class="">
                             <div class="form-group">
                                 <x-global::forms.select width="full" enhanced name="milestoneid" aria-label="{{ __('label.milestone') }}">
@@ -241,7 +230,7 @@
 
                     <!-- Sprint -->
                     <div class="form-group">
-                        <label class="control-label">{!! __('label.sprint') !!}</label>
+                        <x-global::forms.label>{!! __('label.sprint') !!}</x-global::forms.label>
                         <div class="">
 
                             <x-global::forms.select width="full" enhanced id="sprint-select" name="sprint"
@@ -260,7 +249,7 @@
 
                     <!-- Related -->
                     <div class="form-group">
-                        <label class="control-label">{!! __('label.related_to') !!}</label>
+                        <x-global::forms.label>{!! __('label.related_to') !!}</x-global::forms.label>
                         <div class="">
                             <div class="form-group">
                                 <x-global::forms.select width="full" enhanced name="dependingTicketId" aria-label="{{ __('label.related_to') }}">
@@ -277,26 +266,16 @@
                         </div>
                     </div>
 
-                </div>
+                </x-global::elements.accordion>
 
             </div>
         </div>
 
         <div class="row marginBottom">
             <div class="col-md-12">
-                <h5 class="accordionTitle" id="accordion_link_tickets-dates" style="padding-bottom:15px; font-size:var(--font-size-l)">
-                    <a href="javascript:void(0)"
-                       class="accordion-toggle"
-                       id="accordion_toggle_tickets-dates"
-                       onclick="leantime.snippets.accordionToggle('tickets-dates');">
-                        <i class="fa fa-angle-down"></i>
-                        <span class="fa fa-calendar"></span>
-                        {!! __('subtitles.schedule') !!}
-                    </a>
-                </h5>
-                <div class="simpleAccordionContainer" id="accordion_content-tickets-dates" style="padding-left:0">
+                <x-global::elements.accordion id="tickets-dates" icon="fa fa-calendar" :title="__('subtitles.schedule')" open>
                     <div class="form-group">
-                        <label class=" control-label">{!! __('label.working_date_from') !!}</label>
+                        <x-global::forms.label>{!! __('label.working_date_from') !!}</x-global::forms.label>
                         <div class="">
                             <input type="text" class="field-width-sm editFrom" name="editFrom" autocomplete="off"
                                    value="{{ format($ticket->editFrom)->date() }}" placeholder="{{ __('language.dateformat') }}"/>
@@ -307,7 +286,7 @@
                     </div>
 
                     <div class="form-group">
-                        <label class=" control-label">{!! __('label.working_date_to') !!}</label>
+                        <x-global::forms.label>{!! __('label.working_date_to') !!}</x-global::forms.label>
                         <div class="">
                             <input type="text" class="field-width-sm editTo" name="editTo" autocomplete="off"
                                    value="{{ format($ticket->editTo)->date() }}" placeholder="{{ __('language.dateformat') }}"/>
@@ -318,7 +297,7 @@
                     </div>
 
                     <div class="form-group">
-                        <label class=" control-label">{!! __('label.planned_hours') !!} / {!! __('label.estimated_hours_remaining') !!}</label>
+                        <x-global::forms.label>{!! __('label.planned_hours') !!} / {!! __('label.estimated_hours_remaining') !!}</x-global::forms.label>
                         <div class="">
                             <x-global::forms.text-input value="{{ $ticket->planHours }}" name="planHours" style="width:45px;" />&nbsp;/&nbsp;
                             <x-global::forms.text-input value="{{ $ticket->hourRemaining }}" name="hourRemaining" style="width:45px;" />
@@ -329,7 +308,7 @@
                     </div>
 
 
-                </div>
+                </x-global::elements.accordion>
 
             </div>
         </div>

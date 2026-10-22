@@ -2,22 +2,18 @@
 
 @section('content')
 
-<div class="pageheader">
-
-    <div class="pageicon"><span class="fa {{ $tpl->getModulePicture() }}"></span></div>
-    <div class="pagetitle">
-        <h5>{!! __('label.administration') !!}</h5>
-        <h1>{!! sprintf(__('headlines.delete_project_x'), e($project['name'])) !!}</h1>
-    </div>
-</div><!--pageheader-->
+<x-global::layout.page-header icon="fa {{ $tpl->getModulePicture() }}" :eyebrow="__('label.administration')">
+    {!! sprintf(__('headlines.delete_project_x'), e($project['name'])) !!}
+</x-global::layout.page-header>
 
 <div class="maincontent">
-    <div class="maincontentinner">
+    <x-global::layout.content-box>
 
         {!! $tpl->displayNotification() !!}
 
-        <h4 class="widget widgettitle">{!! __('subtitles.delete') !!}</h4>
-        <div class="widgetcontent">
+        <x-global::elements.card>
+
+            <x-slot:title>{!! __('subtitles.delete') !!}</x-slot:title>
 
             <form method="post">
                 <p>{!! __('text.confirm_project_deletion') !!}</p><br />
@@ -25,10 +21,10 @@
                 <x-global::forms.button tag="a" link="{{ BASE_URL }}/projects/showProject/{{ $project['id'] }}" contentRole="tertiary">{!! __('buttons.back') !!}</x-global::forms.button>
             </form>
 
-        </div>
+        </x-global::elements.card>
 
 
-    </div>
+    </x-global::layout.content-box>
 </div>
 
 @endsection

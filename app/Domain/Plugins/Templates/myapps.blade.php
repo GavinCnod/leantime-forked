@@ -2,9 +2,9 @@
 
 @section('content')
 
-    <x-global::pageheader :icon="'fa fa-puzzle-piece'">
-        <h1>My Apps</h1>
-    </x-global::pageheader>
+    <x-global::layout.page-header icon="fa fa-puzzle-piece">
+        {{ __('headlines.my_apps') }}
+    </x-global::layout.page-header>
 
     @displayNotification()
 
@@ -12,13 +12,26 @@
 
         @include('plugins::partials.plugintabs',  ["currentUrl" => "installed"])
 
-        <div class="maincontentinner">
+        <x-global::layout.content-box>
 
             <div class="row">
                 <div class="col-lg-12">
-                    <h5 class="subtitle" style="margin-bottom:15px;">
+                    <x-global::elements.section-header as="h5" style="margin-bottom:15px;">
                         {{ __("text.installed_plugins") }}
-                    </h5>
+                        <x-slot:actions>
+                            <x-global::forms.button tag="a" link="javascript:void(0);" scale="s" contentRole="secondary"
+                                data-post-url="{{ BASE_URL }}/plugins/myapps" data-post-field="checkUpdates" data-post-value="1"
+                                leadingVisual="fa fa-rotate">{{ __('buttons.check_plugin_updates') }}</x-global::forms.button>
+                        </x-slot:actions>
+                    </x-global::elements.section-header>
+                    {{-- Off by default. Applies minor and patch releases of marketplace plugins in the daily check;
+                         each update is verified and rolled back if it doesn't load. --}}
+                    <form method="post" action="{{ BASE_URL }}/plugins/myapps" class="tw-mb-m">
+                        <input type="hidden" name="{{ session('formTokenName') }}" value="{{ session('formTokenValue') }}" />
+                        <input type="hidden" name="autoUpdateShown" value="1" />
+                        <x-global::forms.checkbox variant="toggle" name="autoUpdate" id="pluginAutoUpdate" :checked="$autoUpdate"
+                            :description="__('text.plugin_auto_update_hint')" onchange="this.form.submit();">{{ __('label.plugin_auto_update') }}</x-global::forms.checkbox>
+                    </form>
                     <div class="row sortableTicketList">
                         @each('plugins::partials.plugin', $installedPlugins, 'plugin')
 
@@ -31,14 +44,14 @@
             <br />
             <div class="row">
                 <div class="col-lg-12">
-                    <h5 class="subtitle tw-mb-m" style="margin-bottom:15px;">
+                    <x-global::elements.section-header as="h5" class="tw-mb-m" style="margin-bottom:15px;">
                         {{ __("text.new_plugins") }}
-                    </h5>
+                    </x-global::elements.section-header>
                     <ul class="sortableTicketList" >
                         @if (count($newPlugins) > 0)
                             @foreach ($newPlugins as $newplugin)
                                 <li>
-                                    <div class="ticketBox fixed">
+                                    <x-global::elements.card compact class="ticketBox fixed">
                                         <div class="row">
 
                                             <div class="col-md-4">
@@ -58,18 +71,17 @@
                                             </div>
 
                                         </div>
-                                    </div>
+                                    </x-global::elements.card>
                                 </li>
                             @endforeach
                         @else
-                            <x-global::undrawSvg image="undraw_empty_cart_co35.svg" headline="Nothing New">
-                                We couldn't discover any new plugins in your plugin folder, please make sure the plugin is unzipped and contains a composer.json file.
-                            </x-global::undrawSvg>
+                            <x-global::elements.empty-state image="undraw_no_data_re_kwbl.svg" titleAs="h3" :title="__('headlines.no_new_plugins')"
+                                :description="__('text.no_new_plugins')" />
                         @endif
                     </ul>
                 </div>
             </div>
-        </div>
+        </x-global::layout.content-box>
     </div>
 @endsection
 

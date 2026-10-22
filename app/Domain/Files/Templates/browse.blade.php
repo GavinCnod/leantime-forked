@@ -7,23 +7,17 @@
     $openedAsPopup = request()->boolean('modalPopUp');
 @endphp
 
-<div class="pageheader">
-
-    <div class="pageicon"><span class="fa fa-fw fa-file"></span></div>
-    <div class="pagetitle">
-        <h5>{{ session('currentProjectName') }}</h5>
-        <h1>{!! __('headlines.files') !!}</h1>
-    </div>
-
-</div><!--pageheader-->
+<x-global::layout.page-header icon="fa fa-fw fa-file" :eyebrow="session('currentProjectName')">
+    {!! __('headlines.files') !!}
+</x-global::layout.page-header>
 
 <div class="maincontent">
 
 
     <div id="fileManager">
-        <div class="maincontentinner">
+        <x-global::layout.content-box>
             {!! $tpl->displayNotification() !!}
-            <h5 class="subtitle">{!! __('headline.browse_files_headline') !!}</h5>
+            <x-global::elements.section-header as="h5">{!! __('headline.browse_files_headline') !!}</x-global::elements.section-header>
 
         @if ($login::userIsAtLeast($roles::$editor))
         <div class="uploadWrapper">
@@ -46,8 +40,8 @@
 
         </div>
         @endif
-        </div>
-        <div class="maincontentinner">
+        </x-global::layout.content-box>
+        <x-global::layout.content-box>
 
         <div class='mediamgr'>
 
@@ -55,7 +49,7 @@
 
                 <ul id='medialist' class='listfile'>
                     @foreach ($files as $file)
-                        <li class="file-module-{{ $file['moduleId'] }}">
+                        <x-global::elements.card as="li" compact class="file-module-{{ $file['moduleId'] }}">
                             <x-global::actions.dropdown class="dropright" style="float:right;">
                                 <li class="nav-header">{!! __('subtitles.file') !!}</li>
                                 <li><a target="_blank" href="{{ BASE_URL }}/files/get?module={{ $file['module'] }}&encName={{ $file['encName'] }}&ext={{ $file['extension'] }}&realName={{ $file['realName'] }}">{!! __('links.download') !!}</a></li>
@@ -80,7 +74,7 @@
                                 @endif
                                 <x-files::fileName :file="$file" />
                             </a>
-                        </li>
+                        </x-global::elements.card>
                     @endforeach
 
                 <br class="clearall" />
@@ -92,7 +86,7 @@
 
             <br class="clearall" />
         </div><!--mediamgr-->
-    </div>
+        </x-global::layout.content-box>
 
     </div>
 </div>
@@ -229,7 +223,9 @@
 
         if(response.hasOwnProperty("moduleId")){
 
-            let html = '<li class="file-module-'+response.moduleId+'">' +
+            // Same structure as the server-rendered tiles (elements.card as li, compact body).
+            let html = '<li class="lt-card file-module-'+response.moduleId+'">' +
+                        '<div class="lt-card-bd lt-card-bd--compact">' +
                             '<div class="inlineDropDownContainer dropright" style="float:right;">' +
                                 '<a href="javascript:void(0);" class="dropdown-toggle ticketDropDown" data-toggle="dropdown">' +
                                     '<i class="fa fa-ellipsis-v" aria-hidden="true"></i>' +
@@ -247,6 +243,7 @@
 
                                 '<span class="filename" title="'+uploadedFileDisplayName(response)+'">'+uploadedFileDisplayName(response)+'</span>'+
                             '</a>'+
+                        '</div>'+
                         '</li>';
 
                  jQuery("#medialist").append(html);

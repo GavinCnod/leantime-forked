@@ -16,10 +16,9 @@
     }
 @endphp
 
-<div class="pageheader">
-    <div class="pageicon"><i class="far fa-lightbulb"></i></div>
-    <div class="pagetitle">
-        @if (count($allCanvas) > 0)
+<x-global::layout.page-header icon="far fa-lightbulb">
+    @if (count($allCanvas) > 0)
+        <x-slot:switcher>
             <x-global::subjectSwitcher
                 :parent="__('headlines.ideas')"
                 :current="$canvasTitle">
@@ -31,12 +30,12 @@
                     <li><a href='{{ BASE_URL }}/ideas/showBoards/{{ $canvasRow['id'] }}'>{{ $tpl->escape($canvasRow['title']) }}</a></li>
                 @endforeach
             </x-global::subjectSwitcher>
-        @else
-            <h1>{!! __('headlines.ideas') !!}</h1>
-        @endif
-    </div>
+        </x-slot:switcher>
+    @else
+        {!! __('headlines.ideas') !!}
+    @endif
     @if (count($allCanvas) > 0)
-        <div class="pageheader-right">
+        <x-slot:actions>
             <x-global::actions.dropdown variant="header-menu">
                 @if ($login::userIsAtLeast($roles::$editor))
                     <li><a href="#/ideas/boardDialog/{{ $currentCanvas }}">{!! __('links.icon.edit') !!}</a></li>
@@ -44,9 +43,9 @@
                 @endif
 
             </x-global::actions.dropdown>
-        </div>
+        </x-slot:actions>
     @endif
-</div><!--pageheader-->
+</x-global::layout.page-header>
 
 <div class="maincontent">
     @php
@@ -63,14 +62,14 @@
         @endif
     </x-global::navigation.view-tabs>
 
-    <div class="maincontentinner" id="ideaBoards" style="min-height:350px;">
+    <x-global::layout.content-box id="ideaBoards" style="min-height:350px;">
         {!! $tpl->displayNotification() !!}
 
         @if (count($allCanvas) > 0)
             <div id="ideaMason" class="sortableTicketList" style="padding-top:10px;">
 
                 @foreach ($canvasItems as $row)
-                    <div class="ticketBox" id="item_{{ $row['id'] }}" data-value="{{ $row['id'] }}">
+                    <x-global::elements.card compact class="ticketBox" id="item_{{ $row['id'] }}" data-value="{{ $row['id'] }}">
 
                         <div class="row">
                             <div class="col-md-12">
@@ -115,11 +114,7 @@
                                             &nbsp;
                                             <x-global::actions.dropdown variant="panel" as="span" class="dropdown" menu-as="ul" menu-class="pull-right">
                                                 <x-slot:trigger><i class="fa fa-tags" aria-hidden="true"></i> <small>{{ count($ideaTags) }}</small></x-slot:trigger>
-                                                <li style="padding:10px"><div class="tagsinput readonly">
-                                                    @foreach ($ideaTags as $tag)
-                                                        <span class="tag"><span>{{ $tag }}</span></span>
-                                                    @endforeach
-                                                </div></li>
+                                                <li style="padding:10px"><x-global::elements.tag-list :tags="$ideaTags" /></li>
                                             </x-global::actions.dropdown>
                                         @endif
 
@@ -139,7 +134,7 @@
                                 </div>
                             </div>
                         @endif
-                    </div>
+                    </x-global::elements.card>
 
                 @endforeach
 
@@ -183,7 +178,7 @@
                             <h4 class="modal-title">{!! __('headlines.start_new_idea_board') !!}</h4>
                         </div>
                         <div class="modal-body">
-                            <label>{!! __('label.topic_idea_board') !!}</label>
+                            <x-global::forms.label>{!! __('label.topic_idea_board') !!}</x-global::forms.label>
                             <x-global::forms.text-input width="full" name="canvastitle" placeholder="{{ __('input.placeholders.name_for_idea_board') }}" />
                         </div>
                         <div class="modal-footer">
@@ -205,7 +200,7 @@
                             <h4 class="modal-title">{!! __('headlines.edit_board_name') !!}</h4>
                         </div>
                         <div class="modal-body">
-                            <label>{!! __('label.title_idea_board') !!}</label>
+                            <x-global::forms.label>{!! __('label.title_idea_board') !!}</x-global::forms.label>
                             <x-global::forms.text-input width="full" name="canvastitle" value="{{ $canvasTitle }}" />
                         </div>
                         <div class="modal-footer">
@@ -220,7 +215,7 @@
 
         <div class="clearfix"></div>
 
-    </div>
+    </x-global::layout.content-box>
 </div>
 
 @once

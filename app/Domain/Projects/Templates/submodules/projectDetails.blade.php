@@ -1,7 +1,3 @@
-@php
-    use Leantime\Domain\Menu\Repositories\Menu;
-@endphp
-
 <form action="" method="post" class="stdform">
 
     <div class="row">
@@ -39,8 +35,8 @@
 
                 @if ($projectTypes && count($projectTypes) > 1)
                 <div class="col-md-12 center">
-                    <h4 class="widgettitle title-light"><i class="fa-regular fa-rectangle-list"></i> Project Type</h4>
-                    <p>The type of the project. This will determine which features are available.</p>
+                    <x-global::elements.section-header icon="fa-regular fa-rectangle-list">{{ __('label.project_type') }}</x-global::elements.section-header>
+                    <p>{{ __('text.project_type_help') }}</p>
                     <x-global::forms.select enhanced name="type">
                         @foreach ($projectTypes as $key => $type)
                             <option value="{{ $tpl->escape($key) }}"
@@ -60,10 +56,9 @@
 
                 <div class="col-md-12 center">
 
-                    <h4 class="widgettitle title-light"><span
-                            class="fa fa-picture-o"></span>{!! __('label.project_avatar') !!}</h4>
+                    <x-global::elements.section-header icon="fa fa-picture-o">{!! __('label.project_avatar') !!}</x-global::elements.section-header>
 
-                    <img src='{{ BASE_URL }}/api/projects?projectAvatar={{ $project['id'] }}&v={{ format($project['modified'])->timestamp() }}'  class='profileImg' alt='Profile Picture' id="previousImage"/>
+                    <img src='{{ BASE_URL }}/api/projects?projectAvatar={{ $project['id'] }}&v={{ format($project['modified'])->timestamp() }}'  class='profileImg' alt='{{ __('headlines.profile_picture') }}' id="previousImage"/>
                     <div id="projectAvatar">
                     </div>
 
@@ -103,17 +98,16 @@
 
                 <div class="row marginBottom" style="margin-bottom: 30px;">
                     <div class="col-md-12">
-                        <h4 class="widgettitle title-light"><span
-                                class="fa fa-calendar"></span>{!! __('label.project_dates') !!}</h4>
+                        <x-global::elements.section-header icon="fa fa-calendar">{!! __('label.project_dates') !!}</x-global::elements.section-header>
 
 
-                        <label class="control-label">{!! __('label.project_start') !!}</label>
+                        <x-global::forms.label>{!! __('label.project_start') !!}</x-global::forms.label>
                         <div class="">
                             <input type="text" class="field-width-sm dates" name="start" autocomplete="off"
                                    value="{{ format($project['start'])->date() }}" placeholder="{{ __('language.dateformat') }}"/>
 
                         </div>
-                        <label class="control-label">{!! __('label.project_end') !!}</label>
+                        <x-global::forms.label>{!! __('label.project_end') !!}</x-global::forms.label>
                         <div class="">
                             <input type="text" class="field-width-sm dates" name="end" autocomplete="off"
                                    value="{{ format($project['end'])->date() }}" placeholder="{{ __('language.dateformat') }}"/>
@@ -127,8 +121,7 @@
                 <div class="row" style="margin-bottom: 30px;">
 
                     <div class="col-md-12 " style="margin-bottom: 30px;">
-                    <h4 class="widgettitle title-light"><span
-                            class="fa fa-building"></span>{!! __('label.client_product') !!}</h4>
+                    <x-global::elements.section-header icon="fa fa-building">{!! __('label.client_product') !!}</x-global::elements.section-header>
                     <x-global::forms.select enhanced name="clientId" id="clientId" aria-label="{{ __('label.client_product') }}">
 
                         @foreach ($clients as $row)
@@ -152,15 +145,11 @@
 
             <div class="row marginBottom" style="margin-bottom: 30px;">
                 <div class="col-md-12">
-                    <h4 class="widgettitle title-light"><span
-                            class="fa fa-wrench"></span>{!! __('label.settings') !!}</h4>
-
-            <input type="hidden" name="menuType" id="menuType"
-                           value="{{ Menu::DEFAULT_MENU }}">
+                    <x-global::elements.section-header icon="fa fa-wrench">{!! __('label.settings') !!}</x-global::elements.section-header>
 
                     <div class="form-group">
 
-                <label class="col-md-4 control-label" for="projectState">{!! __('label.project_state') !!}</label>
+                <x-global::forms.label class="col-md-4 control-label" for="projectState">{!! __('label.project_state') !!}</x-global::forms.label>
                 <div class="col-md-6">
                     <x-global::forms.select enhanced name="projectState" id="projectState">
                         <option value="0" @if ($project['state'] == 0) selected=selected @endif>{!! __('label.open') !!}</option>
@@ -176,8 +165,7 @@
 
             <div class="row marginBottom" style="margin-bottom: 30px;">
                 <div class="col-md-12 ">
-                    <h4 class="widgettitle title-light"><span
-                                class="fa fa-lock-open"></span>{!! __('labels.defaultaccess') !!}</h4>
+                    <x-global::elements.section-header icon="fa fa-lock-open">{!! __('labels.defaultaccess') !!}</x-global::elements.section-header>
                     {!! __('text.who_can_access') !!}
                     <br /><br />
 
@@ -192,10 +180,9 @@
 
             <div class="row" style="margin-bottom: 30px;">
                 <div class="col-md-12 ">
-                    <h4 class="widgettitle title-light"><span
-                                class="fa fa-money-bill-alt"></span>{!! __('label.budgets') !!}</h4>
+                    <x-global::elements.section-header icon="fa fa-money-bill-alt">{!! __('label.budgets') !!}</x-global::elements.section-header>
                     <div class="form-group">
-                        <label class="col-md-4 control-label"for="hourBudget">{!! __('label.hourly_budget') !!}</label>
+                        <x-global::forms.label class="col-md-4 control-label" for="hourBudget">{!! __('label.hourly_budget') !!}</x-global::forms.label>
                         <div class="col-md-6">
                             <x-global::forms.text-input name="hourBudget" id="hourBudget" value="{{ $project['hourBudget'] }}" />
 
@@ -203,7 +190,7 @@
                     </div>
 
                     <div class="form-group">
-                        <label class="col-md-4 control-label" for="dollarBudget">{!! __('label.budget_cost') !!}</label>
+                        <x-global::forms.label class="col-md-4 control-label" for="dollarBudget">{!! __('label.budget_cost') !!}</x-global::forms.label>
                         <div class="col-md-6">
                             <x-global::forms.text-input name="dollarBudget" id="dollarBudget" value="{{ $project['dollarBudget'] }}" />
 

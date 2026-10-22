@@ -3,7 +3,7 @@
     'type' => 'simple'
 ])
 
-<div class="projectBox" id="projectBox-{{ $project['id'] }}">
+<x-global::elements.card compact class="projectBox" id="projectBox-{{ $project['id'] }}">
     <div class="row" >
         <div class="col-md-12 fixed">
             <div class="row tw-pb-sm">
@@ -55,4 +55,4 @@
 
         </div>
     </div>
-</div>
+</x-global::elements.card>
