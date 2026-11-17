@@ -3,6 +3,7 @@
 namespace Unit\app\Domain\Goalcanvas\Repositories;
 
 use Illuminate\Database\ConnectionInterface;
+use Illuminate\Database\PostgresConnection;
 use Illuminate\Database\Query\Builder;
 use Illuminate\Database\Query\Grammars\PostgresGrammar;
 use Illuminate\Database\Query\Processors\Processor;
@@ -30,7 +31,7 @@ class SnapshotGoalValuesQueryTest extends TestCase
      */
     private function repositoryCapturingQueries(array &$queries): Goalcanvas
     {
-        $grammar = new PostgresGrammar;
+        $grammar = new PostgresGrammar(new PostgresConnection(fn () => null));
         $connection = $this->createMock(ConnectionInterface::class);
         $connection->method('table')->willReturnCallback(
             fn (string $table): Builder => (new Builder($connection, $grammar, new Processor))->from($table)
