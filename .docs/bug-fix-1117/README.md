@@ -88,11 +88,9 @@ fork 当前 DB 版本 **3.5.33**，而合并目标（上游 3.15.x）已经占�
 
 ## 4. 上游 PR
 
-- [ ] PR ① `fix/zp-stats-float-columns`：SchemaBuilder 四列 float + `update_sql_30536` + `dbVersion 3.5.36` + 测试
-- [ ] PR ② `fix/goalcanvas-snapshot-postgres-identifiers`：`wrapColumn` 加引号 + SQL 回归测试
-- [ ] PR ③ `fix/reports-daily-ingestion-isolation`：逐项目 try/catch + 测试
-
-（创建后补链接）
+- [x] PR ① [#4094](https://github.com/Leantime/leantime/pull/4094) `fix/zp-stats-float-columns`：SchemaBuilder 四列 float + `update_sql_30536` + `dbVersion 3.5.36` + 测试
+- [x] PR ② [#4095](https://github.com/Leantime/leantime/pull/4095) `fix/goalcanvas-snapshot-postgres-identifiers`：`wrapColumn` 加引号 + SQL 回归测试
+- [x] PR ③ [#4096](https://github.com/Leantime/leantime/pull/4096) `fix/reports-daily-ingestion-isolation`：逐项目 try/catch + 测试
 
 ---
 
