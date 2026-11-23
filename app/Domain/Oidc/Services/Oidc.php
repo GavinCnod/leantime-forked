@@ -8,6 +8,7 @@ use Illuminate\Http\Client\PendingRequest;
 use Illuminate\Http\Exceptions\HttpResponseException;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Log;
+use Leantime\Core\Auth\AccountStatus;
 use Leantime\Core\Configuration\Environment;
 use Leantime\Core\Controller\Frontcontroller;
 use Leantime\Core\Language;
@@ -159,6 +160,12 @@ class Oidc
             $nonce = $this->generateState();
             session(['oidc.nonce' => $nonce]);
 
+            // PKCE (RFC 7636): the provider only hands out tokens to the party that
+            // started the login. Providers that require it (e.g. Authelia's
+            // `require_pkce: true`) refuse the authorization request without it.
+            $codeVerifier = $this->generateCodeVerifier();
+            session(['oidc.codeVerifier' => $codeVerifier]);
+
             // Mobile-brokered SSO: remember that this flow began in the app + where
             // to hand the result back, so the callback mints a token + one-time
             // code instead of a web session. Only a whitelisted app scheme is
@@ -182,6 +189,8 @@ class Oidc
                 'scope' => $this->scopes,
                 'state' => $state,
                 'nonce' => $nonce,
+                'code_challenge' => $this->codeChallengeFor($codeVerifier),
+                'code_challenge_method' => 'S256',
             ]);
         }
 
@@ -201,7 +210,14 @@ class Oidc
     }
 
     /**
+     * Completes the login after the provider redirected back with an authorization code:
+     * checks the state, exchanges the code (with the PKCE verifier) for tokens and logs the user in.
+     *
+     * @param  string  $code  authorization code from the provider
+     * @param  string  $state  state echoed back by the provider
+     *
      * @throws GuzzleException
+     * @throws \RuntimeException when the state, token exchange or token is invalid
      */
     public function callback(string $code, string $state): Response
     {
@@ -213,7 +229,10 @@ class Oidc
         $expectedNonce = (string) session('oidc.nonce');
         session()->forget('oidc.nonce');
 
-        $tokens = $this->requestTokens($code);
+        $codeVerifier = (string) session('oidc.codeVerifier');
+        session()->forget('oidc.codeVerifier');
+
+        $tokens = $this->requestTokens($code, $codeVerifier);
 
         if (! is_array($tokens)) {
             $this->displayError($tokens);
@@ -266,7 +285,14 @@ class Oidc
             $this->displayError('oidc.error.emailNotVerified');
         }
 
-        $user = $this->userRepo->getUserByEmail($userName);
+        // Look the user up whatever their status: an account an admin deactivated (or an invite not
+        // accepted yet) must be refused, not mistaken for a new one.
+        $user = $this->userRepo->getUserByEmail($userName, '');
+
+        if ($user !== false && ! AccountStatus::isActive($user)) {
+            Log::info('OIDC login refused: the Leantime account is not active');
+            $this->displayError('oidc.error.userInactive');
+        }
 
         if ($user === false) {
             if ($this->createUser) {
@@ -343,7 +369,7 @@ class Oidc
             return Frontcontroller::redirect($mobileRedirect.$separator.'code='.urlencode($code), 302);
         }
 
-        return Frontcontroller::redirect(BASE_URL.'/dashboard/home');
+        return Frontcontroller::redirect($this->authService->postLoginRedirect(null));
     }
 
     /**
@@ -392,20 +418,30 @@ class Oidc
     }
 
     /**
+     * Exchanges the authorization code for tokens at the provider's token endpoint.
+     *
+     * @param  string  $code  authorization code from the provider
+     * @param  string  $codeVerifier  PKCE verifier stored when the login started ('' when none was stored)
+     *
      * @throws GuzzleException
      */
-    private function requestTokens(string $code): array|string
+    private function requestTokens(string $code, string $codeVerifier = ''): array|string
     {
         $httpClient = $this->providerHttp();
 
-        // Add proper client authentication headers
-        $response = $httpClient->asForm()->post($this->getTokenUrl(), [
+        $tokenRequest = [
             'client_id' => $this->clientId,
             'client_secret' => $this->clientSecret,
             'grant_type' => 'authorization_code',
             'code' => $code,
             'redirect_uri' => $this->buildRedirectUrl(),
-        ]);
+        ];
+
+        if ($codeVerifier !== '') {
+            $tokenRequest['code_verifier'] = $codeVerifier;
+        }
+
+        $response = $httpClient->asForm()->post($this->getTokenUrl(), $tokenRequest);
 
         if ($response->failed()) {
             Log::error('OIDC Token Request Failed: '.$response->body());
@@ -754,6 +790,29 @@ class Oidc
     private function generateState(): string
     {
         return bin2hex(random_bytes(16));
+    }
+
+    /**
+     * A PKCE code verifier (RFC 7636 4.1): 32 random bytes, base64url encoded (43 characters).
+     *
+     * @throws \Exception
+     */
+    private function generateCodeVerifier(): string
+    {
+        return $this->base64UrlEncode(random_bytes(32));
+    }
+
+    /**
+     * The S256 code challenge for a PKCE verifier (RFC 7636 4.2).
+     */
+    private function codeChallengeFor(string $codeVerifier): string
+    {
+        return $this->base64UrlEncode(hash('sha256', $codeVerifier, true));
+    }
+
+    private function base64UrlEncode(string $value): string
+    {
+        return rtrim(strtr(base64_encode($value), '+/', '-_'), '=');
     }
 
     /**

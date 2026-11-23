@@ -6,8 +6,8 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 A **self-hosted fork** of [Leantime](https://github.com/Leantime/leantime) (open source project management system), maintained by one team for their own use.
 
-- **Branch strategy**: `dev-self-hosted` is the working branch (fork-only commits on top of upstream). Since the 2026-10-11 upgrade, the fork **tracks upstream via merges**: `master` mirrors `upstream/master` (synced to v3.12.0+33, `8464a2eac`), and the validated upgrade branch is merged into `dev-self-hosted` (see `.docs/upgrade-1011/README.md` and `.docs/upgrade-3.12/README.md`). Follow the same merge-and-validate flow for future upstream releases.
-- **Version**: Leantime **3.12.0** (`app/Core/Configuration/AppSettings.php` → `$appVersion`; also `package.json`). The app version is read at *makefile parse time*, so bumping it changes build artifact names.
+- **Branch strategy**: `dev-self-hosted` is the working branch (fork-only commits on top of upstream). Since the 2026-10-11 upgrade, the fork **tracks upstream via merges**: `master` mirrors `upstream/master` (synced to v3.17.0, `e4763f16c`), and the validated upgrade branch is merged into `dev-self-hosted` (see `.docs/upgrade-1011/README.md`, `.docs/upgrade-3.12/README.md` and `.docs/upgrade-3.17/README.md`). Follow the same merge-and-validate flow for future upstream releases.
+- **Version**: Leantime **3.17.0** (`app/Core/Configuration/AppSettings.php` → `$appVersion`; also `package.json`). dbVersion is **3.5.37**. The app version is read at *makefile parse time*, so bumping it changes build artifact names.
 - **Upstream**: `upstream` remote = `Leantime/leantime`; `origin` = `GavinCnod/leantime-forked`.
 - **Language**: the team works in Chinese. `docs/` and `.docs/` hold the Chinese operating guides, glossary, and design records — see [Team docs](#team-docs-and-chinese-documentation).
 
@@ -181,9 +181,9 @@ Naming rules:
 
 String events (legacy, still dominant) are auto-named from class namespace + calling method + raw hook string, e.g. `leantime.domain.tickets.services.tickets.updateTicket.ticket_updated`. `DispatchesEvents` provides `self::dispatch_event()` / `self::dispatch_filter()`. Pattern matching supports `*`, `?`, and `{RGX:pattern:RGX}`.
 
-**Class-based events currently in production** (11 total): Tickets (`TicketCreated`, `TicketUpdated`, `TicketDeleted`, `TicketStatusUpdated`, `StatusLabelsUpdated`, `MilestoneCreated/Updated/Deleted`, plus filters `TicketListFilter`, `TodoWidgetTasksFilter`) and Blueprints (`CanvasItemUpdated`). Note `Files/Events/FileUploaded.php` is a **plain Laravel stub, not** a `LeantimeEvent` — don't copy it as a template.
+**Class-based events now span most active domains** (~50 classes by 3.17): Tickets (`TicketCreated`, `TicketUpdated`, `TicketDeleted`, `TicketStatusUpdated`, `TicketAssigned`, `TicketCompleted`, `TicketScheduled`, `StatusLabelsUpdated`, `SubtasksUpdated`, `MilestoneCreated/Updated/Deleted`, plus filters `TicketListFilter`, `TodoWidgetTasksFilter`), Blueprints, Calendar, Comments, Files, Goalcanvas, Notifications, Plugins, Projects, Reminders, Sprints, Timesheets, TwoFA, Users, Widgets and Wiki. Note `Files/Events/FileUploaded.php` is a **plain Laravel stub, not** a `LeantimeEvent` — don't copy it as a template.
 
-Listener registration lives in `register.php`; only 8 domains have one (Auth, CsvImport, Help, Install, Notifications, Plugins, Queue, Reports). Not every domain needs one.
+Listener registration lives in `register.php`; 11 domains have one (Auth, CsvImport, Help, Install, Modulemanager, Notifications, Oauth, Plugins, Queue, Reminders, Reports). Not every domain needs one.
 
 ### HTMX architecture
 
@@ -193,7 +193,7 @@ The async/DOM-update layer. **Use HTMX for data loading and refreshes; use JS on
 - DI goes through `init()`, **not** `__construct()`. Action methods are named semantically, not by HTTP verb.
 - Event enums: per-domain `app/Domain/{D}/Htmx/Htmx{D}Events.php` for **data events** (`lt:{domain}:{entity}.{verb}`, past tense), and the single core `Core\Events\Htmx\HtmxUiEvents` for **UI commands** (`lt:ui:*` — notify, modal-close). Plugins reuse the core UI enum; never mint their own `lt:ui:*`.
 - Emit with `$this->tpl->emit(...)`; consume declaratively with `hx-trigger="lt:tickets:ticket.updated from:body"`.
-- **Migration window**: legacy DOMAIN event strings (`ticket_update`) are bidirectionally dual-emitted via `HtmxEvents::LEGACY_ALIASES`. UI command events are deliberately **not** aliased — JS listens on each legacy name directly, so aliasing would double-fire (double growl / multiple modal close).
+- **Migration window is over**: upstream 3.15 removed `HtmxEvents::LEGACY_ALIASES`, so only the `lt:` wire names fire. Plugins that still listen on a legacy DOMAIN string (`ticket_update`) must move to the class/enum form; UI command events (`lt:ui:*`) remain unaliased and are consumed by JS.
 - Prefer `<x-global::hx :for="...HxController::class">` over hand-written `hx-get`/`hx-trigger`. Declaring the contract on an `HxComponent` (`listensTo()`/`emits()`) means the emit side and listen side reference the same enum and cannot drift. Note how early this pattern is: there is exactly **one** `HxComponent` subclass today (`Tickets/Hxcontrollers/Subtasks`) and one mount — treat it as a new convention, and expect most components to still be anonymous Blade.
 
 PHP enums can't implement `__toString` — use `->event()` / `->value` in PHP; Blade `{{ Events::Case }}` renders the value via Laravel's `e()`.
@@ -209,6 +209,14 @@ A meta-model for how Leantime entities compose and map **across structures** —
 Registration entry point is `StructureRegistry`: `register(title, type, elements, relationships): int` and `registerMappings(sourceId, targetId, mappings)`. It is idempotent, caches forever, and degrades to a no-op (`return 0`) when `zp_work_structures` doesn't exist yet — so it is safe to call from a provider `boot()` during install. Tables: `zp_work_structures`, `zp_work_structure_elements`, `zp_work_structure_relationships`, `zp_work_structure_mappings`.
 
 **Status — infrastructure plus one seed.** `WorkStructureServiceProvider::boot()` seeds a built-in "Project" structure (milestone/task/goal). Beyond that, **no domain and no plugin in this repo calls `register()` or `registerMappings()`**, and `MappingService` / `WorkStructureService` have zero consumers outside `app/Core/WorkStructure/`. `ElementDefinition::$domainReference` is stored but never resolved or validated. Its three events are plain Laravel-style (`Dispatchable`), not `LeantimeEvent`, and nothing listens to them. Treat this as an unexercised extension point.
+
+### Reminders, notifications and OAuth (3.13–3.17)
+
+- **Reminders (`app/Domain/Reminders/`, 3.17)** — morning summary plus per-to-do reminder choices, with no new tables. It runs from the scheduler (its `register.php` hooks `leantime.core.console.consolekernel.schedule.cron`), so it needs the cron/`schedule:work` runner. `RecipientAccess` checks keep notifications inside the project audience.
+- **Notifications (3.13–3.16)** — assignment and "added to project" notifiers (`NotifyAssignee`, `NotifyProjectMember` in `Notifications/register.php`), push/digest wording rewritten per change, and a push relay for self-hosted installs (AdvancedAuth license) alongside direct FCM. Recipients must still have project access.
+- **OAuth for `/mcp` (3.16)** — `Core/Auth/OAuth` (OAuthKeys, OAuthTokenStore, OAuthBearerAuthenticator, ProtectedResources) and `Domain/Oauth` (authorize/metadata/register/token, Connected Apps). Tables `zp_oauth_clients/auth_codes/access_tokens/refresh_tokens` (migration 30535). `LEAN_OAUTH_ENABLED` defaults to true; `php bin/leantime oauth:keys` inspects the signing keys.
+- **Calendar/CalDAV (3.15–3.17)** — class-based calendar events/filters; CalDAV 1.1.0 ships in the upstream plugin bundle, which this fork does not include. `LEAN_OUTBOUND_ALLOWED_HOSTS` allows LAN calendar/webhook servers through `OutboundUrlGuard`.
+- **DB 3.5.34–3.5.37** — 30534 `zp_queue.module/moduleId`, 30535 OAuth tables, 30536 `zp_queue.summary`, 30537 `zp_stats.sum_points*` → float.
 
 ## Architecture reference
 
@@ -286,11 +294,11 @@ Rendering methods on `Template`: `display()`, `displayPartial()`, `displayFragme
 
 **Any public service method is callable** — the `@api` annotation (487 uses) is documentation only, not enforced. The RPC entry point resolves the *service* method, so `#[RequiresPermission]` there is enforced by the RPC path, not the controller's.
 
-Auth: Leantime API keys (`x-api-key`, format `lt_{user}_{key}`, acts as a service account) or Laravel Sanctum bearer tokens (requires the AdvancedAuth plugin). The legacy REST-like controllers in `app/Domain/Api/Controllers/` are deprecated — new work goes through JSON-RPC.
+Auth: Leantime API keys (`x-api-key`, format `lt_{user}_{key}`, acts as a service account) or Laravel Sanctum bearer tokens. Personal access tokens are core since 3.13 (My Profile → Personal Access Tokens, `Auth/Hxcontrollers/PersonalTokens.php`); no plugin is needed. Since 3.16 `/mcp` also accepts OAuth sign-in (`Core/Auth/OAuth` + `Domain/Oauth`, Laravel Passport). The legacy REST-like controllers in `app/Domain/Api/Controllers/` are deprecated — new work goes through JSON-RPC.
 
 ### Auth and roles
 
-Three guards: `leantime` (web session), `sanctum` (token), `jsonRpc` (API). Native LDAP and OIDC support, plus Laravel Socialite providers (Authentik, Auth0, Gitea, GitHub, GitLab, Google, Keycloak, Microsoft, Okta, PropelAuth, EduID, SAML2).
+Three guards: `leantime` (web session), `sanctum` (token), `jsonRpc` (API). Native LDAP and OIDC support, plus Laravel Socialite providers (Authentik, Auth0, Gitea, GitHub, GitLab, Google, Keycloak, Microsoft, Okta, PropelAuth, EduID, SAML2). Since 3.16 `/mcp` has its own OAuth sign-in flow (`LEAN_OAUTH_ENABLED`, tables `zp_oauth_*`, migration 30535). The additional Socialite providers are switched on by the AdvancedAuth plugin, as is signing in from the mobile app (`Oidc/Controllers/Mobile.php` returns 404 without it).
 
 Each user has one client and a role; projects are visible to everyone, to the user's client, or to explicitly assigned users. Admins/owners see all projects. Since 3.12 roles are **stored as data** with a separate `roleKey`, `level` and `baseRole` (`zp_roles`), so custom roles can exist; built-in keys 5..50 are unchanged. New permissions `projects.viewAll` (see every project without membership) and `roles.manage` reach custom roles through the base role. **For new authorization logic use the [permission engine](#permission-engine-appcoreauthpermissions), not role-name comparisons.**
 
@@ -367,12 +375,12 @@ make install-deps-dev    # npm install + composer install
 make install-deps        # production variant (--no-dev --optimize-autoloader)
 make build-dev           # dev assets + blocklist
 make build               # production assets + blocklist
-make run-dev             # Docker dev server (port 8090)
+make run-dev             # Docker dev server (port 5080, HTTPS 5443)
 make clear-cache         # clears bootstrap/cache, viewPaths, storage/framework caches
 make get-version         # prints the version parsed from AppSettings.php
 ```
 
-`make run-dev` starts: app `:8090`, MailDev `:8081`, phpMyAdmin `:8082` (leantime/leantime), S3Ninja `:8083`.
+`make run-dev` starts the containers in `.dev/docker-compose.yaml`: app `:5080` (HTTPS `:5443`), MySQL 8.4 (`leantime-db`), MailDev (random host port; `docker compose --file .dev/docker-compose.yaml port maildev 8081`), Redis and S3Ninja. There is no phpMyAdmin. The test compose file (`make unit-test` / `make acceptance-test`) serves Leantime on `:8002`.
 
 Manual setup: install deps → point the web server at `public/` → create the database → copy `config/sample.env` to `config/.env` and configure → visit `<localdomain>/install`.
 

@@ -1,3 +1,302 @@
+# Version: 3.17.0
+
+## Highlights
+### Morning summaries and reminders
+Leantime now looks ahead.
+- **Morning summary:** at most one a day, at each person's chosen time (08:00 by default, in their timezone). It covers:
+  - their to-dos that are due
+  - milestones a week and a day ahead
+  - project end dates, for the project's managers
+- **Where it arrives:** in the inbox, and by email and push for people who kept those on.
+- **Nothing coming up, nothing sent.** Overdue work is one quiet line, never a nag.
+- **"Remind me" on each to-do:** choose how often it reminds you (default, more, less or off) from the to-do's ⋮ menu, the open to-do, or the new Coming up panel, or set your own default.
+- **Turning it off:** admins can switch reminders off for the whole workspace. It runs on the scheduler, so it needs the cron to be running (#4104)
+
+### CalDAV that works both ways
+This release bundles CalDAV 1.1.0 (Leantime/plugins#168).
+- **Calendar apps:** Apple Calendar, Thunderbird and DAVx5 can now add, change and delete Leantime events without errors, and they see edits made in Leantime. Events an app adds keep their alarms, location and repeat rules.
+- **App passwords:** a new **App passwords** option under Calendar Settings lets people who use two-factor authentication or single sign-on connect a calendar app.
+- **Connected calendars (Nextcloud, Radicale, …):**
+  - Deletions now come in.
+  - Repeating events arrive as every occurrence.
+  - Editing or deleting one occurrence in Leantime changes only that occurrence.
+  - Edits made in Leantime keep the event's location, alarms and timezone on the other server.
+
+(#4105, #4111)
+
+## New Features
+- **Your one thing** - Pick the one to-do that matters most for a day. JSON-RPC: `Tickets.OneThing.getOneThing`, `setOneThing`, `clearOneThing`, `getOneThings`. It's personal, and only stores a to-do you can see (#4109)
+- **Planned days** - A Work Start with a date but no time now means the day you plan to work on a to-do:
+  - **Calendars:** it shows as an all-day "Planned:" item instead of a 12 AM event, on the web and dashboard calendars, the mobile feed and iCal.
+  - **Hiding them:** a new Calendar setting, "Show planned days on my calendar", turns them off.
+  - **Planning API:** `Tickets.Planning.planTaskForDay`, `clearTaskPlan` and `getTaskPlan` plan a to-do without ever moving its due date.
+
+  (#4110)
+- **Tasks to consider and quick wins** - A JSON-RPC API that picks the same suggestions on every client as the mobile app's Today screen: `Tickets.Suggestions.getTasksToConsider` and `getQuickWins`. It only suggests to-dos from projects you can view. There's no web UI yet (#4116)
+- **Calendar servers on your own network** - Self-hosted admins can let Leantime reach named private-network servers with `LEAN_OUTBOUND_ALLOWED_HOSTS` (hostnames, IP addresses or CIDR ranges). It covers CalDAV accounts, iCal feeds and webhooks. By default only public addresses are reachable, as before (#4105)
+- **Calendar discovery** - `/.well-known/caldav` now sends calendar apps to Leantime's CalDAV server, so the workspace address alone is enough to set one up (#4105)
+
+## Security
+- **Task assignment** - Tasks can only be assigned to people who can see the project (#4103)
+- **Role changes** - A changed role or client now takes effect on the user's next request. Before, it waited until they logged in again (#4114)
+
+## Bug Fixes
+- **iCal all-day events** - All-day events in the iCal feed end on the right day (the end date is exclusive) (#4110)
+- **Welcome widget** - "Time boxed tasks completed" counts real time boxes only (#4110)
+- **Reports** - The belief line is readable, "as measured by" is plain text, and the subject's own update shows their name (#4102)
+- **Story-point totals** - Report totals for fractional story points are stored as decimals instead of rounded (#4094)
+- **Daily report ingestion** - One failing project no longer stops the daily report run for the others (#4096)
+- **Goal snapshots on PostgreSQL** - The nightly goal-value snapshot works on PostgreSQL (#4095)
+- **Growl messages** - Notification text is escaped unless it is explicitly marked as HTML (#4103)
+- **Plugin text after updates** - After a plugin update, its new text no longer shows as raw keys for up to 7 days (#4105)
+
+## Dependency Updates
+- Bundled plugins bumped to plugins main: CalDAV 1.1.0, RecurringTasks 1.4.0 (reminder choices carried to new copies) and StrategyPro Logic Model fixes (#4111, #4117)
+
+## Upgrade Notes
+- **Database changes** (dbVersion 3.5.37): `zp_stats` story-point columns become decimals (migration 30537). `system:update` does not run migrations: open the update screen once, or run `php bin/leantime db:migrate`.
+- **Morning summaries are on by default** for everyone, at 08:00 in each person's timezone. People can change or switch them off in their settings; admins can switch reminders off for the workspace in Company Settings. They need the scheduler (`php bin/leantime schedule:run` every minute via cron, or `schedule:work`).
+- **Self-hosted, calendar server on your LAN:** list it in `LEAN_OUTBOUND_ALLOWED_HOSTS` in `config/.env`, e.g. `'nextcloud.lan,192.168.1.0/24'` (see `config/sample.env`).
+- **Marketplace CalDAV installs:** update to CalDAV 1.1.0.
+- **Calendar app sign-in:** accounts with two-factor authentication or single sign-on sign in with an app password.
+- **McpServer:** the reminder tools need McpServer 2.1.0 (released alongside).
+
+---
+
+# Version: 3.16.0
+
+## Highlights
+### Connect Claude and ChatGPT to Leantime with OAuth
+Claude (web, desktop and mobile) and ChatGPT can now connect to your Leantime's `/mcp` endpoint by signing in with OAuth. No API key and no `mcp-remote` workaround. Clients register themselves and the signing keys are generated on first use, so there is nothing to set up. Changing your password or deactivating the user ends the connection. OAuth tokens only work on `/mcp` (#4092)
+
+### Notifications that say what changed
+Notifications now say what changed on a task, and comments reach "My work" (#4037). Push and digest wording is rewritten: the item's name is the title and who did what is the body, with one notification per change instead of an assignment push plus an update push (#4100)
+
+## New Features
+- **What pushes show** - A new Company Settings option chooses what push notifications show on lock screens: Everything (default), Names only, or Nothing (#4100)
+- **"Added you to a project"** - People are told when they're added to a project, in their inbox, the email digest and by push (#4100)
+- **Email digest redesign** - Changes are grouped by task, shown in local time, with one button (#4100)
+- **Board, goal and idea mentions** - Mentions on boards, goals and ideas now send a push, like task mentions (#4097)
+- **Push relay settings** - Without the AdvancedAuth plugin, the push relay settings are grayed out with a short explanation and a marketplace link (#4099)
+
+## Security
+- **Push recipients** - Mention and collaborator pushes could reach people without access to the project. They now only go to active users assigned to it (#4097)
+
+## Bug Fixes
+- **Board and goal notifications** - Comment and item notifications on boards and goals used the project that was open in the browser instead of the item's own project (#4097, #4100)
+- **Goal links** - "Goal created" notifications linked to an empty goal instead of the new one (#4097)
+- **Board comment dialog** - Saving an item from the board comment dialog could fail with a server error (#4097)
+- **Duplicate pushes** - Repeated changes and two items with the same name no longer cancel each other's push, and a rename shows in the digest (#4100)
+
+## Dependency Updates
+- Added `laravel/passport` (~13.7.6) for OAuth (#4092)
+- Bundled plugins bumped to plugins main, including AdvancedAuth 1.5.0 (#4093, #4106)
+
+## Upgrade Notes
+- **Database changes** (dbVersion 3.5.36): new OAuth tables (`zp_oauth_*`, migration 30535) and a `summary` column on `zp_queue` (migration 30536). `system:update` does not run migrations: open the update screen once, or run `php bin/leantime db:migrate`.
+- **OAuth is on by default** for `/mcp`. Set `LEAN_OAUTH_ENABLED=false` to turn it off. The signing keys are created on first use and stored encrypted in the database; `php bin/leantime oauth:keys` shows their status.
+- **AdvancedAuth users**: update to AdvancedAuth 1.5.0. Social sign-in then returns to the OAuth consent screen, and the mobile app can tell whether this server sends push.
+- **Push content** defaults to Everything. Admins who want less on lock screens can change it in Company Settings.
+
+---
+
+# Version: 3.15.3
+
+## Bug Fixes
+- **Unfinished onboarding** - A new owner or invited user who left the welcome steps before the end could not log in ("Username or password incorrect!" with the right password). Logging in with the chosen password now takes them back to the welcome steps to finish (#4035)
+- **Onboarding across sessions** - Finishing the welcome steps in a different browser session no longer fails with a server error. It sends the person to log in and finish instead (#4035)
+- **Onboarding messages** - Notifications on welcome steps 2–5 no longer show as escaped HTML (#4035)
+
+## Upgrade Notes
+- No database changes.
+
+---
+
+# Version: 3.15.2
+
+## Security
+- **Comment polling** - `comments.pollComments` could return to-do comments from a project you can't access when a canvas item in one of your projects had the same id. Comments are now tied to the entity of their own module (#4084)
+- **Draft docs** - Other users' drafts stay private through comments, comment polling, edits and deletes, including over JSON-RPC (#4083)
+- **Inactive accounts via SSO** - LDAP and OIDC logins refuse deactivated and not-yet-accepted accounts instead of failing on a duplicate account (which showed the database error on the OIDC login page). An LDAP import no longer stops at a deactivated user and leaves them deactivated (#4082)
+
+## Bug Fixes
+- **Docs from templates** - Docs created from a content template show in the Contents tree and search again (#4083)
+- **New project dates** - New projects store their start and end dates in UTC, so they no longer show a day off for users outside UTC. Projects created before this keep their dates (#4081)
+- **Delivery Metrics** - The summary heading shows the user's today instead of the previous UTC day (#4080, fixes #4055)
+- **iCal feed** - Calendar apps polling an old feed URL get a 404 without writing an error to the log each time (#4079)
+
+## Upgrade Notes
+- No database changes.
+- LDAP and OIDC logins are refused for accounts that are deactivated or still pending an invite, the same as the password login.
+
+---
+
+# Version: 3.15.1
+
+## Security
+- **Calendar privacy** - The calendar showed the personal events of every user with a higher user id; it now shows only your own events (#4034)
+- **Deactivated users** - Deactivating a user now ends their open sessions on the next request, and their API keys and access tokens stop working. Setting an API key to "Deactivated" now actually disables it (#4042, #4075)
+- **Draft docs** - A draft in Docs can only be opened by its author until it is published, also through its link, the activity feed and the API (#4056, #4072)
+
+## New Features
+- **Bulk project card data** - A new `getProjectsCardData` API call returns card data for many projects in one request (#4026)
+
+## Bug Fixes
+- **Calendar iCal feed** - Subscribing to the iCal feed from a calendar app works again, and the feed includes your To-Dos (#4018, #4077)
+- **To-do dialog headline** - The to-do dialog shows the To-Do's title in its header again (#4008, #4071)
+- **Saving descriptions on PostgreSQL** - Saving a To-Do with a long description no longer fails with a server error on PostgreSQL (#4005, #4069)
+- **Goal dates** - Goal start and end dates no longer move by a day each time a goal is saved (#4046, #4073)
+- **Project duplication** - Duplicating a project links the copied To-Dos to the copied milestones and parents, and no longer changes the original project (#4067)
+- **Client deletion** - The delete dialog lists the projects that will be deleted with the client, and they are cleaned up like a normal project delete (#4040, #4076)
+- **Show Closed Projects** - The "Show Closed Projects" toggle on All Projects works again (#4039, #4070)
+- **Canvas field labels** - The Project Value Canvas and Strategy Message dialogs show their field labels instead of translation keys (#4049, #4074)
+- **Subfolder installs** - Old `/download.php` attachment links and the mobile app's SSO login keep the subfolder Leantime runs in, and the nginx examples work for root and subfolder installs (#4062, #4068, #4065, #4061)
+- **MCP priority labels** - MCP tools label ticket priorities correctly (1 = Critical) (#4030)
+
+## Improvements
+- **LDAP** - Email and group attributes are matched case-insensitively (Active Directory `userPrincipalName`/`memberOf` work), a partial `LEAN_LDAP_KEYS` mapping no longer causes a login error, and `sample.env` shows valid JSON (#4028)
+- **Cache clearing** - `php bin/leantime cache:clearAll` also empties the per-domain data caches (#4027)
+
+## Upgrade Notes
+- No database changes.
+- API keys and users whose status is not active can no longer authenticate with existing sessions, API keys or access tokens.
+- Deleting a client that has projects now also requires permission to delete projects (default roles: manager and above). Over the API, `clients.delete` refuses a client whose projects have To-Dos, as the screen already did.
+- The project pickers when adding a user or adding time no longer list closed projects.
+
+---
+
+# Version: 3.15.0
+
+## New Features
+- **Permission-based controls for canvas boards, ideas and docs** - Blueprint boards, goals, ideas and Docs show their create, edit and delete controls by the permissions of the item's own project, so custom roles see only what they can use (#3993)
+- **Permission checks for comments, files, tokens and imports** - Comments, files, personal access tokens, CSV imports and integrations check specific permissions instead of role rank (#3994)
+- **forms.field component** - A new `forms.field` component bundles label, control and help text; user, client, API key and 22 dialog forms use it (#4003, #4004)
+
+## Improvements
+- **Clearer board and table styling** - Kanban headers, lanes, group boxes and table headers now stand off the white card for better contrast (#4063)
+- **Accessible field help** - Help text under a form field is announced by screen readers with its control (#4003)
+- **Cloud deployment** - Leantime Cloud now deploys from this repository through the Deploy Cloud workflow (#4045, #4059)
+
+## Fixes
+- Docs delete confirmations check the notebook's or article's own project, so deleting a doc opened from another project no longer returns 403 (#3993)
+- Update and comment notifications on Blueprint, canvas and goal items go to the item's own project, not to the project that happens to be open (#3993)
+- The idea dialog shows Save only to users who may save; the comment list and the client page show write controls only to users whose posts would be accepted (#3993, #3994)
+
+## Upgrade Notes
+- **No database changes** in this release.
+- **For plugin developers:** the legacy HTMX event aliases are removed (#3996). Listeners for `ticket_update`, `subtasks_update` or `subtasksUpdated` no longer fire. Listen for `lt:tickets:ticket.updated` / `lt:tickets:subtask.updated` instead, or reference the event class (`TicketUpdated::class`, `SubtasksUpdated::class`).
+
+---
+
+# Version: 3.14.0
+
+## Highlights
+
+### Granular permission checks across the app
+Projects, Timesheets, Users, API keys, to-dos, milestones, sprints, the dashboard, and menu items now check specific permissions rather than relying on role rank, giving administrators finer control over what each user can access (#3985, #3988, #3992).
+
+## New Features
+- **Calendar plugin extensibility** - Calendar events and filters are now class-based, so calendar plugins can hook in reliably. Moving or resizing an event in the calendar now also notifies plugins (#4017)
+- **CalDAV Calendar Sync plugin** - New on the marketplace and requires this release: two-way sync with Nextcloud, ownCloud, Baikal or Radicale, and Leantime as a calendar account in Apple Calendar, Thunderbird or DAVx⁵
+- **Domain-driven client events** - Timesheets and Projects client events are now derived from domain events (#3995)
+- **Board column header component** - Board column titles are now available via elements.board-column-header for customization (#4002)
+- **Toggle checkboxes** - On/off checkboxes now render as toggles (#3999)
+- **Collapsible content-box sidebars** - Content-box sidebars can now collapse, with Docs built on layout.content-box (#3991)
+
+## Bug Fixes
+- **Updates install to the correct folder** - Plugin updates now install into the existing installed folder instead of one named after the download's casing (#4001)
+- **Subtask list stays in sync** - A parent's subtask list is now notified when a child is edited or moved (#3990)
+- **Queued HTMX headers delivered** - Queued headers are now sent on responses that actions build themselves (#3989)
+- **Fresh path caches after upgrades** - View and composer path caches are rebuilt after a Leantime version change (#3998)
+
+## Improvements
+- **Component cleanup** - Removed the old x-global::accordion and jQuery tagsInput, and marked CustomFields versions below 1.6.0 as incompatible (#3997)
+
+## Upgrade Notes
+- **No database changes** in this release.
+- **Custom Fields:** versions below 1.6.0 no longer load on 3.14. Update Custom Fields to 1.6.0 or newer from My Apps.
+- **For plugin developers:** the calendar string hooks are gone.
+  - `afterCalendarSave` and `afterCalendarDelete` are replaced by the event classes `CalendarEventCreated`, `CalendarEventUpdated` and `CalendarEventDeleted`.
+  - The `connectOptions.providers`, `calendarSettings.sections` and `externalCalendars` filters are replaced by `CalendarProvidersFilter`, `CalendarSettingsSectionsFilter` and `ExternalCalendarsFilter`.
+  - All of these live in `Leantime\Domain\Calendar\Events`. Subscribe with `EventDispatcher::add_event_listener(Class::class, ...)`.
+- **For plugin developers:** `x-global::accordion` and the jQuery tagsInput plugin were removed. Use `x-global::elements.accordion` and `x-global::forms.tags`.
+
+---
+
+# Version: 3.13.2
+
+## New Features
+- **Marketplace install reporting** - Plugin installations now report their results and server details back to the marketplace (#3979)
+- **Email digest split** - The email digest separates "New" from "Already seen", and the company email frequency becomes a floor for personal settings (#3986)
+
+## Bug Fixes
+- **Top loader clears after Save & Close** - The loading indicator no longer stays active after using Save & Close in a modal (#3984)
+- **Resume owner setup during install** - The /install flow can now resume owner setup even after the post-install redirect is lost (#3983)
+- **Correct calendar event times** - Event times now follow the user's current time format instead of a stale session copy (#3982)
+- **More reliable OIDC login** - OIDC authentication now sends PKCE and displays provider errors instead of crashing the callback (#3981)
+- **User named on delete confirmation** - The delete confirmation page now shows the name of the user being removed (#3980)
+
+---
+
+# Version: 3.13.1
+
+## Bug Fixes
+- **Clearer plugin install errors** - Plugin installation now shows the marketplace's actual error message instead of a generic one (#3977)
+
+---
+
+# Version: 3.13.0
+
+## Highlights
+
+### Mobile push notifications
+Leantime can now send push notifications to the mobile apps, with its own on/off switch separate from email, routing data so taps open the right item, and a relay send path plus admin settings for self-hosted servers. (#3966, #3969, #3964, #3974)
+
+### Per-project modules
+Each project can now switch individual modules - including Time Tracking - on or off, and projects with a module turned off are left out of search, goal roll-ups and reports. (#3928, #3935, #3937, #3932)
+
+## Upgrade Notes
+- **Database update:** 3.13 runs three migrations (db version 3.5.33). They add a `metadata` column to projects for the module switches, give roles a separate key and base role so custom roles can exist, and grant the new permissions to existing roles. After upgrading, log in as an admin and confirm the database update screen, or run `php bin/leantime db:migrate`.
+- **Laravel 12:** Leantime now runs on Laravel 12. PHP 8.2 is still the minimum; the Docker images move to PHP 8.4. The release packages include the new dependencies; git-based installs need to run `composer install`.
+- **McpServer plugin:** update to McpServer 2.0. Core now ships laravel/mcp 1.x, which McpServer 1.x can't run on.
+- **Other plugins:** the 3.13 releases of CustomFields, Notes, PgmPro, StrategyPro and Whiteboards require Leantime 3.13. Update Leantime first, then the plugins.
+- **MCP clients:** `/mcp` speaks the MCP 2026-07-28 protocol and still answers `initialize` for 2025-03-26 to 2025-11-25 clients. Errors now come back with HTTP 400/404/500 instead of 200.
+- **Plugin authors:** htmx client events are now declared on the domain event classes (`CLIENT_EVENT`), and the `HtmxTicketEvents` enum is gone. Reference events by class, e.g. `TicketUpdated::class` (#3949).
+
+## New Features
+- **Mobile push notifications** - Delivery tier, category and routing data in push payloads, a dedicated mobile push toggle, and a relay send path with admin settings for self-hosted servers (#3966, #3969, #3964, #3974)
+- **Two-factor at mobile SSO** - OIDC now verifies the second factor during the mobile SSO exchange (#3972)
+- **"Assigned to you" notifications** - Ticket assignment now sends an "Assigned to you" notification (#3970)
+- **Per-project modules** - Turn individual modules, including Time Tracking, on or off per project (#3928, #3935, #3937)
+- **Expanded roles and permissions** - New `projects.viewAll` and `roles.manage` permissions reach custom roles, with roles stored as data keyed by level and base role (#3944, #3940)
+- **Color schemes and backgrounds** - Core color schemes and backgrounds with a tidied account settings tab, plus links that turn to the text colour on hover without an underline (#3945, #3946)
+- **MCP 1.x support** - Upgraded to laravel/mcp 1.x and the MCP 2026-07-28 protocol (#3957)
+- **Shared layout components** - Content boxes, page headers, section titles, field labels, accordions and resizable sidebars now use shared components for a consistent layout (#3954, #3948, #3950, #3942, #3930, #3926)
+
+## Bug Fixes
+- Personal webhooks no longer follow the email switch and now include your own changes (#3955)
+- Fresh installs create the access tokens table with the push columns (#3963)
+- List view detail now initializes its fields and the My Calendar toolbar stays on one line (#3953)
+- UI states are stored per row so saves apply immediately and can't overwrite each other (#3947)
+- Link-only goals are counted once in roll-ups (#3934)
+- Removed the empty view bar and set a single 10px gap between page boxes (#3933)
+- Restored the Retrospectives menu entry (#3926)
+- Dashboard Month view events and the "+N more" popover are readable again (#3880)
+- Each class's events are now named after that class (#3936)
+
+## Localization
+- **All 43 languages updated** - Brought every language up to date with en-US, added ten more selectable languages, and translated JS/PHP and project module strings across all languages (#3931, #3941, #3938)
+- **English strings centralized** - Moved hard-coded English out of JavaScript, PHP and core templates into en-US.ini (#3938, #3929)
+
+## Dependency Updates
+- Upgraded to Laravel 12 (#3956)
+- Docker images, dev environment and CI now run on PHP 8.4 (#3959)
+- Bumped DOMPurify to 3.4.17 and fast-uri to 3.1.9 (#3965)
+- Bumped markdown-it to 14.3.3 for DoS advisories (#3960)
+- Bumped bundled plugins for project modules, menuType retirement and laravel/mcp 1.x (#3958, #3939)
+
+---
+
 # Version: 3.12.0
 
 ## Highlights

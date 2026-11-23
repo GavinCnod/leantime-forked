@@ -112,14 +112,10 @@ use Leantime\Core\Support\FromFormat;
 
 
 
-    @if ($login::userIsAtLeast($roles::$manager))
-        <input style="float:left; margin-right:5px;"
-                type="checkbox" name="invoicedEmpl" id="invoicedEmpl"
-            @if (isset($values['invoicedEmpl']) && $values['invoicedEmpl'] == '1')
-                checked="checked"
-            @endif />
-
-            <label for="invoicedEmpl">{!! __('label.invoiced') !!}</label>
+    @can('timesheets.manage')
+        <x-global::forms.label for="invoicedEmpl">{!! __('label.invoiced') !!}</x-global::forms.label>
+        <x-global::forms.checkbox variant="toggle" name="invoicedEmpl" id="invoicedEmpl" value="on"
+            :checked="isset($values['invoicedEmpl']) && $values['invoicedEmpl'] == '1'" />
 
             {!! __('label.date') !!}&nbsp;<input type="text" autocomplete="off"
                                               id="invoicedEmplDate" name="invoicedEmplDate"
@@ -128,13 +124,9 @@ use Leantime\Core\Support\FromFormat;
 
 
         <br/>
-        <input style="float:left; margin-right:5px;"
-                type="checkbox" name="invoicedComp" id="invoicedComp"
-            @if ($values['invoicedComp'] == '1')
-                checked="checked"
-            @endif />
-
-        <label for="invoicedComp">{!! __('label.invoiced_comp') !!}</label>
+        <x-global::forms.label for="invoicedComp">{!! __('label.invoiced_comp') !!}</x-global::forms.label>
+        <x-global::forms.checkbox variant="toggle" name="invoicedComp" id="invoicedComp" value="on"
+            :checked="$values['invoicedComp'] == '1'" />
         {!! __('label.date') !!}&nbsp;<input type="text" autocomplete="off"
                                                   id="invoicedCompDate"
                                                   name="invoicedCompDate"
@@ -142,19 +134,15 @@ use Leantime\Core\Support\FromFormat;
                                                   size="7"/><br/>
 
         <br/>
-        <input style="float:left; margin-right:5px;"
-               type="checkbox" name="paid" id="paid"
-            @if ($values['paid'] == '1')
-                checked="checked"
-            @endif />
-
-        <label for="paid">{!! __('label.paid') !!}</label>
+        <x-global::forms.label for="paid">{!! __('label.paid') !!}</x-global::forms.label>
+        <x-global::forms.checkbox variant="toggle" name="paid" id="paid" value="on"
+            :checked="$values['paid'] == '1'" />
         {!! __('label.date') !!}&nbsp;<input type="text" autocomplete="off"
                                                       id="paidDate"
                                                       name="paidDate"
                                                       value="{{ format(value: $values['paidDate'], fromFormat: FromFormat::DbDate)->date() }}"
                                                       size="7"/><br/>
-    @endif
+    @endcan
 
 
 

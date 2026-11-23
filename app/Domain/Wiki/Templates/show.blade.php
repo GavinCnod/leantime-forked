@@ -77,13 +77,17 @@
     @if(count($wikis) > 0)
         <x-slot:actions>
             <x-global::actions.dropdown variant="header-menu">
-                @if($login::userIsAtLeast($roles::$editor) && $currentWiki)
-                    <li><a class="inlineEdit" href="#/wiki/wikiModal/{{ $currentWiki->id }}">{!! __('link.edit_wiki') !!}</a></li>
-                    <li><a class="delete" href="#/wiki/delWiki/{{ $currentWiki->id }}"><i class="fa fa-trash"></i> {!! __('links.delete_wiki') !!}</a></li>
+                @if($currentWiki)
+                    @can('wiki.edit', $currentWiki->projectId ?? null)
+                        <li><a class="inlineEdit" href="#/wiki/wikiModal/{{ $currentWiki->id }}">{!! __('link.edit_wiki') !!}</a></li>
+                    @endcan
+                    @can('wiki.delete', $currentWiki->projectId ?? null)
+                        <li><a class="delete" data-lt-permitted href="#/wiki/delWiki/{{ $currentWiki->id }}"><i class="fa fa-trash"></i> {!! __('links.delete_wiki') !!}</a></li>
+                    @endcan
                 @endif
-                @if($login::userIsAtLeast($roles::$editor) && isset($currentArticle->id) && $currentArticle->id)
+                @if(\Illuminate\Support\Facades\Gate::allows('wiki.delete', $currentArticle->projectId ?? null) && isset($currentArticle->id) && $currentArticle->id)
                     <li class="nav-header border">{!! __('label.article') !!}</li>
-                    <li><a class="delete" href="#/wiki/delArticle/{{ $currentArticle->id }}"><i class="fa fa-trash"></i> {!! __('links.delete_article') !!}</a></li>
+                    <li><a class="delete" data-lt-permitted href="#/wiki/delArticle/{{ $currentArticle->id }}"><i class="fa fa-trash"></i> {!! __('links.delete_article') !!}</a></li>
                 @endif
 
             </x-global::actions.dropdown>
@@ -108,53 +112,29 @@
     @elseif($wikis && count($wikis) > 0)
 
         @if($currentArticle && $currentArticle->id != null)
-            <!-- Single Panel Layout: Contents | Document | Properties (all inside) -->
-            <div class="wiki-layout">
+            {{-- Contents | document | details. The sidebars resize and hide (remembered per user); below 1200px they open over the document. --}}
+            <x-global::layout.content-box id="wikiContent" class="wiki-box" role="main" stack="lg" collapsible
+                                          :leftWidth="280" :rightWidth="280" mainClass="wiki-content-inner">
+                <x-slot:left class="wiki-contents-panel" id="contentsPanel">
+                    <x-global::elements.section-header icon="fa fa-list">{{ __('label.contents') }}</x-global::elements.section-header>
 
-                <!-- Main Content Area (contains everything) -->
-                <main class="wiki-content">
+                    <nav id="article-toc-wrapper">
+                        @php createModernTreeView($wikiHeadlines, 0, $currentArticle->id, 0, $tpl); @endphp
+                    </nav>
 
-                    <!-- Three-panel layout inside -->
-                    <div class="wiki-content-layout">
-
-                        <!-- Left: Contents Sidebar -->
-                        <div class="wiki-contents-panel" id="contentsPanel">
-                            <div class="wiki-panel-header">
-                                <x-global::elements.section-header icon="fa fa-list">{{ __('label.contents') }}</x-global::elements.section-header>
-                                <button class="wiki-collapse-btn" id="toggleContents" title="{{ __('label.collapse') }}">
-                                    <i class="fa fa-chevron-left"></i>
-                                </button>
-                            </div>
-
-                            <nav id="article-toc-wrapper">
-                                @php createModernTreeView($wikiHeadlines, 0, $currentArticle->id, 0, $tpl); @endphp
-                            </nav>
-
-                            @if($login::userIsAtLeast($roles::$editor))
-                                <button class="wiki-create-btn"
-                                        hx-post="{{ BASE_URL }}/hx/wiki/articleContent/create"
-                                        hx-swap="none">
-                                    <i class="fa fa-plus"></i>
-                                    <span>{!! __('link.create_article') !!}</span>
-                                </button>
-                            @endif
-                        </div>
-
-                        <!-- Toggle for collapsed Contents -->
-                        <button class="wiki-panel-toggle left" id="showContentsBtn" title="{{ __('label.show_contents') }}">
-                            <i class="fa fa-chevron-right"></i>
+                    @can('wiki.create')
+                        <button class="wiki-create-btn"
+                                hx-post="{{ BASE_URL }}/hx/wiki/articleContent/create"
+                                hx-swap="none">
+                            <i class="fa fa-plus"></i>
+                            <span>{!! __('link.create_article') !!}</span>
                         </button>
-
-                        <div class="wiki-content-inner">
-
-                        <!-- Toggle for collapsed Details -->
-                        <button class="wiki-panel-toggle right" id="showPropertiesBtn" title="{{ __('label.show_details') }}">
-                            <i class="fa fa-chevron-left"></i>
-                        </button>
+                    @endcan
+                </x-slot:left>
 
                             <!-- Document Header -->
                             <header class="wiki-document-header">
-                                @if($login::userIsAtLeast($roles::$editor))
+                                @can('wiki.edit')
                                     <!-- Editable Title with Icon Picker -->
                                     {{-- Icon picker + title read as ONE field: the icon is a button inside the title's border. --}}
                                     <div class="form-group wiki-title-field" id="wikiTitleWrapper">
@@ -208,12 +188,12 @@
                                             @endforeach
                                         </div>
                                     @endif
-                                @endif
+                                @endcan
                             </header>
 
                         <!-- Document Body - Click to Edit -->
                         <div class="wiki-document-wrapper" id="wikiDocumentWrapper" data-article-id="{{ $currentArticle->id }}">
-                            @if($login::userIsAtLeast($roles::$editor))
+                            @can('wiki.edit')
                                 <!-- Hidden textarea for Tiptap -->
                                 <textarea id="wikiArticleContent" class="wiki-editor-textarea" style="display:none;">{!! $tpl->escapeMinimal($currentArticle->description) !!}</textarea>
                                 <!-- Tiptap editor will be initialized here -->
@@ -223,7 +203,7 @@
                                 <article class="wiki-document" id="wikiDocumentContent">
                                     {!! $tpl->escapeMinimal($currentArticle->description) !!}
                                 </article>
-                            @endif
+                            @endcan
                         </div>
 
                         @if(! empty($currentArticle->milestoneHeadline))
@@ -244,20 +224,12 @@
 
                             <form method="post" action="{{ BASE_URL }}/wiki/show/{{ $currentArticle->id }}#comment">
                                 <input type="hidden" name="comment" value="1" />
-                                @include('comments::submodules.generalComment', ['formUrl' => BASE_URL . '/wiki/show/' . $currentArticle->id])
+                                @include('comments::submodules.generalComment', ['formUrl' => BASE_URL . '/wiki/show/' . $currentArticle->id, 'commentProjectId' => $currentArticle->projectId ?? null])
                             </form>
                         </section>
 
-                        </div><!-- /.wiki-content-inner -->
-
-                        <!-- Properties Panel (inside content area) -->
-                        <div class="wiki-properties-panel" id="propertiesPanel">
-                            <div class="wiki-panel-header">
-                                <x-global::elements.section-header icon="fa fa-info-circle">{{ __('label.details') }}</x-global::elements.section-header>
-                                <button class="wiki-collapse-btn" id="collapseProperties" title="{{ __('label.collapse') }}">
-                                    <i class="fa fa-chevron-right"></i>
-                                </button>
-                            </div>
+                <x-slot:right class="wiki-properties-panel" id="propertiesPanel">
+                    <x-global::elements.section-header icon="fa fa-info-circle">{{ __('label.details') }}</x-global::elements.section-header>
 
                     <!-- Properties Section -->
                     <div class="wiki-properties-section">
@@ -266,14 +238,14 @@
                         <div class="form-group">
                             <x-global::forms.label>{!! __('label.status') !!}</x-global::forms.label>
                             <div class="">
-                                @if($login::userIsAtLeast($roles::$editor))
+                                @can('wiki.edit')
                                     <x-global::forms.select width="full" id="wikiStatusSelect">
                                         <option value="draft" @selected($currentArticle->status === 'draft')>{{ __('label.draft') }}</option>
                                         <option value="published" @selected($currentArticle->status !== 'draft')>{{ __('label.published') }}</option>
                                     </x-global::forms.select>
                                 @else
                                     {{ ucfirst($currentArticle->status) }}
-                                @endif
+                                @endcan
                             </div>
                         </div>
 
@@ -294,7 +266,7 @@
                         <div class="form-group">
                             <x-global::forms.label>{{ __('label.parent') }}</x-global::forms.label>
                             <div class="">
-                                @if($login::userIsAtLeast($roles::$editor))
+                                @can('wiki.edit')
                                     @php
                                         $parentOptions = array_filter($wikiHeadlines, function ($h) use ($currentArticle) {
                                             return $h->id != $currentArticle->id;
@@ -314,7 +286,7 @@
                                     @else
                                         <span>{{ $parentName }}</span>
                                     @endif
-                                @endif
+                                @endcan
                             </div>
                         </div>
 
@@ -322,7 +294,7 @@
                         <div class="form-group">
                             <x-global::forms.label>{!! __('label.milestone') !!}</x-global::forms.label>
                             <div class="">
-                                @if($login::userIsAtLeast($roles::$editor))
+                                @can('wiki.edit')
                                     <x-global::forms.select width="full" id="wikiMilestoneSelect">
                                         <option value="">{!! __('label.not_assigned_to_milestone') !!}</option>
                                         @foreach($milestones as $milestone)
@@ -337,7 +309,7 @@
                                     @else
                                         <span>{!! __('label.not_assigned_to_milestone') !!}</span>
                                     @endif
-                                @endif
+                                @endcan
                             </div>
                         </div>
 
@@ -375,11 +347,8 @@
                         </div>
                     </div>
 
-                        </div><!-- /.wiki-properties-panel -->
-                    </div><!-- /.wiki-content-layout -->
-                </main>
-
-            </div>
+                </x-slot:right>
+            </x-global::layout.content-box>
 
         @else
             <!-- Wiki exists but no articles yet -->
@@ -405,65 +374,7 @@
 <script type="text/javascript">
 jQuery(document).ready(function() {
 
-    jQuery('#toggleContents').on('click', function() {
-        var panel = jQuery('#contentsPanel');
-        var showBtn = jQuery('#showContentsBtn');
-        panel.addClass('collapsed');
-        showBtn.addClass('visible');
-        localStorage.setItem('wikiContentsCollapsed', 'true');
-    });
-
-    jQuery('#showContentsBtn').on('click', function() {
-        var panel = jQuery('#contentsPanel');
-        var showBtn = jQuery('#showContentsBtn');
-        panel.removeClass('collapsed');
-        showBtn.removeClass('visible');
-        localStorage.setItem('wikiContentsCollapsed', 'false');
-    });
-
-    jQuery('#collapseProperties').on('click', function() {
-        var panel = jQuery('#propertiesPanel');
-        var showBtn = jQuery('#showPropertiesBtn');
-        panel.addClass('collapsed');
-        showBtn.addClass('visible');
-        localStorage.setItem('wikiPropertiesCollapsed', 'true');
-    });
-
-    jQuery('#showPropertiesBtn').on('click', function() {
-        var panel = jQuery('#propertiesPanel');
-        var showBtn = jQuery('#showPropertiesBtn');
-        panel.removeClass('collapsed');
-        showBtn.removeClass('visible');
-        localStorage.setItem('wikiPropertiesCollapsed', 'false');
-    });
-
-    var isSmallScreen = window.innerWidth <= 1280;
-
-    if (isSmallScreen || localStorage.getItem('wikiContentsCollapsed') === 'true') {
-        jQuery('#contentsPanel').addClass('collapsed');
-        jQuery('#showContentsBtn').addClass('visible');
-    }
-
-    if (isSmallScreen || localStorage.getItem('wikiPropertiesCollapsed') === 'true') {
-        jQuery('#propertiesPanel').addClass('collapsed');
-        jQuery('#showPropertiesBtn').addClass('visible');
-    }
-
-    var resizeTimeout;
-    jQuery(window).on('resize', function() {
-        clearTimeout(resizeTimeout);
-        resizeTimeout = setTimeout(function() {
-            var nowSmall = window.innerWidth <= 1280;
-            if (nowSmall) {
-                jQuery('#contentsPanel').addClass('collapsed');
-                jQuery('#showContentsBtn').addClass('visible');
-                jQuery('#propertiesPanel').addClass('collapsed');
-                jQuery('#showPropertiesBtn').addClass('visible');
-            }
-        }, 150);
-    });
-
-    @if($currentArticle && $login::userIsAtLeast($roles::$editor))
+    @if($currentArticle && \Illuminate\Support\Facades\Gate::allows('wiki.edit', $currentArticle->projectId ?? null))
     (function() {
         var articleId = @json($currentArticle->id);
         var wrapper = document.getElementById('wikiDocumentWrapper');
@@ -848,9 +759,9 @@ jQuery(document).ready(function() {
     }
     @endif
 
-    @if($login::userHasRole([$roles::$commenter]))
+    @cannot('wiki.edit', $currentArticle->projectId ?? null) @can('comments.create', $currentArticle->projectId ?? null)
     leantime.commentsController.enableCommenterForms();
-    @endif
+    @endcan @endcannot
 
 });
 </script>

@@ -8,6 +8,7 @@ use Illuminate\Contracts\Container\BindingResolutionException;
 use Illuminate\Database\ConnectionInterface;
 use Illuminate\Database\QueryException;
 use Illuminate\Support\Facades\Log;
+use Leantime\Core\Auth\Permissions\PermissionService;
 use Leantime\Core\Configuration\Environment;
 use Leantime\Core\Db\DatabaseHelper;
 use Leantime\Core\Db\Db as DbCore;
@@ -196,6 +197,49 @@ class Projects implements StoresProjectModules
 
             return $arr;
         })->toArray();
+    }
+
+    /**
+     * The people a task or milestone belongs to, as stored: its creator and its assignee.
+     * Both live in zp_tickets.
+     *
+     * @return array<int>
+     */
+    public function getTicketPeopleIds(int $ticketId): array
+    {
+        $row = $this->connection->table('zp_tickets')->where('id', $ticketId)->first(['userId', 'editorId']);
+
+        return $row ? self::peopleIds([$row->userId ?? null, $row->editorId ?? null]) : [];
+    }
+
+    /**
+     * The people a board item belongs to, as stored: its author and, for goals, its
+     * assignee. Items of every board (ideas, goals, blueprints) live in zp_canvas_items.
+     *
+     * @return array<int>
+     */
+    public function getBoardItemPeopleIds(int $itemId): array
+    {
+        $row = $this->connection->table('zp_canvas_items')->where('id', $itemId)->first(['author', 'assignedTo']);
+
+        return $row ? self::peopleIds([$row->author ?? null, $row->assignedTo ?? null]) : [];
+    }
+
+    /**
+     * @param  array<int, mixed>  $values  Stored user id columns ('', null or 0 when unset).
+     * @return array<int>
+     */
+    private static function peopleIds(array $values): array
+    {
+        $ids = [];
+        foreach ($values as $value) {
+            $id = is_numeric($value) ? (int) $value : 0;
+            if ($id > 0 && ! in_array($id, $ids, true)) {
+                $ids[] = $id;
+            }
+        }
+
+        return $ids;
     }
 
     /**
@@ -599,6 +643,26 @@ class Projects implements StoresProjectModules
         return $query->count();
     }
 
+    /**
+     * Every project of a client (id and name), whatever its state or active flag.
+     *
+     * Unlike getClientProjects(), this does not skip projects with active <= -1: deleting a client
+     * must take all of its projects with it, so none is left pointing at a client that's gone.
+     *
+     * @param  int  $clientId  The client id
+     * @return array<int, array{id: int, name: string}> The client's projects, by name
+     */
+    public function getAllProjectsOfClient(int $clientId): array
+    {
+        return $this->connection->table('zp_projects')
+            ->select(['id', 'name'])
+            ->where('clientId', $clientId)
+            ->orderBy('name')
+            ->get()
+            ->map(fn ($project) => ['id' => (int) $project->id, 'name' => (string) $project->name])
+            ->all();
+    }
+
     // Get all open user projects /param: open, closed, all
 
     public function getClientProjects($clientId): false|array
@@ -901,6 +965,8 @@ class Projects implements StoresProjectModules
             ]);
 
         static::dispatch_event('editProject', ['values' => $values, 'oldProject' => $oldProject]);
+
+        PermissionService::projectAccessChanged();
     }
 
     /**
@@ -946,6 +1012,8 @@ class Projects implements StoresProjectModules
         $this->connection->table('zp_tickets')
             ->where('projectId', $id)
             ->delete();
+
+        PermissionService::projectAccessChanged();
     }
 
     /**
@@ -1110,6 +1178,8 @@ class Projects implements StoresProjectModules
             ->where('projectId', $projectId)
             ->where('userId', $userId)
             ->delete();
+
+        PermissionService::projectAccessChanged();
     }
 
     public function deleteAllProjectRelations($userId): void
@@ -1117,6 +1187,8 @@ class Projects implements StoresProjectModules
         $this->connection->table('zp_relationuserproject')
             ->where('userId', $userId)
             ->delete();
+
+        PermissionService::projectAccessChanged();
     }
 
     public function deleteAllUserRelations($projectId): void
@@ -1124,6 +1196,8 @@ class Projects implements StoresProjectModules
         $this->connection->table('zp_relationuserproject')
             ->where('projectId', $projectId)
             ->delete();
+
+        PermissionService::projectAccessChanged();
     }
 
     public function addProjectRelation($userId, $projectId, $projectRole): void
@@ -1137,6 +1211,8 @@ class Projects implements StoresProjectModules
         ]);
 
         static::dispatch_event('userAddedToProject', ['userId' => $userId, 'projectId' => $projectId, 'projectRole' => $projectRole, 'oldProject' => $oldProject]);
+
+        PermissionService::projectAccessChanged();
     }
 
     public function patch($id, $params): bool
@@ -1161,6 +1237,8 @@ class Projects implements StoresProjectModules
             ->where('id', $id)
             ->update($updateData);
 
+        PermissionService::projectAccessChanged();
+
         return true;
     }
 
@@ -1179,6 +1257,25 @@ class Projects implements StoresProjectModules
         }
 
         return array_map(fn ($enabled) => (bool) $enabled, $modules);
+    }
+
+    /**
+     * Which of the given project ids exist, in one query.
+     *
+     * @param  array<int, int>  $projectIds
+     * @return array<int, int> The ids from $projectIds that have a zp_projects row (unordered).
+     */
+    public function getExistingProjectIds(array $projectIds): array
+    {
+        if ($projectIds === []) {
+            return [];
+        }
+
+        return $this->connection->table('zp_projects')
+            ->whereIn('id', $projectIds)
+            ->pluck('id')
+            ->map(fn ($id) => (int) $id)
+            ->all();
     }
 
     /**

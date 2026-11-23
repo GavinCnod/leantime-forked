@@ -10,6 +10,7 @@ use Leantime\Core\Events\DispatchesEvents;
 use Leantime\Core\Files\Contracts\FileManagerInterface;
 use Leantime\Domain\Ideas\Repositories\Ideas as IdeaRepository;
 use Leantime\Domain\Notifications\Models\Notification;
+use Leantime\Domain\Notifications\Services\PushRelay;
 use Leantime\Domain\Reports\Services\Reports as ReportService;
 use Leantime\Domain\Setting\Permissions\SettingPermissions;
 use Leantime\Domain\Setting\Repositories\Setting as SettingRepository;
@@ -289,7 +290,9 @@ class Setting
      * @return array{
      *     companySettings: array<string, mixed>,
      *     defaultNotificationTypes: array<int, string>,
-     *     defaultRelevance: string
+     *     defaultRelevance: string,
+     *     pushRelayEnabled: bool,
+     *     pushRelayContent: string
      * }
      *
      * @api
@@ -359,6 +362,10 @@ class Setting
             'companySettings' => $companySettings,
             'defaultNotificationTypes' => $defaultNotificationTypes,
             'defaultRelevance' => $defaultRelevance,
+            // Mobile push: the relay switch (self-hosted only; Cloud sends directly), and what
+            // phone notifications show, which applies to every push.
+            'pushRelayEnabled' => $this->settingsRepo->getSetting(PushRelay::SETTING_ENABLED) === '1',
+            'pushRelayContent' => self::pushContentLevel($this->settingsRepo->getSetting(PushRelay::SETTING_CONTENT)),
         ];
     }
 
@@ -428,6 +435,16 @@ class Setting
             }
             $this->settingsRepo->saveSetting('companysettings.defaultNotificationRelevance', $defaultRelevance);
 
+            // Mobile push relay: opt-in, and what leaves the server. The value is read as a
+            // boolean (an RPC caller may send false or '0'); an unchecked box isn't posted, so a
+            // missing key means off. The content level is written only when sent, so a save
+            // without it keeps the stored choice (PushRelay::contentLevel() reads full by default).
+            $relayEnabled = isset($params['pushRelayEnabled']) && filter_var($params['pushRelayEnabled'], FILTER_VALIDATE_BOOLEAN);
+            $this->settingsRepo->saveSetting(PushRelay::SETTING_ENABLED, $relayEnabled ? '1' : '0');
+            if (array_key_exists('pushRelayContent', $params)) {
+                $this->settingsRepo->saveSetting(PushRelay::SETTING_CONTENT, self::pushContentLevel($params['pushRelayContent']));
+            }
+
             session(['companysettings.sitename' => htmlspecialchars(addslashes($params['name']))]);
             session(['companysettings.language' => htmlentities(addslashes($params['language']))]);
 
@@ -453,5 +470,11 @@ class Setting
         }
 
         return $saved;
+    }
+
+    /** A known push content level, or full. */
+    private static function pushContentLevel(mixed $value): string
+    {
+        return in_array($value, [PushRelay::CONTENT_NAMES, PushRelay::CONTENT_MINIMAL], true) ? $value : PushRelay::CONTENT_FULL;
     }
 }

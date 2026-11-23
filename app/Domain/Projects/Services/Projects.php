@@ -21,7 +21,6 @@ use Leantime\Core\Support\Avatarcreator;
 use Leantime\Core\Support\FromFormat;
 use Leantime\Core\Support\OutboundUrlGuard;
 use Leantime\Domain\Auth\Models\Roles;
-use Leantime\Domain\Auth\Services\Auth;
 use Leantime\Domain\Blueprints\Repositories\Blueprints as BlueprintsRepository;
 use Leantime\Domain\Clients\Repositories\Clients as ClientRepository;
 use Leantime\Domain\Comments\Repositories\Comments as CommentRepository;
@@ -31,6 +30,8 @@ use Leantime\Domain\Ideas\Repositories\Ideas as IdeaRepository;
 use Leantime\Domain\Notifications\Models\Notification;
 use Leantime\Domain\Notifications\Services\Messengers;
 use Leantime\Domain\Notifications\Services\Notifications as NotificationService;
+use Leantime\Domain\Notifications\Services\PushPreferences;
+use Leantime\Domain\Notifications\Services\PushText;
 use Leantime\Domain\Notifications\Services\Webhooks;
 use Leantime\Domain\Projects\Events\ProjectArchived;
 use Leantime\Domain\Projects\Events\ProjectCreated;
@@ -325,7 +326,8 @@ class Projects extends BaseService implements ChecksProjectAccess
      * notifications and — last — queued rows for the personal webhooks of
      * recipients who opted in (delivered later by the webhook queue). Webhooks
      * ignore the email switch and include the author's own changes (see
-     * personalWebhookCandidates()).
+     * personalWebhookCandidates()). Push ignores the email switch too and has
+     * its own, applied last (see PushPreferences).
      *
      * @param  Notification  $notification  The notification object to send.
      *
@@ -335,12 +337,32 @@ class Projects extends BaseService implements ChecksProjectAccess
      *           webhooks. It must only run as the last step after the calling service or
      *           controller has already authorized the change being announced.
      */
+    /**
+     * The id the inbox records a notification under: the entity's id when the notification
+     * carries an entity, else the project's. The same value goes on the queued email, so the
+     * digest can match it against the inbox row.
+     */
+    private function notificationEntityId(Notification $notification): int
+    {
+        if (isset($notification->entity) && is_array($notification->entity) && isset($notification->entity['id'])) {
+            return (int) $notification->entity['id'];
+        }
+
+        if (isset($notification->entity) && is_object($notification->entity) && isset($notification->entity->id)) {
+            return (int) $notification->entity->id;
+        }
+
+        return (int) $notification->projectId;
+    }
+
     public function notifyProjectUsers(Notification $notification): void
     {
 
         // Filter notifications (dispatch_filter returns mixed; the filter preserves the entity)
         /** @var Notification $notification */
         $notification = EventCore::dispatch_filter('notificationFilter', $notification);
+
+        $this->addStoredPeople($notification);
 
         // The link goes out by email, messenger and push: point it at the trusted app URL
         // rather than the host of the request that triggered the notification.
@@ -365,16 +387,33 @@ class Projects extends BaseService implements ChecksProjectAccess
 
         $webhookCandidates = $this->personalWebhookCandidates($activeMembers, $notification);
 
-        // Batch-load notification preferences for every candidate of either channel
+        // Push has its own switch (PushPreferences), so its candidates are the team minus the
+        // author whatever their email setting; the switch itself is applied last, below.
+        $pushCandidates = [];
+        foreach ($activeMembers as $member) {
+            if ($member['id'] != $notification->authorId) {
+                $pushCandidates[] = (int) $member['id'];
+            }
+        }
+
+        // Mentions and collaborators bypass the relevance and category filters on every channel.
+        $mentionedUserIds = $this->extractMentionedUserIds($notification);
+        $collaboratorIds = $this->extractCollaboratorIds($notification);
+
+        // Batch-load notification preferences for every candidate of any channel
         $settingKeys = [];
-        foreach (array_unique(array_merge($users, $webhookCandidates)) as $userId) {
+        foreach (array_unique(array_merge($users, $webhookCandidates, $pushCandidates)) as $userId) {
             $settingKeys[] = 'usersettings.'.$userId.'.projectNotificationLevels';
             $settingKeys[] = 'usersettings.'.$userId.'.projectMutedNotifications'; // legacy format
             $settingKeys[] = 'usersettings.'.$userId.'.notificationEventTypes';
         }
+        // The push switch is read for bypass recipients too: a mention gets past the filters, not the switch.
+        foreach (array_unique(array_merge($pushCandidates, $mentionedUserIds, $collaboratorIds)) as $userId) {
+            $settingKeys[] = PushPreferences::settingKey((int) $userId);
+        }
         $settingKeys[] = 'companysettings.defaultNotificationEventTypes';
         $settingKeys[] = 'companysettings.defaultNotificationRelevance';
-        $preloadedSettings = $this->settingsRepo->getSettingsForKeys($settingKeys);
+        $preloadedSettings = $this->settingsRepo->getSettingsForKeys(array_values(array_unique($settingKeys)));
 
         // Layer 1: Filter by per-project relevance level (all / my_work / muted)
         $users = $this->filterUsersByProjectRelevance($users, $notification, $preloadedSettings);
@@ -383,33 +422,58 @@ class Projects extends BaseService implements ChecksProjectAccess
         $users = $this->filterUsersByEventType($users, $notification->module, $preloadedSettings);
 
         // Mentions and collaborators both bypass the two filter layers above.
-        $mentionedUserIds = $this->extractMentionedUserIds($notification);
-        $collaboratorIds = $this->extractCollaboratorIds($notification);
         $users = $this->addBypassRecipients($users, $mentionedUserIds, $notification->authorId);
         $users = $this->addBypassRecipients($users, $collaboratorIds, $notification->authorId);
 
+        // Push: the same two layers, then only the people the notification involves (see
+        // filterPushToInvolved), then the bypasses, then the user's own push switch, which is final.
+        $pushRecipients = $this->filterUsersByProjectRelevance($pushCandidates, $notification, $preloadedSettings);
+        $pushRecipients = $this->filterUsersByEventType($pushRecipients, $notification->module, $preloadedSettings);
+        $pushRecipients = $this->filterPushToInvolved($pushRecipients, $notification);
+        // A push carries the text and link to a phone straight away, so its bypasses reach only
+        // people who can still see the project: a mention left in an item, or a collaborator
+        // kept on a task, must not reach someone removed from it. (Webhooks check the same at
+        // posting time; email keeps its own policy.)
+        $pushBypass = $this->withProjectAccess(array_merge($mentionedUserIds, $collaboratorIds), (int) $notification->projectId);
+        $pushRecipients = $this->addBypassRecipients($pushRecipients, $pushBypass, $notification->authorId);
+        $pushRecipients = PushPreferences::filter($pushRecipients, $preloadedSettings);
+
         $emailMessage = $notification->message;
+        $emailUrl = null;
         if ($notification->url !== false) {
             $emailUrl = Mailer::notificationEmailUrl((string) $notification->url['url'], (string) $notification->module);
             $emailMessage .= " <a href='".$emailUrl."'>".$notification->url['text'].'</a>';
         }
 
-        // NEW Queuing messaging system
-        $queue = app()->make(QueueRepository::class);
-        $queue->queueMessageToUsers($users, $emailMessage, $notification->subject, $notification->projectId);
+        // The digest's wording, the push's in parts: the digest shows changes to one item together.
+        // Never in the way of the email itself: without it the digest shows subject and message.
+        try {
+            $emailSummary = app()->make(PushText::class)->forEmail($notification);
+        } catch (\Throwable) {
+            $emailSummary = null;
+        }
+        if ($emailSummary !== null && $emailUrl !== null) {
+            $emailSummary['url'] = $emailUrl;
+        }
+
+        // The entity the notification is about, in the inbox's terms, so the digest can tell an
+        // email the person already read in the inbox from a new one. The email itself is queued
+        // below, after the inbox rows exist (see there).
+        $entityId = $this->notificationEntityId($notification);
 
         // Send to messengers
         $this->messengerService->sendNotificationToMessengers($notification, $projectName);
 
         // Send mobile push notifications to recipients with a registered
-        // device token. No-op for users with no mobile token; no-op for
-        // FCM-provider rows when LEAN_PUSH_FCM_CREDENTIALS_PATH /
-        // LEAN_PUSH_FCM_PROJECT_ID aren't configured. Wrapped in try
-        // so a push outage never breaks the rest of the notification
-        // dispatch path (queued emails + messengers still fire).
+        // device token. Push recipients are filtered like email but gated by
+        // the push switch, not the email one (see PushPreferences). No-op for
+        // users with no mobile token; no-op for FCM-provider rows when
+        // LEAN_PUSH_FCM_CREDENTIALS_PATH / LEAN_PUSH_FCM_PROJECT_ID aren't
+        // configured. Wrapped in try so a push outage never breaks the rest
+        // of the notification dispatch path (queued emails + messengers still fire).
         try {
             $pushService = app()->make(\Leantime\Domain\Notifications\Services\Push::class);
-            $pushService->sendFromNotification($notification, $users);
+            $pushService->sendFromNotification($notification, $pushRecipients);
         } catch (\Throwable $e) {
             \Illuminate\Support\Facades\Log::warning('Push dispatch failed: '.$e->getMessage());
         }
@@ -424,11 +488,9 @@ class Projects extends BaseService implements ChecksProjectAccess
         ];
 
         $contentToCheck = '';
-        // Find entity ID & content
+        // Find mentionable content
         // Todo once all entities are models this if statement can be reduced
         if (isset($notification->entity) && is_array($notification->entity) && isset($notification->entity['id'])) {
-            $entityId = $notification->entity['id'];
-
             if (isset($mentionFields[$notification->module])) {
                 $fields = $mentionFields[$notification->module];
 
@@ -439,8 +501,6 @@ class Projects extends BaseService implements ChecksProjectAccess
                 }
             }
         } elseif (isset($notification->entity) && is_object($notification->entity) && isset($notification->entity->id)) {
-            $entityId = $notification->entity->id;
-
             if (isset($mentionFields[$notification->module])) {
                 $fields = $mentionFields[$notification->module];
 
@@ -450,9 +510,6 @@ class Projects extends BaseService implements ChecksProjectAccess
                     }
                 }
             }
-        } else {
-            // Entity id not set use project id
-            $entityId = $notification->projectId;
         }
 
         if ($contentToCheck != '') {
@@ -497,6 +554,12 @@ class Projects extends BaseService implements ChecksProjectAccess
          * @context domain.services.projects
          */
         self::dispatch_event('notifyProjectUsers', ['type' => 'projectUpdate', 'module' => $notification->module, 'moduleId' => $entityId, 'message' => $notification->message, 'subject' => $notification->subject, 'users' => array_values($filteredUsersToNotify), 'url' => $notification->url['url']], 'leantime.domain.projects.services.projects.notifyProjectUsers');
+
+        // Email, through the digest queue, AFTER the inbox rows above are written: the digest reads
+        // the inbox to tell an already-read email from a new one, so a queued row must never be
+        // visible before the unread inbox row of the same event. (The listener runs in-process.)
+        $queue = app()->make(QueueRepository::class);
+        $queue->queueMessageToUsers($users, $emailMessage, $notification->subject, $notification->projectId, $notification->module, $entityId, $emailSummary);
 
         // Personal webhooks go last, filtered like email (relevance, category, mentions,
         // collaborators) but from their own candidates: see personalWebhookCandidates(). This
@@ -601,6 +664,73 @@ class Projects extends BaseService implements ChecksProjectAccess
     }
 
     /**
+     * Names the people the notification's item belongs to, as stored, in involvedUserIds.
+     *
+     * Producers build the entity from what they have: a form's fields (no creator), the
+     * editor as a board item's "author", or a comment instead of the item it's on. So
+     * "My work" and push read the item itself: a task or milestone's creator and assignee,
+     * a board item's author and goal assignee. The item is the entity for a task, milestone
+     * or board notification, and the comment's host (module + moduleId) for a comment.
+     */
+    private function addStoredPeople(Notification $notification): void
+    {
+        $entity = is_object($notification->entity) ? (array) $notification->entity : $notification->entity;
+        if (! is_array($entity)) {
+            return;
+        }
+
+        $module = (string) $notification->module;
+        $people = [];
+        if ($module === 'tickets') {
+            $people = $this->projectRepository->getTicketPeopleIds((int) ($entity['id'] ?? 0));
+        } elseif ($module === 'ideas' || str_ends_with($module, 'canvas')) {
+            // A board's own comment notifications point at their item with moduleId.
+            $itemId = $notification->action === 'commented'
+                ? (int) ($entity['moduleId'] ?? 0)
+                : (int) ($entity['itemId'] ?? $entity['id'] ?? 0);
+            $people = $this->projectRepository->getBoardItemPeopleIds($itemId);
+        } elseif ($module === 'comments') {
+            $host = (string) ($entity['module'] ?? '');
+            $hostId = (int) ($entity['moduleId'] ?? 0);
+            if ($host === 'ticket' || $host === 'milestone') {
+                $people = $this->projectRepository->getTicketPeopleIds($hostId);
+            } elseif ($host === 'idea' || $host === 'article' || str_ends_with($host, 'canvasitem')) {
+                $people = $this->projectRepository->getBoardItemPeopleIds($hostId);
+            }
+        }
+
+        $known = array_map('intval', $notification->involvedUserIds);
+        foreach ($people as $userId) {
+            if (! in_array($userId, $known, true)) {
+                $notification->involvedUserIds[] = $userId;
+                $known[] = $userId;
+            }
+        }
+    }
+
+    /**
+     * Push only reaches people the notification involves: the assignee, creator and
+     * collaborators of the item, the people a comment names (involvedUserIds) and a board
+     * item's author. "All activity" on a project still means every update in the inbox and
+     * the email digest; on the phone it means the things that are about you, so a busy
+     * project doesn't fill the notification list. Mentions and collaborators are added back
+     * as bypasses after this, as on every channel.
+     *
+     * A later "follow this project" would add its followers here.
+     *
+     * @param  array<int>  $userIds  Push candidates left after the relevance and category layers.
+     * @param  Notification  $notification  The notification being dispatched.
+     * @return array<int> The candidates the notification involves.
+     */
+    private function filterPushToInvolved(array $userIds, Notification $notification): array
+    {
+        return array_values(array_filter(
+            $userIds,
+            fn (int $userId) => $this->isUserInvolvedInNotification($userId, $notification)
+        ));
+    }
+
+    /**
      * Checks whether a user is directly involved in the entity being notified about.
      *
      * A user is considered "involved" if they are the assignee (editorId),
@@ -612,6 +742,11 @@ class Projects extends BaseService implements ChecksProjectAccess
      */
     private function isUserInvolvedInNotification(int $userId, Notification $notification): bool
     {
+        // People the notification names apart from its entity (e.g. a ticket comment's ticket people).
+        if (in_array($userId, array_map('intval', $notification->involvedUserIds), true)) {
+            return true;
+        }
+
         $entity = $notification->entity;
 
         if (is_array($entity)) {
@@ -625,8 +760,11 @@ class Projects extends BaseService implements ChecksProjectAccess
             if (isset($entity['userId']) && (int) $entity['userId'] === $userId) {
                 return true;
             }
-            // Canvas items: author field
+            // Canvas items: author field; goals also have an assignee
             if (isset($entity['author']) && (int) $entity['author'] === $userId) {
+                return true;
+            }
+            if (isset($entity['assignedTo']) && (int) $entity['assignedTo'] === $userId) {
                 return true;
             }
         } elseif (is_object($entity)) {
@@ -640,6 +778,9 @@ class Projects extends BaseService implements ChecksProjectAccess
                 return true;
             }
             if (isset($entity->author) && (int) $entity->author === $userId) {
+                return true;
+            }
+            if (isset($entity->assignedTo) && (int) $entity->assignedTo === $userId) {
                 return true;
             }
         }
@@ -714,28 +855,19 @@ class Projects extends BaseService implements ChecksProjectAccess
      */
     private function extractMentionedUserIds(Notification $notification): array
     {
-        $mentionFields = [
-            'comments' => ['text'],
-            'projects' => ['details'],
-            'tickets' => ['description'],
-            'canvas' => ['description', 'data', 'conclusion', 'assumptions'],
-        ];
+        $fields = self::mentionFields((string) $notification->module);
 
         $contentToCheck = '';
         if (isset($notification->entity) && is_array($notification->entity)) {
-            if (isset($mentionFields[$notification->module])) {
-                foreach ($mentionFields[$notification->module] as $field) {
-                    if (isset($notification->entity[$field])) {
-                        $contentToCheck .= $notification->entity[$field];
-                    }
+            foreach ($fields as $field) {
+                if (isset($notification->entity[$field])) {
+                    $contentToCheck .= $notification->entity[$field];
                 }
             }
         } elseif (isset($notification->entity) && is_object($notification->entity)) {
-            if (isset($mentionFields[$notification->module])) {
-                foreach ($mentionFields[$notification->module] as $field) {
-                    if (isset($notification->entity->$field)) {
-                        $contentToCheck .= $notification->entity->$field;
-                    }
+            foreach ($fields as $field) {
+                if (isset($notification->entity->$field)) {
+                    $contentToCheck .= $notification->entity->$field;
                 }
             }
         }
@@ -757,6 +889,26 @@ class Projects extends BaseService implements ChecksProjectAccess
         }
 
         return array_unique($userIds);
+    }
+
+    /**
+     * The entity fields a module's mentions can sit in. Boards notify under their own module
+     * (leancanvas, goalcanvas, …) and ideas under 'ideas'; for both the entity is the item, or
+     * on a board's own comment notification the comment, so its text is read too.
+     *
+     * @return array<string>
+     */
+    private static function mentionFields(string $module): array
+    {
+        if ($module === 'ideas' || str_ends_with($module, 'canvas')) {
+            return ['description', 'data', 'conclusion', 'assumptions', 'text'];
+        }
+
+        return [
+            'comments' => ['text'],
+            'projects' => ['details'],
+            'tickets' => ['description'],
+        ][$module] ?? [];
     }
 
     /**
@@ -814,6 +966,33 @@ class Projects extends BaseService implements ChecksProjectAccess
         }
 
         return array_values(array_unique($candidates));
+    }
+
+    /**
+     * The users who may receive this project's pushes right now: an existing, active account
+     * with access to the project (assigned, or through the project's or role's visibility).
+     * The same test personal webhooks apply before posting.
+     *
+     * @param  array<int, int>  $userIds  Candidate user ids.
+     * @param  int  $projectId  The notification's project.
+     * @return array<int, int>
+     */
+    private function withProjectAccess(array $userIds, int $projectId): array
+    {
+        // Roles that see every project pass isUserAssignedToProject() for any id, so the
+        // project itself has to exist.
+        if ($userIds === [] || $projectId <= 0 || $this->projectRepository->getProject($projectId) === false) {
+            return [];
+        }
+
+        return array_values(array_filter(array_unique(array_map('intval', $userIds)), function (int $userId) use ($projectId): bool {
+            $user = $this->userRepo->getUser($userId);
+            if ($user === false || strtolower((string) ($user['status'] ?? '')) !== 'a') {
+                return false;
+            }
+
+            return $this->projectRepository->isUserAssignedToProject($userId, $projectId);
+        }));
     }
 
     /**
@@ -901,11 +1080,11 @@ class Projects extends BaseService implements ChecksProjectAccess
     }
 
     /**
-     * Resolves the userId for an "assigned-to-user" read to the SESSION user unless the caller is an
-     * admin/owner querying someone else — closing the cross-user param spoof on these @api reads (an
-     * RPC caller could otherwise list another user's projects by passing a foreign id). Mirrors the
-     * inline override in getProjectsUserHasAccessTo(). Recursion-safe: a global role check only,
-     * never project membership.
+     * Resolves the userId for an "assigned-to-user" read to the SESSION user unless the caller sees
+     * all projects (projects.viewAll) and asks about someone else — closing the cross-user param spoof
+     * on these @api reads (an RPC caller could otherwise list another user's projects by passing a
+     * foreign id). Mirrors the inline override in getProjectsUserHasAccessTo(). Recursion-safe: it
+     * reads the grant map of the global role only, never project membership.
      *
      * @param  int|string|null  $userId
      */
@@ -913,11 +1092,29 @@ class Projects extends BaseService implements ChecksProjectAccess
     {
         $sessionUser = (int) session('userdata.id');
 
-        if ((int) $userId !== $sessionUser && ! Auth::userIsAtLeast(Roles::$admin)) {
+        if ((int) $userId !== $sessionUser && ! Roles::seesAllProjects(session('userdata.role'))) {
             return $sessionUser;
         }
 
         return (int) $userId;
+    }
+
+    /**
+     * Like resolveScopedUserId(), for reads that return membership rows only (project id, name,
+     * project role), never project records. User managers (users.view or users.edit) may read
+     * another account's memberships too: the user editor shows and saves them.
+     *
+     * @param  int|string|null  $userId
+     */
+    private function resolveMembershipUserId($userId): int
+    {
+        $isForeignUser = (int) $userId !== (int) session('userdata.id');
+
+        if ($isForeignUser && ($this->can(UsersPermissions::VIEW) || $this->can(UsersPermissions::EDIT))) {
+            return (int) $userId;
+        }
+
+        return $this->resolveScopedUserId($userId);
     }
 
     /**
@@ -930,7 +1127,7 @@ class Projects extends BaseService implements ChecksProjectAccess
      */
     public function getProjectIdAssignedToUser($userId): false|array
     {
-        $userId = $this->resolveScopedUserId($userId);
+        $userId = $this->resolveMembershipUserId($userId);
 
         $projects = $this->projectRepository->getUserProjectRelation($userId);
 
@@ -1292,9 +1489,9 @@ class Projects extends BaseService implements ChecksProjectAccess
      *
      * Role-based authorization on $userId, per @marcelfolaron review:
      *   - Not passed (null/0): use the authenticated session user
-     *   - Passed AND caller is admin/owner: honor the requested user id
+     *   - Passed AND caller sees all projects (projects.viewAll): honor the requested user id
      *     (admin tooling, "show me Alice's projects" workflows)
-     *   - Passed by a non-admin AND differs from session: ignored and
+     *   - Passed by anyone else AND differs from session: ignored and
      *     overridden to the session user (prevents IDOR via the optional
      *     param)
      *
@@ -1310,7 +1507,7 @@ class Projects extends BaseService implements ChecksProjectAccess
 
         if ($userId === null || $userId === 0) {
             $userId = $sessionUser;
-        } elseif ($userId !== $sessionUser && ! Auth::userIsAtLeast(Roles::$admin)) {
+        } elseif ($userId !== $sessionUser && ! Roles::seesAllProjects(session('userdata.role'))) {
             $userId = $sessionUser;
         }
 
@@ -1524,10 +1721,10 @@ class Projects extends BaseService implements ChecksProjectAccess
 
                 session(['currentProjectClient' => $project['clientName']]);
 
-                session(['userdata.projectRole' => '']);
-                if ($projectRole != '') {
-                    session(['userdata.projectRole' => Roles::getRoleString($projectRole)]);
-                }
+                // Stored as a role key, or as a role name on legacy rows; unknown values inherit ('').
+                // AuthenticateSession refreshes this value on every request the same way.
+                $projectRoleKey = Roles::getRoleKey($projectRole);
+                session(['userdata.projectRole' => $projectRoleKey === false ? '' : (string) Roles::getRoleString($projectRoleKey)]);
 
                 session(['currentSprint' => '']);
                 session(['currentIdeaCanvas' => '']);
@@ -1771,17 +1968,27 @@ class Projects extends BaseService implements ChecksProjectAccess
             'start' => $values['start'] ?? null,
             'end' => $values['end'] ?? null,
         ];
+        // User dates arrive in the user's timezone; the database stores UTC.
         if ($values['start'] != null) {
-            $values['start'] = format(value: $values['start'], fromFormat: FromFormat::UserDateStartOfDay)->isoDateTime();
+            $values['start'] = format(value: $values['start'], fromFormat: FromFormat::UserDateStartOfDay)->isoDateTimeUTC();
         }
         if ($values['end'] != null) {
-            $values['end'] = format($values['end'], fromFormat: FromFormat::UserDateEndOfDay)->isoDateTime();
+            $values['end'] = format($values['end'], fromFormat: FromFormat::UserDateEndOfDay)->isoDateTimeUTC();
         }
 
         $projectId = $this->projectRepository->addProject($values);
 
         if ($projectId !== false && $projectId > 0) {
             ProjectCreated::dispatch(projectId: $projectId, type: $values['type']);
+
+            // The team it was created with (the creator is added too, but isn't told). Only
+            // members the repository actually saved: it skips entries without a projectRole.
+            foreach (is_array($values['assignedUsers']) ? $values['assignedUsers'] : [] as $user) {
+                $userId = is_array($user) && isset($user['projectRole']) ? (int) ($user['id'] ?? 0) : 0;
+                if ($userId > 0) {
+                    ProjectMemberAdded::dispatch(projectId: (int) $projectId, userId: $userId);
+                }
+            }
         }
 
         return $projectId;
@@ -1934,31 +2141,41 @@ class Projects extends BaseService implements ChecksProjectAccess
             $ticketIdList[$ticket->id] = $newTicketId;
         }
 
-        // Iterate through all and update relationships
+        // Point each copy at the copies of its milestone and parent. The originals are never
+        // touched: patching $ticket->id here used to move the source project's To-Dos onto the
+        // new project's milestones and left the copies without any.
         foreach ($allTickets as $ticket) {
+
+            $copiedTicketId = $ticketIdList[$ticket->id] ?? null;
+
+            if (empty($copiedTicketId)) {
+                continue;
+            }
 
             $values = [];
 
             if (! empty($ticket->milestoneid)) {
-                $values['milestoneId'] = $ticketIdList[$ticket->milestoneid] ?? null;
+                $copiedMilestoneId = $ticketIdList[$ticket->milestoneid] ?? null;
 
-                if ($values['milestoneId'] === null) {
+                if ($copiedMilestoneId === null) {
                     Log::warning('Issue copying project. New Milestone was not found.');
+                } else {
+                    $values['milestoneid'] = $copiedMilestoneId;
                 }
             }
 
             if (! empty($ticket->dependingTicketId)) {
-                $values['dependingTicketId'] = $ticketIdList[$ticket->dependingTicketId] ?? null;
+                $copiedParentId = $ticketIdList[$ticket->dependingTicketId] ?? null;
 
-                if ($values['dependingTicketId'] === null) {
+                if ($copiedParentId === null) {
                     Log::warning('Issue copying project. New ticket dependency was not found.');
+                } else {
+                    $values['dependingTicketId'] = $copiedParentId;
                 }
             }
 
-            $newTicketId = $ticketIdList[$ticket->id] ?? null;
-
-            if ($newTicketId && ! empty($values)) {
-                $this->ticketRepository->patchTicket($ticket->id, $values);
+            if (! empty($values)) {
+                $this->ticketRepository->patchTicket($copiedTicketId, $values);
             }
         }
 
@@ -2705,6 +2922,29 @@ class Projects extends BaseService implements ChecksProjectAccess
     }
 
     /**
+     * Removes one user from one project's team, leaving their other projects alone.
+     *
+     * The counterpart of addUserToProject(), with the same permission.
+     *
+     * @param  int  $userId  The user to remove.
+     * @param  int  $projectId  The project to remove them from.
+     * @return bool True when a membership was removed; false when they weren't on the team (or the ids were invalid).
+     *
+     * @api
+     */
+    #[RequiresPermission(ProjectsPermissions::EDIT, global: true)]
+    public function removeUserFromProject(int $userId, int $projectId): bool
+    {
+        if ($userId <= 0 || $projectId <= 0 || ! $this->projectRepository->isUserMemberOfProject($userId, $projectId)) {
+            return false;
+        }
+
+        $this->projectRepository->deleteProjectRelation($userId, $projectId);
+
+        return true;
+    }
+
+    /**
      * Removes all project relations for a given user.
      *
      * @param  int  $userId  The user ID
@@ -2720,7 +2960,8 @@ class Projects extends BaseService implements ChecksProjectAccess
     /**
      * Retrieves the project relations for a given user.
      *
-     * Non-admins may only read their OWN relations (the userId is pinned to the session user).
+     * Callers read their OWN relations (the userId is pinned to the session user) unless they see all
+     * projects or manage users, see resolveMembershipUserId().
      *
      * @param  int  $userId  The user ID
      * @param  int|null  $projectId  Optional project ID filter
@@ -2730,7 +2971,7 @@ class Projects extends BaseService implements ChecksProjectAccess
      */
     public function getUserProjectRelation(int $userId, ?int $projectId = null): array
     {
-        $userId = $this->resolveScopedUserId($userId);
+        $userId = $this->resolveMembershipUserId($userId);
 
         return $this->projectRepository->getUserProjectRelation($userId, $projectId);
     }
@@ -2879,7 +3120,7 @@ class Projects extends BaseService implements ChecksProjectAccess
     #[RequiresPermission(ProjectsPermissions::DELETE, global: true)]
     public function deleteProject(int $id): bool
     {
-        if (! Auth::userIsAtLeast(Roles::$manager)) {
+        if (! $this->can(ProjectsPermissions::DELETE)) {
             return false;
         }
 
@@ -3001,8 +3242,9 @@ class Projects extends BaseService implements ChecksProjectAccess
      * Authorization gate for managing (sorting/restatusing/patching) a project.
      *
      * The project kanban/timeline management UI (Projects\Controllers\ShowAll) is
-     * gated on manager+, so the JSON-RPC entry points below must enforce the same.
-     * Admins and owners can manage every project; managers must be assigned to it.
+     * gated on projects.edit, so the JSON-RPC entry points below must enforce the same.
+     * Roles that see all projects (projects.viewAll) manage every project; others must be
+     * assigned to it.
      * Not @api: this is an internal authorization helper, reachable by the relocated
      * image controllers, never callable over JSON-RPC.
      *
@@ -3011,11 +3253,11 @@ class Projects extends BaseService implements ChecksProjectAccess
      */
     public function userCanManageProject(int $projectId): bool
     {
-        if (! Auth::userIsAtLeast(Roles::$manager)) {
+        if (! $this->can(ProjectsPermissions::EDIT)) {
             return false;
         }
 
-        if (Auth::userIsAtLeast(Roles::$admin)) {
+        if (Roles::seesAllProjects(session('userdata.role'))) {
             return true;
         }
 
@@ -3133,38 +3375,40 @@ class Projects extends BaseService implements ChecksProjectAccess
     /**
      * Retrieves the projects for a client manager.
      *
-     * Non-admins are pinned to their own user id AND their own session client — a caller can
-     * never list another client's projects by passing a foreign clientId.
+     * Callers without projects.viewAll are pinned to their own user id AND their own session
+     * client — they can never list another client's projects by passing a foreign clientId.
      *
      * @param  int  $userId  The ID of the user.
      * @param  int  $clientId  The ID of the client.
+     * @param  bool  $showClosedProjects  (optional) Set to false to leave out closed projects.
      * @return array The projects for the client manager.
      *
      *  @api
      */
-    public function getClientManagerProjects(int $userId, int $clientId): array
+    public function getClientManagerProjects(int $userId, int $clientId, bool $showClosedProjects = true): array
     {
         $userId = $this->resolveScopedUserId($userId);
 
-        if (! Auth::userIsAtLeast(Roles::$admin)) {
+        if (! Roles::seesAllProjects(session('userdata.role'))) {
             $clientId = (int) session('userdata.clientId');
         }
 
-        $clientProjects = $this->projectRepository->getClientProjects($clientId);
-        $userProjects = $this->projectRepository->getUserProjects($userId);
+        $clientProjects = $this->projectRepository->getClientProjects($clientId) ?: [];
+        $userProjects = $this->projectRepository->getUserProjects($userId) ?: [];
 
         $allProjects = [];
 
-        foreach ($clientProjects as $project) {
-            if (isset($allProjects[$project['id']]) === false) {
-                $allProjects[$project['id']] = $project;
+        foreach ([...$clientProjects, ...$userProjects] as $project) {
+            if (isset($allProjects[$project['id']])) {
+                continue;
             }
-        }
 
-        foreach ($userProjects as $project) {
-            if (isset($allProjects[$project['id']]) === false) {
-                $allProjects[$project['id']] = $project;
+            $projectIsClosed = (int) ($project['state'] ?? 0) === -1;
+            if ($projectIsClosed && ! $showClosedProjects) {
+                continue;
             }
+
+            $allProjects[$project['id']] = $project;
         }
 
         return $allProjects;
@@ -3181,9 +3425,13 @@ class Projects extends BaseService implements ChecksProjectAccess
      */
     public function getAll(bool $showClosedProjects = false): array
     {
-        return $this->projectRepository->getUserProjects(userId: session('userdata.id'),
+        $projectStatus = $showClosedProjects ? 'all' : 'open';
+
+        return $this->projectRepository->getUserProjects(
+            userId: session('userdata.id'),
+            projectStatus: $projectStatus,
             accessStatus: 'all',
-            projectTypes: 'project');
+            projectTypes: 'project') ?: [];
     }
 
     /**
@@ -3421,6 +3669,82 @@ class Projects extends BaseService implements ChecksProjectAccess
      */
     #[RequiresPermission(ProjectsPermissions::VIEW, projectIdParam: 'projectId')]
     public function getProjectCardData(int $projectId): array
+    {
+        return $this->buildProjectCardData($projectId);
+    }
+
+    /**
+     * Maximum number of distinct project ids getProjectsCardData() processes per call.
+     */
+    public const PROJECT_CARD_BATCH_LIMIT = 100;
+
+    /**
+     * Builds the progress view-model for several project cards in one call.
+     *
+     * Batch form of getProjectCardData() for clients that render a list of project cards
+     * (one request and one bootstrap instead of one per project). Each entry has exactly the
+     * shape getProjectCardData() returns.
+     *
+     * Ids are int-cast; non-positive and duplicate ids are dropped, and only the first
+     * PROJECT_CARD_BATCH_LIMIT (100) distinct ids are processed — the rest are ignored.
+     *
+     * Authorization is per project: each id is checked for projects.view (role + membership)
+     * on its own. Projects that do not exist or that the caller cannot view are left out of
+     * the result instead of failing the whole batch.
+     *
+     * @param  array<int, mixed>  $projectIds  The project ids to assemble card data for, in display order (JSON ints or numeric strings).
+     * @return array<int, array> A list of project card data (id, progress, team, lastUpdate, status), in the order requested.
+     *
+     * @api
+     */
+    #[RequiresPermission(ProjectsPermissions::VIEW, entityScoped: true)]
+    public function getProjectsCardData(array $projectIds): array
+    {
+        $ids = [];
+
+        foreach ($projectIds as $rawId) {
+            if (! is_int($rawId) && ! is_string($rawId) && ! is_float($rawId)) {
+                continue;
+            }
+
+            $id = (int) $rawId;
+
+            if ($id <= 0 || isset($ids[$id])) {
+                continue;
+            }
+
+            $ids[$id] = $id;
+
+            if (count($ids) >= self::PROJECT_CARD_BATCH_LIMIT) {
+                break;
+            }
+        }
+
+        if ($ids === []) {
+            return [];
+        }
+
+        $existing = array_flip($this->projectRepository->getExistingProjectIds(array_values($ids)));
+
+        $cards = [];
+
+        foreach ($ids as $id) {
+            if (! isset($existing[$id]) || ! $this->can(ProjectsPermissions::VIEW, $id)) {
+                continue;
+            }
+
+            $cards[] = $this->buildProjectCardData($id);
+        }
+
+        return $cards;
+    }
+
+    /**
+     * Assembles one project card (progress, team, latest status update). Callers authorize first.
+     *
+     * @return array The project card data including id, progress, team, lastUpdate and status.
+     */
+    private function buildProjectCardData(int $projectId): array
     {
         $project = ['id' => $projectId];
 
@@ -3706,7 +4030,8 @@ class Projects extends BaseService implements ChecksProjectAccess
             'url' => $currentUrl,
             'text' => $this->language->__('email_notifications.project_update_cta'),
         ];
-        $notification->entity = $project;
+        // The project as saved, so a rename is told with its new name.
+        $notification->entity = array_merge($project, $values, ['id' => $projectId]);
         $notification->module = 'projects';
         $notification->action = 'updated';
         $notification->projectId = session('currentProject');

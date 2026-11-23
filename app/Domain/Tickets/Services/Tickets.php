@@ -19,12 +19,11 @@ use Leantime\Core\Exceptions\ValidationException;
 use Leantime\Core\Language as LanguageCore;
 use Leantime\Core\Modules\ProjectModules;
 use Leantime\Core\Support\DateTimeHelper;
-use Leantime\Domain\Auth\Models\Roles;
-use Leantime\Domain\Auth\Services\Auth;
 use Leantime\Domain\Clients\Services\Clients as ClientService;
 use Leantime\Domain\Comments\Services\Comments as CommentService;
 use Leantime\Domain\Goalcanvas\Services\Goalcanvas;
 use Leantime\Domain\Notifications\Models\Notification as NotificationModel;
+use Leantime\Domain\Projects\Permissions\ProjectsPermissions;
 use Leantime\Domain\Projects\Services\Projects as ProjectService;
 use Leantime\Domain\Setting\Repositories\Setting as SettingRepository;
 use Leantime\Domain\Sprints\Services\Sprints as SprintService;
@@ -41,6 +40,7 @@ use Leantime\Domain\Tickets\Events\TicketListFilter;
 use Leantime\Domain\Tickets\Events\TicketScheduled;
 use Leantime\Domain\Tickets\Events\TicketUpdated;
 use Leantime\Domain\Tickets\Events\TodoWidgetTasksFilter;
+use Leantime\Domain\Tickets\Exceptions\AssigneeCannotSeeProjectException;
 use Leantime\Domain\Tickets\Models\BoardSummary;
 use Leantime\Domain\Tickets\Models\Tickets as TicketModel;
 use Leantime\Domain\Tickets\Permissions\TicketsPermissions;
@@ -48,6 +48,7 @@ use Leantime\Domain\Tickets\Repositories\TicketHistory;
 use Leantime\Domain\Tickets\Repositories\Tickets as TicketRepository;
 use Leantime\Domain\Timesheets\Repositories\Timesheets as TimesheetRepository;
 use Leantime\Domain\Timesheets\Services\Timesheets as TimesheetService;
+use Leantime\Domain\Users\Repositories\Users as UserRepository;
 
 /**
  * @api
@@ -1385,36 +1386,6 @@ class Tickets extends BaseService
     }
 
     /**
-     * Whether the current user holds at least the given role IN a specific project.
-     *
-     * Leantime roles are project-scoped: Auth::userIsAtLeast() evaluates the role
-     * for the current *session* project, so it can't be trusted to authorize an
-     * action on an entity that lives in a different project. This resolves the
-     * user's effective role for $projectId — managers/admins/owners keep their
-     * global role across every project; otherwise the project role applies,
-     * falling back to the global role when no explicit project role is set — and
-     * compares it against the required role using the same ordering as Roles.
-     *
-     * @param  string  $role  Minimum role (a Roles::$* string).
-     * @param  int  $projectId  The project that owns the entity being changed.
-     */
-    private function userIsAtLeastForProject(string $role, int $projectId): bool
-    {
-        $globalRole = session('userdata.role');
-
-        // Manager+ (manager, admin, owner) keep their global role everywhere.
-        if (Roles::isAtLeast($globalRole, Roles::$manager)) {
-            $effectiveRole = $globalRole;
-        } else {
-            $projectRole = $this->projectService->getProjectRole(session('userdata.id'), $projectId);
-            // No explicit project role -> inherit the global role.
-            $effectiveRole = $projectRole === '' ? $globalRole : Roles::getRoleString((int) $projectRole);
-        }
-
-        return Roles::isAtLeast($effectiveRole, $role);
-    }
-
-    /**
      * @api
      */
     #[RequiresPermission(TicketsPermissions::VIEW, projectIdParam: 'projectId')]
@@ -2236,6 +2207,8 @@ class Tickets extends BaseService
             return ['status' => 'error', 'message' => 'Headline Missing'];
         }
 
+        $values['collaborators'] = $this->assertAssigneesCanSeeProject((int) $projectId, $values['editorId'], $values['collaborators']) ?? [];
+
         $values = $this->prepareTicketDates($values);
 
         $result = $this->ticketRepository->addTicket($values);
@@ -2315,6 +2288,8 @@ class Tickets extends BaseService
             'editFrom' => $params['editFrom'] ?? '',
             'editTo' => $params['editTo'] ?? '',
         ];
+
+        $this->assertAssigneesCanSeeProject((int) $projectId, $values['editorId'], null);
 
         $values = $this->prepareTicketDates($values);
 
@@ -2412,6 +2387,8 @@ class Tickets extends BaseService
 
         $this->assertParentTicketIsVisible($values['dependingTicketId'], (int) $values['projectId']);
 
+        $values['collaborators'] = $this->assertAssigneesCanSeeProject((int) $values['projectId'], $values['editorId'], $values['collaborators']) ?? [];
+
         // New work defaults to the project's NEW status; label names and status types are
         // resolved, unknown strings are rejected instead of becoming 0 (= Done) (#3702).
         $values['status'] = $this->resolveStatusInput($values['status'], (int) $values['projectId'], fallBackOnUnknownId: true)
@@ -2499,7 +2476,7 @@ class Tickets extends BaseService
         //
         // Authorize against the ticket's CURRENT project, not the session project.
         // getTicket() returns false unless the user is assigned to the ticket's
-        // project, and the editor check is then evaluated against THAT project's
+        // project, and tickets.edit is then evaluated against THAT project's
         // role. Leantime roles are project-scoped, so an editor in project A who is
         // only a commenter in project B must not be able to edit B's ticket by
         // keeping the session on A and posting B's ticket id. (#3376 + review)
@@ -2509,7 +2486,7 @@ class Tickets extends BaseService
             return ['msg' => 'notifications.ticket_save_error_no_access', 'type' => 'error'];
         }
 
-        if (! $this->userIsAtLeastForProject(Roles::$editor, (int) $currentTicket->projectId)) {
+        if (! $this->can(TicketsPermissions::EDIT, (int) $currentTicket->projectId)) {
             return ['msg' => 'notifications.ticket_save_error_no_access', 'type' => 'error'];
         }
 
@@ -2581,6 +2558,16 @@ class Tickets extends BaseService
             $this->assertParentTicketIsVisible($submittedValues['dependingTicketId'], (int) $values['projectId']);
         }
 
+        $collaborators = $this->assertAssigneesCanSeeProject(
+            (int) $values['projectId'],
+            $submittedValues['editorId'] ?? null,
+            array_key_exists('collaborators', $submittedValues) ? ($submittedValues['collaborators'] ?? []) : null,
+            $currentTicket,
+        );
+        if ($collaborators !== null) {
+            $values['collaborators'] = $collaborators;
+        }
+
         // On a move, links that belong to the old project (parent, milestone, sprint) are cleared
         // unless the caller set them; explicitly set milestone/sprint must belong to the target.
         foreach ($this->clearForeignProjectLinksOnMove($currentTicket, (int) $values['projectId'], $submittedValues) as $field => $clearedValue) {
@@ -2603,6 +2590,9 @@ class Tickets extends BaseService
             $submittedValues['status'] = $values['status'];
         }
 
+        // Read before prepareTicketDates() turns the date into a stored datetime.
+        $dueDateIsCalendarDate = self::isCalendarDateInput($values);
+
         $values = $this->prepareTicketDates($values);
 
         $values = $this->keepStoredValuesForOmittedFields($values, $submittedValues, $currentTicket);
@@ -2611,7 +2601,18 @@ class Tickets extends BaseService
         if ($this->ticketRepository->updateTicket($values, $values['id']) === true) {
             $subject = sprintf($this->language->__('email_notifications.todo_update_subject'), $values['id'], strip_tags($values['headline']));
             $actual_link = BASE_URL.'/dashboard/home#/tickets/showTicket/'.$values['id'];
-            $message = sprintf($this->language->__('email_notifications.todo_update_message'), session('userdata.name'), strip_tags($values['headline']));
+            [$dueDateChanged, $newDueDate] = $this->dueDateChange($currentTicket, $values);
+            $updateLine = fn (bool $forPush): string => $this->ticketUpdateMessage(
+                (string) $values['headline'],
+                (int) $values['projectId'],
+                $currentTicket->status,
+                array_key_exists('status', $submittedValues) ? $values['status'] : null,
+                $dueDateChanged,
+                $newDueDate,
+                $dueDateIsCalendarDate,
+                forPush: $forPush,
+            );
+            $message = $updateLine(false);
 
             $notification = new NotificationModel;
             $notification->url = [
@@ -2625,12 +2626,16 @@ class Tickets extends BaseService
             $notification->subject = $subject;
             $notification->authorId = session('userdata.id') ?? -1;
             $notification->message = $message;
+            $notification->pushBody = $updateLine(true);
+
+            // Change events first, as patch() does: an assignment pushes "assigned to you", and
+            // the project notification below then skips the assignee's phone (Push::markAssigned).
+            $this->dispatchTicketChangeEvents((int) $values['id'], $currentTicket, $values);
 
             $this->projectService->notifyProjectUsers($notification);
 
             TicketUpdated::dispatch(ticketId: (int) $values['id'], legacyHook: __FUNCTION__);
-
-            $this->dispatchTicketChangeEvents((int) $values['id'], $currentTicket, $values);
+            $this->dispatchSubtasksUpdatedForParents($currentTicket->dependingTicketId ?? 0, $values['dependingTicketId'] ?? 0);
 
             // Only a status change can stop the timer; an omitted status is the stored one (#3701).
             if (array_key_exists('status', $submittedValues)) {
@@ -2751,7 +2756,9 @@ class Tickets extends BaseService
 
     /**
      * A stored UTC datetime ('Y-m-d H:i:s') as a CarbonImmutable, or null for empty, zero
-     * ('0000-00-00 ...') or unparseable values.
+     * ('0000-00-00 ...'), the legacy no-date value ('1969-12-31 00:00:00') or unparseable values.
+     * The no-date values match {@see \Leantime\Core\Support\DateTimeHelper::isValidDateString()},
+     * which is what the to-do form uses to show an empty date.
      *
      * @param  mixed  $value  The stored value.
      */
@@ -2761,7 +2768,7 @@ class Tickets extends BaseService
             return CarbonImmutable::instance($value)->setTimezone('UTC');
         }
 
-        if (! is_string($value) || trim($value) === '' || str_starts_with($value, '0000-00-00')) {
+        if (! is_string($value) || trim($value) === '' || str_starts_with($value, '0000-00-00') || trim($value) === '1969-12-31 00:00:00') {
             return null;
         }
 
@@ -2769,6 +2776,45 @@ class Tickets extends BaseService
             return CarbonImmutable::parse($value, 'UTC');
         } catch (\Throwable) {
             return null;
+        }
+    }
+
+    /**
+     * Rename patch fields to the column names the repository writes ("projectid" → "projectId").
+     * Fields that aren't columns (collaborators) keep their name.
+     *
+     * @param  array<string, mixed>  $params  Field => value pairs as submitted.
+     * @return array<string, mixed>
+     */
+    private function canonicalPatchFields(array $params): array
+    {
+        $canonicalParams = [];
+
+        foreach ($params as $field => $value) {
+            $canonicalField = TicketRepository::canonicalPatchField((string) $field) ?? $field;
+            $canonicalParams[$canonicalField] = $value;
+        }
+
+        return $canonicalParams;
+    }
+
+    /**
+     * Tell the subtask lists of the given parent tickets that one of their children changed
+     * ({@see SubtasksUpdated}). Pass the parent before and after a write: a reparented ticket
+     * tells both parents, an unchanged one tells its parent once, and empty ids are skipped.
+     *
+     * @param  mixed  ...$parentIds  Parent ticket ids (dependingTicketId values, possibly null or '').
+     */
+    private function dispatchSubtasksUpdatedForParents(mixed ...$parentIds): void
+    {
+        $parentTicketIds = array_unique(array_map('intval', $parentIds));
+
+        foreach ($parentTicketIds as $parentTicketId) {
+            if ($parentTicketId <= 0) {
+                continue;
+            }
+
+            SubtasksUpdated::dispatch(parentTicketId: $parentTicketId);
         }
     }
 
@@ -2876,6 +2922,111 @@ class Tickets extends BaseService
     private function normalizedDbDateTime(mixed $value): ?string
     {
         return $this->parseDbDateTimeOrNull($value)?->format('Y-m-d H:i:s');
+    }
+
+    /**
+     * Whether a write changed the due date, and the new one (normalised DB format, null when it
+     * was removed). Only a dateToFinish present in $written counts.
+     *
+     * @param  TicketModel  $ticketBefore  The ticket as read before the write.
+     * @param  array<string, mixed>  $written  The field => value pairs that were written (DB format).
+     * @return array{0: bool, 1: string|null} [changed, new due date]
+     */
+    private function dueDateChange(TicketModel $ticketBefore, array $written): array
+    {
+        if (! array_key_exists('dateToFinish', $written)) {
+            return [false, null];
+        }
+
+        $previous = $this->normalizedDbDateTime($ticketBefore->dateToFinish);
+        $new = $this->normalizedDbDateTime($written['dateToFinish']);
+
+        return [$previous !== $new, $new];
+    }
+
+    /**
+     * The notification line for a ticket write. Says what changed when it is something people
+     * act on: "Sam moved 'X' to Approved" for a status change, "Sam changed the due date of 'X'
+     * to <date>" for a due date. Anything else, or a status whose label can't be found, keeps
+     * the generic "Sam updated the To-Do: 'X'". A status change wins when both changed.
+     *
+     * A timed due date is shown in the author's timezone and date format: the line is built once
+     * for every recipient, so it can't follow each recipient's settings. A calendar date (a date
+     * without a time, like the mobile app sends) is stored as that day's midnight without timezone
+     * conversion, so it is shown as that same day, never shifted into the author's timezone.
+     *
+     * @param  string  $headline  The ticket headline.
+     * @param  int  $projectId  The ticket's project after the write (status ids are per project).
+     * @param  mixed  $previousStatus  The status before the write.
+     * @param  mixed  $newStatus  The status after the write, or null when the write didn't set one.
+     * @param  bool  $dueDateChanged  Whether the due date changed.
+     * @param  string|null  $newDueDate  The new due date (DB format, UTC), null when removed.
+     * @param  bool  $dueDateIsCalendarDate  Whether the due date was written as a calendar date (no time).
+     */
+    private function ticketUpdateMessage(string $headline, int $projectId, mixed $previousStatus = null, mixed $newStatus = null, bool $dueDateChanged = false, ?string $newDueDate = null, bool $dueDateIsCalendarDate = false, bool $forPush = false): string
+    {
+        // The push line names the task in its title, so its wording says "this" instead.
+        $key = static fn (string $email, string $push): string => $forPush ? 'notification.'.$push : 'email_notifications.'.$email;
+        $actor = (string) session('userdata.name');
+        $headline = strip_tags($headline);
+
+        if ($newStatus !== null && $newStatus !== '' && (string) $newStatus !== (string) $previousStatus) {
+            $label = $this->statusLabelName($projectId, $newStatus);
+            if ($label !== null) {
+                return sprintf($this->language->__($key('todo_status_message', 'push_task_status')), $actor, $headline, $label);
+            }
+        }
+
+        if ($dueDateChanged) {
+            if ($newDueDate === null) {
+                return sprintf($this->language->__($key('todo_due_date_removed_message', 'push_task_due_date_removed')), $actor, $headline);
+            }
+
+            try {
+                $dueDate = $dueDateIsCalendarDate
+                    // The same calendar day, placed in the author's timezone so formatting doesn't shift it.
+                    ? CarbonImmutable::createFromFormat('!Y-m-d', substr($newDueDate, 0, 10), dtHelper()->userNow()->getTimezone())->formatDateForUser()
+                    : dtHelper()->parseDbDateTime($newDueDate)->formatDateForUser();
+            } catch (\Throwable) {
+                $dueDate = '';
+            }
+
+            if ($dueDate !== '') {
+                return sprintf($this->language->__($key('todo_due_date_message', 'push_task_due_date')), $actor, $headline, $dueDate);
+            }
+        }
+
+        return sprintf($this->language->__($key('todo_update_message', 'push_task_updated')), $actor, $headline);
+    }
+
+    /**
+     * The display name of a project's status, or null when the project has no such status.
+     * A name that is a language key (the protected Archived status is re-added to saved custom
+     * labels as 'status.archived') is translated; a custom name stays as it is.
+     *
+     * @param  int  $projectId  The project the status belongs to.
+     * @param  mixed  $status  The status id.
+     */
+    private function statusLabelName(int $projectId, mixed $status): ?string
+    {
+        if (! is_numeric($status)) {
+            return null;
+        }
+
+        try {
+            $labels = $this->ticketRepository->getStateLabels($projectId);
+        } catch (\Throwable) {
+            return null;
+        }
+
+        $name = $labels[(int) $status]['name'] ?? null;
+        if (! is_string($name) || trim($name) === '') {
+            return null;
+        }
+
+        $name = trim(strip_tags($this->language->__($name, $name)));
+
+        return $name !== '' ? $name : null;
     }
 
     /**
@@ -3273,6 +3424,131 @@ class Tickets extends BaseService
     }
 
     /**
+     * Refuses an assignee or collaborator who can't see the task's project.
+     *
+     * Someone outside the project team can't open a task assigned to them, and is never told
+     * about it. Only people this write ADDS are checked: an unchanged assignee and collaborators
+     * already on the task stay, so older tasks that predate this check still save. Unassigning
+     * (0, '0', '' or null) is always allowed. Anything that isn't a whole, non-negative user id
+     * (true, 2.5, -3, 'abc') is refused rather than cast, because the repository writes the value
+     * as sent.
+     *
+     * @param  int  $projectId  The project the task is in after the write.
+     * @param  mixed  $assignee  The editorId being written; null when the write doesn't set it.
+     * @param  mixed  $collaborators  The collaborator ids being written; null when the write doesn't set them.
+     * @param  TicketModel|null  $currentTicket  The task before the write; null on create.
+     * @return array<int, int>|null The collaborator ids to write (a comma list becomes an array), or
+     *                              null when the write doesn't set collaborators.
+     *
+     * @throws AssigneeCannotSeeProjectException When a new assignee or collaborator can't see the project.
+     * @throws ValidationException When a user id is malformed or doesn't exist.
+     */
+    private function assertAssigneesCanSeeProject(int $projectId, mixed $assignee, mixed $collaborators, ?TicketModel $currentTicket = null): ?array
+    {
+        $assigneeId = $this->userIdOrFail('editorId', $assignee);
+        $assigneeWasChecked = false;
+        if ($assigneeId > 0 && $assigneeId !== (int) ($currentTicket->editorId ?? 0)) {
+            $this->assertUserCanSeeProject('editorId', $assigneeId, $projectId);
+            $assigneeWasChecked = true;
+        }
+
+        if ($collaborators === null) {
+            return null;
+        }
+
+        $collaboratorIds = match (true) {
+            is_array($collaborators) => $collaborators,
+            is_string($collaborators) => array_map('trim', explode(',', $collaborators)),
+            default => [$collaborators],
+        };
+        $currentCollaborators = array_map('intval', $currentTicket->collaborators ?? []);
+
+        $userIds = array_values(array_unique(array_filter(
+            array_map(fn ($userId) => $this->userIdOrFail('collaborators', $userId), $collaboratorIds),
+            fn (int $userId) => $userId > 0,
+        )));
+        foreach ($userIds as $userId) {
+            if (in_array($userId, $currentCollaborators, true)) {
+                continue;
+            }
+
+            // An unchanged assignee wasn't checked above (it may predate this check), so adding
+            // them as a collaborator is a new relationship and is checked like anyone else.
+            if ($assigneeWasChecked && $userId === $assigneeId) {
+                continue;
+            }
+
+            $this->assertUserCanSeeProject('collaborators', $userId, $projectId);
+        }
+
+        return $userIds;
+    }
+
+    /**
+     * A user id as written to a task: a non-negative whole number or digit string; null, '' and
+     * 0 mean nobody. Everything else is refused. The assignee is stored as sent, so a digit
+     * string with a leading zero ('02') is refused too: the id checked must be the id stored.
+     *
+     * @param  string  $field  'editorId' or 'collaborators', for the error.
+     *
+     * @throws ValidationException
+     */
+    private function userIdOrFail(string $field, mixed $value): int
+    {
+        if ($value === null || $value === '') {
+            return 0;
+        }
+
+        if (is_int($value) && $value >= 0) {
+            return $value;
+        }
+
+        if (is_string($value) && ctype_digit($value) && ($value === '0' || $value[0] !== '0')) {
+            return (int) $value;
+        }
+
+        $shown = is_string($value) ? $value : (is_scalar($value) ? json_encode($value) : gettype($value));
+        $message = sprintf($this->language->__('notifications.ticket_user_id_invalid'), $shown);
+
+        throw new ValidationException([$field => [$message]], $message);
+    }
+
+    /**
+     * @param  string  $field  'editorId' or 'collaborators', for the error and its wording.
+     *
+     * @throws AssigneeCannotSeeProjectException
+     * @throws ValidationException
+     */
+    private function assertUserCanSeeProject(string $field, int $userId, int $projectId): void
+    {
+        if ($this->projectService->isUserAssignedToProject($userId, $projectId)) {
+            return;
+        }
+
+        $user = app()->make(UserRepository::class)->getUser($userId);
+        if (! is_array($user)) {
+            $message = sprintf($this->language->__('notifications.ticket_user_not_found'), $userId);
+
+            throw new ValidationException([$field => [$message]], $message);
+        }
+
+        $userName = trim(($user['firstname'] ?? '').' '.($user['lastname'] ?? '')) ?: (string) ($user['username'] ?? "User {$userId}");
+        $project = $this->projectService->getProject($projectId);
+        $projectName = is_array($project) && ($project['name'] ?? '') !== '' ? (string) $project['name'] : "#{$projectId}";
+
+        $key = $field === 'editorId' ? 'notifications.assignee_not_on_project_team' : 'notifications.collaborator_not_on_project_team';
+
+        throw new AssigneeCannotSeeProjectException(
+            field: $field,
+            userId: $userId,
+            userName: $userName,
+            projectId: $projectId,
+            projectName: $projectName,
+            message: sprintf($this->language->__($key), $userName, $projectName),
+        );
+    }
+
+    /**
      * Partial-update semantics for full-row ticket writes (#3701).
      *
      * updateTicket() and the upsertSubtask() update branch rebuild the whole zp_tickets row, so a
@@ -3443,7 +3719,7 @@ class Tickets extends BaseService
      * swapped rather than returning nothing). So passing only one bound yields
      * the span between that date and today, in date order.
      *
-     * A non-admin may only read their OWN closures: a caller-supplied $userId
+     * Without projects.viewAll a caller may only read their OWN closures: a caller-supplied $userId
      * for someone else is forced back to the session user (IDOR guard).
      */
     #[RequiresPermission(TicketsPermissions::VIEW)]
@@ -3451,8 +3727,8 @@ class Tickets extends BaseService
     {
         $sessionUser = (int) session('userdata.id');
         $userId = $userId ?: $sessionUser;
-        // IDOR guard: reading another user's closures requires admin.
-        if ($userId !== $sessionUser && ! Auth::userIsAtLeast(Roles::$admin)) {
+        // IDOR guard: reading another user's closures requires seeing every project.
+        if ($userId !== $sessionUser && ! $this->can(ProjectsPermissions::VIEW_ALL)) {
             $userId = $sessionUser;
         }
         if ($userId === 0) {
@@ -3521,7 +3797,7 @@ class Tickets extends BaseService
      * ownership filter then drops tickets the user is the editor of — those are
      * "your work," not support. Defaults either bound to today.
      *
-     * A non-admin may only read their OWN commented tickets: a caller-supplied
+     * Without projects.viewAll a caller may only read their OWN commented tickets: a caller-supplied
      * $userId for someone else is forced back to the session user (IDOR guard,
      * matching Projects::getProjectsUserHasAccessTo()).
      *
@@ -3536,8 +3812,8 @@ class Tickets extends BaseService
     {
         $sessionUser = (int) session('userdata.id');
         $userId = $userId ?: $sessionUser;
-        // IDOR guard: reading someone else's comment activity requires admin.
-        if ($userId !== $sessionUser && ! Auth::userIsAtLeast(Roles::$admin)) {
+        // IDOR guard: reading someone else's comment activity requires seeing every project.
+        if ($userId !== $sessionUser && ! $this->can(ProjectsPermissions::VIEW_ALL)) {
             $userId = $sessionUser;
         }
         if ($userId === 0) {
@@ -3843,6 +4119,10 @@ class Tickets extends BaseService
             $params['saveAndCloseTicket'],
         );
 
+        // The repository matches field names case-insensitively. Use its canonical names from
+        // here on, so every check below sees the fields exactly as they will be written.
+        $params = $this->canonicalPatchFields($params);
+
         $ticket = $this->getTicket($id);
 
         if (! $ticket) {
@@ -3866,6 +4146,16 @@ class Tickets extends BaseService
         // A newly set parent must be a ticket the caller can see, like on create (#3702).
         if (array_key_exists('dependingTicketId', $params) && (int) $params['dependingTicketId'] !== (int) $ticket->dependingTicketId) {
             $this->assertParentTicketIsVisible($params['dependingTicketId'], (int) ($params['projectId'] ?? $ticket->projectId));
+        }
+
+        $collaborators = $this->assertAssigneesCanSeeProject(
+            (int) ($params['projectId'] ?? $ticket->projectId),
+            $params['editorId'] ?? null,
+            array_key_exists('collaborators', $params) ? ($params['collaborators'] ?? []) : null,
+            $ticket,
+        );
+        if ($collaborators !== null) {
+            $params['collaborators'] = $collaborators;
         }
 
         // On a move, links that belong to the old project (parent, milestone, sprint) are cleared
@@ -3902,6 +4192,9 @@ class Tickets extends BaseService
             unset($params['collaborators']);
         }
 
+        // Read before prepareTicketDates() turns the date into a stored datetime.
+        $dueDateIsCalendarDate = self::isCalendarDateInput($params);
+
         $params = $this->prepareTicketDates($params);
 
         $return = $this->ticketRepository->patchTicket($id, $params);
@@ -3912,12 +4205,19 @@ class Tickets extends BaseService
 
         TicketUpdated::dispatch(ticketId: (int) $id, legacyHook: __FUNCTION__);
 
+        $parentBefore = $ticketBefore->dependingTicketId ?? 0;
+        $parentAfter = array_key_exists('dependingTicketId', $params) ? $params['dependingTicketId'] : $parentBefore;
+        $this->dispatchSubtasksUpdatedForParents($parentBefore, $parentAfter);
+
         if ($return) {
             $this->dispatchTicketChangeEvents((int) $id, $ticketBefore, $params);
         }
 
+        $statusSet = isset($params['status']);
+        [$dueDateChanged, $newDueDate] = $return ? $this->dueDateChange($ticketBefore, $params) : [false, null];
+
         // Todo: create events and move notification logic to notification module
-        if (isset($params['status'])) {
+        if ($statusSet) {
             $this->dispatchTicketCompletedOnTransition(
                 (int) $id,
                 $previousStatus,
@@ -3926,17 +4226,34 @@ class Tickets extends BaseService
                 (int) ($params['projectId'] ?? $previousProjectId),
                 $ticketBefore
             );
+        }
 
+        // A status write notifies as before; a due-date change now does too (it used to reach nobody).
+        if ($statusSet || $dueDateChanged) {
             $ticket = $this->getTicket($id);
             if (! $ticket) {
                 return true;
             }
 
-            $this->stopTimerWhenTicketIsDone((int) $id, $params['status'], (int) $ticket->projectId);
+            if ($statusSet) {
+                $this->stopTimerWhenTicketIsDone((int) $id, $params['status'], (int) $ticket->projectId);
+            }
+
+            $statusChanged = $statusSet && (string) $params['status'] !== (string) $previousStatus;
 
             $subject = sprintf($this->language->__('email_notifications.todo_update_subject'), $id, strip_tags($ticket->headline));
             $actual_link = BASE_URL.'/dashboard/home#/tickets/showTicket/'.$id;
-            $message = sprintf($this->language->__('email_notifications.todo_update_message'), session('userdata.name'), strip_tags($ticket->headline));
+            $updateLine = fn (bool $forPush): string => $this->ticketUpdateMessage(
+                (string) $ticket->headline,
+                (int) $ticket->projectId,
+                $previousStatus,
+                $statusSet ? $params['status'] : null,
+                $dueDateChanged,
+                $newDueDate,
+                $dueDateIsCalendarDate,
+                forPush: $forPush,
+            );
+            $message = $updateLine(false);
 
             $notification = app()->make(NotificationModel::class);
             $notification->url = [
@@ -3945,11 +4262,12 @@ class Tickets extends BaseService
             ];
             $notification->entity = $ticket;
             $notification->module = 'tickets';
-            $notification->action = 'status_changed';
+            $notification->action = $statusChanged || ! $dueDateChanged ? 'status_changed' : 'due_date_changed';
             $notification->projectId = $ticket->projectId ?? session('currentProject') ?? -1;
             $notification->subject = $subject;
             $notification->authorId = session('userdata.id');
             $notification->message = $message;
+            $notification->pushBody = $updateLine(true);
 
             $this->projectService->notifyProjectUsers($notification);
         }
@@ -4024,10 +4342,10 @@ class Tickets extends BaseService
 
         $currentProjectId = (int) $existingMilestone->projectId;
 
-        // Editing a milestone is an edit op: require editor+ in the milestone's
+        // Editing a milestone is an edit op: require tickets.edit in the milestone's
         // OWN project, evaluated project-scoped rather than against the session
         // project's role. (review)
-        if (! $this->userIsAtLeastForProject(Roles::$editor, $currentProjectId)) {
+        if (! $this->can(TicketsPermissions::EDIT, $currentProjectId)) {
             return ['status' => 'error', 'message' => 'You are not allowed to edit this milestone.'];
         }
 
@@ -4036,11 +4354,13 @@ class Tickets extends BaseService
         // project when callers (e.g. inline kanban edits) don't supply one.
         $targetProjectId = (int) ($params['projectId'] ?? $currentProjectId);
 
+        $this->assertAssigneesCanSeeProject($targetProjectId, $params['editorId'] ?? null, null, $existingMilestone);
+
         if ($targetProjectId !== $currentProjectId) {
-            // The projectId is caller-supplied: require editor+ in the target
+            // The projectId is caller-supplied: require tickets.edit in the target
             // project too, so a milestone can't be moved into a project where the
             // user lacks edit rights. (#3294 review / IDOR)
-            if (! $this->userIsAtLeastForProject(Roles::$editor, $targetProjectId)) {
+            if (! $this->can(TicketsPermissions::EDIT, $targetProjectId)) {
                 return ['status' => 'error', 'message' => 'You are not allowed to move this milestone to that project.'];
             }
 
@@ -4190,7 +4510,9 @@ class Tickets extends BaseService
         $notification->entity = $values;
         $notification->module = 'comments';
         $notification->action = 'commented';
-        $notification->projectId = session('currentProject');
+        // The milestone's own project, not the session's: it can be opened from another project.
+        $milestoneProjectId = is_object($milestone) ? (int) ($milestone->projectId ?? 0) : 0;
+        $notification->projectId = $milestoneProjectId > 0 ? $milestoneProjectId : session('currentProject');
         $notification->subject = $subject;
         $notification->authorId = session('userdata.id');
         $notification->message = $message;
@@ -4406,7 +4728,12 @@ class Tickets extends BaseService
             }
         }
 
-        $result = $this->quickAddTicket($formParams);
+        try {
+            $result = $this->quickAddTicket($formParams);
+        } catch (ValidationException $e) {
+            // e.g. adding to the swimlane of someone who has since left the project team
+            $result = ['status' => 'error', 'message' => $e->getClientMessage()];
+        }
 
         if (is_array($result) && isset($result['status']) && $result['status'] === 'error') {
             session()->flash('quickadd_reopen', [
@@ -4909,7 +5236,15 @@ class Tickets extends BaseService
             if ($ticket) {
                 $subject = sprintf($this->language->__('email_notifications.todo_update_subject'), $id, strip_tags($ticket->headline));
                 $actual_link = BASE_URL.'/dashboard/home#/tickets/showTicket/'.$id;
-                $message = sprintf($this->language->__('email_notifications.todo_update_message'), session('userdata.name'), strip_tags($ticket->headline));
+                // Only a card whose column changed says where it went; a re-sort keeps the generic line.
+                $updateLine = fn (bool $forPush): string => $this->ticketUpdateMessage(
+                    (string) $ticket->headline,
+                    (int) $ticket->projectId,
+                    $previousStatusByTicket[(int) $id] ?? null,
+                    $newStatusByTicket[(int) $id] ?? null,
+                    forPush: $forPush,
+                );
+                $message = $updateLine(false);
 
                 $notification = app()->make(NotificationModel::class);
                 $notification->url = [
@@ -4923,6 +5258,7 @@ class Tickets extends BaseService
                 $notification->subject = $subject;
                 $notification->authorId = session('userdata.id') ?? -1;
                 $notification->message = $message;
+                $notification->pushBody = $updateLine(true);
 
                 $this->projectService->notifyProjectUsers($notification);
             }
@@ -4968,9 +5304,7 @@ class Tickets extends BaseService
             TicketDeleted::dispatch(ticketId: (int) $id, legacyHook: __FUNCTION__);
 
             // The parent's subtask list selects children by dependingTicketId, whatever their type.
-            if ((int) ($ticket->dependingTicketId ?? 0) > 0) {
-                SubtasksUpdated::dispatch(parentTicketId: (int) $ticket->dependingTicketId);
-            }
+            $this->dispatchSubtasksUpdatedForParents($ticket->dependingTicketId ?? 0);
 
             return true;
         }
@@ -6252,6 +6586,21 @@ class Tickets extends BaseService
      * @param  array  $values  The values of the ticket fields.
      * @return array The values of the ticket fields after preparing the dates.
      */
+    /**
+     * Whether the values carry the due date as a calendar date: 'YYYY-MM-DD' with no time
+     * (what the mobile app sends). {@see prepareTicketDates()} stores such a date as midnight
+     * without timezone conversion.
+     *
+     * @param  array<string, mixed>  $values  The submitted ticket values, before prepareTicketDates().
+     */
+    private static function isCalendarDateInput(array $values): bool
+    {
+        return isset($values['dateToFinish'])
+            && is_string($values['dateToFinish'])
+            && empty($values['timeToFinish'])
+            && preg_match('/^\d{4}-\d{2}-\d{2}$/', $values['dateToFinish']) === 1;
+    }
+
     public function prepareTicketDates(&$values)
     {
         // Prepare dates for db
@@ -6260,11 +6609,7 @@ class Tickets extends BaseService
             try {
                 if ($values['dateToFinish'] instanceof CarbonImmutable) {
                     $values['dateToFinish'] = $values['dateToFinish']->formatDateTimeForDb();
-                } elseif (
-                    is_string($values['dateToFinish'])
-                    && empty($values['timeToFinish'])
-                    && preg_match('/^\d{4}-\d{2}-\d{2}$/', $values['dateToFinish'])
-                ) {
+                } elseif (self::isCalendarDateInput($values)) {
                     // Calendar-date input (e.g. "2026-05-21" from mobile) — store as
                     // midnight without any timezone conversion.
                     //

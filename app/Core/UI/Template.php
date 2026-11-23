@@ -240,8 +240,8 @@ class Template
     }
 
     /**
-     * Finalize queued headers for a response: expand legacy event aliases on HX-Trigger and
-     * collapse the queued event list to the comma-separated string htmx expects.
+     * Finalize queued headers for a response: collapse the queued HX-Trigger event list to the
+     * comma-separated string htmx expects.
      *
      * @return array<string, mixed>
      */
@@ -375,7 +375,7 @@ class Template
      */
     public function displayJson(array|object|string $jsonContent, int $statusCode = 200): Response
     {
-        $response = new Response(json_encode(['error' => 'Invalid Json']), 500);
+        $response = new Response(json_encode(['error' => 'Invalid Json']), 500, $this->responseHeaders());
         $response->headers->set('Content-Type', 'application/json; charset=utf-8');
 
         if (is_array($jsonContent) || is_object($jsonContent)) {
@@ -394,17 +394,18 @@ class Template
     }
 
     /**
-     * Display JSON content with an optional response code.
+     * Display plain text content with an optional response code. Queued headers (HX-Trigger
+     * events, notifications) travel with it.
      *
      * @param  string  $content  The content to be displayed.
      * @param  int  $statusCode  The HTTP response code to be returned (default: 200).
-     * @return Response The response object after displaying the JSON content.
+     * @return Response The response object after displaying the text content.
      *
      * @deprecated
      */
     public function displayRaw(string $content, int $statusCode = 200): Response
     {
-        $response = new Response($content, 200);
+        $response = new Response($content, 200, $this->responseHeaders());
         $response->headers->set('Content-Type', 'text/plain; charset=utf-8');
 
         $response = $response->setStatusCode($statusCode);
@@ -425,7 +426,7 @@ class Template
     }
 
     /**
-     * gives HTMX response
+     * Render a Blade view (or one of its fragments) for an HTMX response, with the queued headers.
      *
      * @param  string  $viewPath  The blade view path.
      * @param  string  $fragment  The fragment key.
@@ -444,7 +445,7 @@ class Template
 
         $this->setHookContext(['module' => $viewPathExplode[0], 'path' => $viewPathExplode[1] ?? ''], $path);
 
-        return new Response($view->fragmentIf(! empty($fragment), $fragment));
+        return new Response($view->fragmentIf(! empty($fragment), $fragment), 200, $this->responseHeaders());
     }
 
     /**
@@ -551,6 +552,33 @@ class Template
     }
 
     /**
+     * The inline script that shows a notification.
+     *
+     * Notifications are HTML (some carry a link or a line break), and callers are expected to
+     * escape the user data they put in them. As a backstop the message is cleaned like rich text
+     * here (no scripts, event handlers or javascript: links) and passed with html: true, since growl
+     * shows plain text otherwise. The style becomes a class name, so it keeps only class-safe
+     * characters. Both values are JSON-encoded so a quote or "</script>" can't end the string or
+     * the script.
+     */
+    public function growlScript(string $message, string $style): string
+    {
+        $flags = JSON_HEX_TAG | JSON_HEX_AMP | JSON_HEX_APOS | JSON_HEX_QUOT | JSON_INVALID_UTF8_SUBSTITUTE;
+
+        return '<script type="text/javascript">jQuery.growl({message: '
+            .json_encode($this->escapeMinimal($message), $flags)
+            .', style: '.json_encode(self::growlStyle($style), $flags).', html: true});</script>';
+    }
+
+    /**
+     * A notification style as a class-name token: letters, digits, '_' and '-' only.
+     */
+    public static function growlStyle(string $style): string
+    {
+        return (string) preg_replace('/[^A-Za-z0-9_-]/', '', $style);
+    }
+
+    /**
      * displayNotification - display notification
      *
      * @throws BindingResolutionException
@@ -574,13 +602,7 @@ class Template
         );
 
         if (! empty($note) && $note['msg'] != '' && $note['type'] != '') {
-            $notification .= app('blade.compiler')::render(
-                '<script type="text/javascript">jQuery.growl({message: "{!! $message !!}", style: "{{ $style }}"});</script>',
-                [
-                    'message' => $message,
-                    'style' => $note['type'],
-                ]
-            );
+            $notification .= $this->growlScript((string) $message, (string) $note['type']);
 
             self::dispatchEvent('notification_displayed', $note);
 

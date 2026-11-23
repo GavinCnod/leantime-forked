@@ -11,7 +11,8 @@ use Leantime\Core\Db\Repository as RepositoryCore;
 use Leantime\Core\Language as LanguageCore;
 use Leantime\Core\Support\EntityRelationshipEnum;
 use Leantime\Domain\Setting\Repositories\Setting;
-use Leantime\Domain\Tickets\Services\Tickets;
+use Leantime\Domain\Tickets\Repositories\Tickets as TicketsRepository;
+use Leantime\Domain\Tickets\Support\WorkStart;
 use Leantime\Domain\Users\Repositories\Users;
 
 class Calendar extends RepositoryCore
@@ -76,21 +77,25 @@ class Calendar extends RepositoryCore
     }
 
     /**
-     * Retrieves calendar events based on optional filters.
+     * Retrieves one user's calendar events, optionally limited to a date window.
      *
-     * @param  int|null  $userId  The user ID to filter the results by.
+     * Events are personal: only rows owned by $userId are returned. Without a user id there is
+     * no owner to match, so the result is empty rather than every user's events.
+     *
+     * @param  int|null  $userId  The user whose events to return.
      * @param  CarbonImmutable|null  $dateFrom  The minimum date and time of the events.
      * @param  CarbonImmutable|null  $dateTo  The maximum date and time of the events.
      * @return false|array Returns an array of calendar events if successful, otherwise false.
      */
     public function getAll(?int $userId, ?CarbonImmutable $dateFrom, ?CarbonImmutable $dateTo): false|array
     {
-        $query = $this->db->table('zp_calendar')
-            ->whereNotNull('dateFrom');
-
-        if (! empty($userId)) {
-            $query->where('userId', '>=', $userId);
+        if (empty($userId)) {
+            return [];
         }
+
+        $query = $this->db->table('zp_calendar')
+            ->where('userId', $userId)
+            ->whereNotNull('dateFrom');
 
         if (! empty($dateFrom)) {
             $query->where('dateFrom', '>=', $dateFrom->formatDateTimeForDb());
@@ -106,24 +111,43 @@ class Calendar extends RepositoryCore
     }
 
     /**
+     * Builds the iCal feed events (personal calendar events plus To-Do due and planned-edit
+     * events) for the feed owner.
+     *
+     * The feed is fetched without a session, so the To-Dos are scoped to the OWNER's project
+     * access explicitly. The session-scoped Tickets service would scope them to nobody and the
+     * feed lost every To-Do (#4018).
+     *
+     * Date-only Work Starts (planned days) go out as all-day events, unless the owner turned
+     * "Show planned days" off.
+     *
+     * @param  int  $userId  The feed owner, already authenticated by the feed hashes
+     * @param  int|null  $clientId  The feed owner's client (grants client-visible projects)
+     * @param  bool  $showPlannedDays  Whether the owner shows planned days on their calendar
+     * @param  string  $timezone  The owner's timezone, which decides what counts as a planned day
+     * @return array<int, array<string, mixed>> Event arrays
+     *
      * @throws BindingResolutionException
      */
-    public function getCalendar(int $userId): array
+    public function getCalendar(int $userId, ?int $clientId = null, bool $showPlannedDays = true, string $timezone = 'UTC'): array
     {
-        $ticketService = app()->make(Tickets::class);
-        $dbTickets = $ticketService->getOpenUserTicketsThisWeekAndLater($userId, '', true);
+        $ticketRepo = app()->make(TicketsRepository::class);
+        $tickets = $ticketRepo->getAllBySearchCriteria(
+            searchCriteria: [
+                'currentProject' => '',
+                'users' => (string) $userId,
+                'status' => 'all',
+                'sprint' => '',
+                'excludeType' => 'milestone',
+            ],
+            sort: 'duedate',
+            includeCounts: false,
+            scopeUserId: $userId,
+            scopeClientId: $clientId,
+        );
 
-        $tickets = [];
-        if (isset($dbTickets['thisWeek']['tickets'])) {
-            $tickets = array_merge($tickets, $dbTickets['thisWeek']['tickets']);
-        }
-
-        if (isset($dbTickets['later']['tickets'])) {
-            $tickets = array_merge($tickets, $dbTickets['later']['tickets']);
-        }
-
-        if (isset($dbTickets['overdue']['tickets'])) {
-            $tickets = array_merge($tickets, $dbTickets['overdue']['tickets']);
+        if (! is_array($tickets)) {
+            $tickets = [];
         }
 
         $results = $this->db->table('zp_calendar')
@@ -158,18 +182,18 @@ class Calendar extends RepositoryCore
 
             foreach ($tickets as $ticket) {
                 if (! isset($statusLabelsArray[$ticket['projectId']])) {
-                    $statusLabelsArray[$ticket['projectId']] = $ticketService->getStatusLabels(
-                        $ticket['projectId']
-                    );
+                    $statusLabelsArray[$ticket['projectId']] = $ticketRepo->getStateLabels($ticket['projectId']);
                 }
 
-                if (isset($statusLabelsArray[$ticket['projectId']][$ticket['status']])) {
-                    $statusName = $statusLabelsArray[$ticket['projectId']][$ticket['status']]['name'];
-                    $statusColor = $this->classColorMap[$statusLabelsArray[$ticket['projectId']][$ticket['status']]['class']];
-                } else {
-                    $statusName = '';
-                    $statusColor = 'var(--grey)';
+                // A To-Do whose status was removed from its project is left out, as the
+                // My Work lists do.
+                $statusLabel = $statusLabelsArray[$ticket['projectId']][$ticket['status']] ?? null;
+                if ($statusLabel === null) {
+                    continue;
                 }
+
+                $statusName = $statusLabel['name'];
+                $statusColor = $this->classColorMap[$statusLabel['class'] ?? ''] ?? 'var(--grey)';
 
                 $backgroundColor = 'var(--accent2)';
 
@@ -198,22 +222,25 @@ class Calendar extends RepositoryCore
                     );
                 }
 
-                if (
-                    dtHelper()->isValidDateString($ticket['editFrom'])
-                    && dtHelper()->isValidDateString($ticket['editTo'])
-                ) {
-                    // Set ticket to all-day ticket when no time is set
+                $hasWorkStart = dtHelper()->isValidDateString($ticket['editFrom']);
+                $hasWorkEnd = dtHelper()->isValidDateString($ticket['editTo']);
+
+                // A date-only Work Start is a plan for the day. It goes out as all-day, unless the
+                // owner turned "Show planned days" off.
+                $isPlannedDay = $hasWorkStart
+                    && WorkStart::isDateOnly($ticket['editFrom'], $ticket['editTo'] ?? null, $timezone);
+
+                if ($hasWorkStart && ($hasWorkEnd || $isPlannedDay) && (! $isPlannedDay || $showPlannedDays)) {
                     $dateFrom = dtHelper()->parseDbDateTime($ticket['editFrom']);
-                    $dateTo = dtHelper()->parseDbDateTime($ticket['editTo']);
+                    $dateTo = $hasWorkEnd ? dtHelper()->parseDbDateTime($ticket['editTo']) : $dateFrom;
 
-                    $allDay = false;
-                    if ($dateFrom->diffInDays($dateTo) >= 1) {
-                        $allDay = true;
-                    }
+                    $allDay = $isPlannedDay || $dateFrom->diffInDays($dateTo) >= 1;
 
-                    $context = $this->language->__('label.planned_edit');
+                    $context = $isPlannedDay
+                        ? $this->language->__('label.planned_day_prefix')
+                        : $this->language->__('label.planned_edit');
 
-                    $newValues[] = $this->mapEventData(
+                    $event = $this->mapEventData(
                         title: $context.$ticket['headline'].' ('.$statusName.')',
                         description: $ticket['description'],
                         allDay: $allDay,
@@ -224,8 +251,12 @@ class Calendar extends RepositoryCore
                         backgroundColor: $backgroundColor,
                         borderColor: $statusColor,
                         dateFrom: $ticket['editFrom'],
-                        dateTo: $ticket['editTo']
+                        dateTo: $hasWorkEnd ? $ticket['editTo'] : $ticket['editFrom']
                     );
+                    // Lets the feed tell a planned day (no start time to alert about) from a
+                    // time box that happens to span whole days.
+                    $event['plannedDay'] = $isPlannedDay;
+                    $newValues[] = $event;
                 }
             }
         }
@@ -266,6 +297,14 @@ class Calendar extends RepositoryCore
     }
 
     /**
+     * The iCal feed events of the user identified by the feed hashes, or false when the hashes
+     * don't match a user and that user's iCal secret. The hashes are the credential: the feed
+     * is served without a session.
+     *
+     * @param  string  $userHash  sha1 of the user id + session password
+     * @param  string  $calHash  The user's iCal secret
+     * @return false|array<int, array<string, mixed>> Event arrays (possibly empty), or false
+     *
      * @throws BindingResolutionException
      */
     public function getCalendarBySecretHash(string $userHash, string $calHash): false|array
@@ -282,15 +321,26 @@ class Calendar extends RepositoryCore
         $settingService = app()->make(Setting::class);
         $hash = $settingService->getSetting('usersettings.'.$user['id'].'.icalSecret');
 
+        $timezone = (string) ($settingService->getSetting('usersettings.'.$user['id'].'.timezone') ?: $this->config->defaultTimezone);
+
         session([
-            'usersettings.timezone' => $settingService->getSetting('usersettings.'.$user['id'].'.timezone') ?: $this->config->defaultTimezone,
+            'usersettings.timezone' => $timezone,
         ]);
 
-        if ($hash !== false && $calHash == $hash) {
-            return $this->getCalendar($user['id']);
-        } else {
+        if (empty($hash) || ! hash_equals((string) $hash, $calHash)) {
             return false;
         }
+
+        $showPlannedDays = (string) $settingService->getSetting(
+            'usersettings.'.$user['id'].'.'.\Leantime\Domain\Calendar\Services\Calendar::SHOW_PLANNED_DAYS_SETTING
+        ) !== '0';
+
+        return $this->getCalendar(
+            (int) $user['id'],
+            isset($user['clientId']) ? (int) $user['clientId'] : null,
+            $showPlannedDays,
+            $timezone,
+        );
     }
 
     public function getTicketWishDates(): false|array

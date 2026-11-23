@@ -20,6 +20,9 @@ class Tickets
 {
     use EventhelperCore;
 
+    /** Length of zp_tickethistory.changeValue (varchar(150)); longer values are cut to fit. */
+    public const HISTORY_VALUE_MAX_LENGTH = 150;
+
     public ?object $result = null;
 
     public ?object $tickets = null;
@@ -643,21 +646,34 @@ class Tickets
     /**
      * getAllBySearchCriteria - get Tickets by search criteria array
      *
-     * @param  null  $limit
-     */
-    /**
-     * getAllBySearchCriteria - get Tickets by search criteria array
+     * The project-access scope (which projects' tickets the result may contain) is the session
+     * user/client. Search criteria can arrive from JSON-RPC, so a caller-supplied
+     * currentUser/currentClient in $searchCriteria never widens it.
      *
+     * $scopeUserId/$scopeClientId replace the session user/client for in-process callers that
+     * have already authenticated a user WITHOUT a session, e.g. the hash-authenticated iCal
+     * feed (#4018). Repositories are not reachable over JSON-RPC, so these can't be spoofed by
+     * a request; never pass request input to them.
+     *
+     * @param  array  $searchCriteria  Filters (currentProject, projects, users, status, type, ...)
      * @param  string  $sort  One of standard, kanbansort, duedate, priority, date, effort, title.
-     * @param  null  $limit
+     * @param  int|null  $limit  Maximum number of rows, null for all
+     * @param  bool  $includeCounts  Include comment/file/subtask counts
+     * @param  int|null  $offset  Rows to skip (only with a limit)
+     * @param  int|null  $scopeUserId  Access-scope user instead of the session user
+     * @param  int|null  $scopeClientId  Access-scope client instead of the session client
      */
-    public function getAllBySearchCriteria(array $searchCriteria, string $sort = 'standard', ?int $limit = null, $includeCounts = true, ?int $offset = null): bool|array
+    public function getAllBySearchCriteria(array $searchCriteria, string $sort = 'standard', ?int $limit = null, $includeCounts = true, ?int $offset = null, ?int $scopeUserId = null, ?int $scopeClientId = null): bool|array
     {
         $requestorId = session()->exists('userdata') ? session('userdata.id') : -1;
-        // The project-membership scope is ALWAYS the session user/client. Search criteria can
-        // arrive from JSON-RPC, so a caller-supplied currentUser/currentClient must never widen it.
         $userId = session('userdata.id') ?? '-1';
         $clientId = session('userdata.clientId') ?? '-1';
+
+        if ($scopeUserId !== null) {
+            $requestorId = $scopeUserId;
+            $userId = $scopeUserId;
+            $clientId = $scopeClientId ?? '-1';
+        }
 
         $query = $this->connection->table('zp_tickets')
             ->select([
@@ -2059,6 +2075,26 @@ class Tickets
     ];
 
     /**
+     * The canonical name of a patchable zp_tickets column for a submitted field name, matched
+     * case-insensitively like patchTicket() does (e.g. "milestoneId" → "milestoneid").
+     *
+     * @param  string  $field  The submitted field name.
+     * @return string|null The column name patchTicket() writes, or null when it would ignore the field.
+     */
+    public static function canonicalPatchField(string $field): ?string
+    {
+        $wanted = strtolower(DbCore::sanitizeToColumnString($field));
+
+        foreach (array_keys(self::PATCHABLE_COLUMNS) as $column) {
+            if (strtolower($column) === $wanted) {
+                return $column;
+            }
+        }
+
+        return null;
+    }
+
+    /**
      * Whether a patch field name maps to a patchable zp_tickets column (case-insensitive, same
      * matching as patchTicket()). Lets the service tell callers which fields would be ignored.
      *
@@ -2067,15 +2103,7 @@ class Tickets
      */
     public static function isPatchableField(string $field): bool
     {
-        $wanted = strtolower(DbCore::sanitizeToColumnString($field));
-
-        foreach (array_keys(self::PATCHABLE_COLUMNS) as $column) {
-            if (strtolower($column) === $wanted) {
-                return true;
-            }
-        }
-
-        return false;
+        return self::canonicalPatchField($field) !== null;
     }
 
     /**
@@ -2303,6 +2331,8 @@ class Tickets
     /**
      * Records ticket field changes in the history table.
      * Uses a single batch insert instead of individual inserts per changed field.
+     * Values longer than the changeValue column (e.g. a description) are cut to fit:
+     * strict databases such as PostgreSQL reject an over-long value instead of truncating it.
      *
      * @param  int  $userId  The user making the change.
      * @param  int  $ticketId  The ticket being changed.
@@ -2363,7 +2393,7 @@ class Tickets
                     'userId' => $userId,
                     'ticketId' => $ticketId,
                     'changeType' => $enum,
-                    'changeValue' => $values[$dbTable],
+                    'changeValue' => $this->fitHistoryValue($values[$dbTable]),
                     'dateModified' => $now,
                 ];
             }
@@ -2373,6 +2403,23 @@ class Tickets
         if (! empty($historyRows)) {
             $this->connection->table('zp_tickethistory')->insert($historyRows);
         }
+    }
+
+    /**
+     * Cuts a history value to the length of the changeValue column, counting characters (not
+     * bytes) so a multibyte character is never split. Non-string values (ids, numbers) are short
+     * and pass through unchanged.
+     *
+     * @param  mixed  $value  The new value of a tracked field.
+     * @return mixed The value, at most HISTORY_VALUE_MAX_LENGTH characters when it is a string.
+     */
+    private function fitHistoryValue(mixed $value): mixed
+    {
+        if (! is_string($value)) {
+            return $value;
+        }
+
+        return mb_substr($value, 0, self::HISTORY_VALUE_MAX_LENGTH);
     }
 
     /**

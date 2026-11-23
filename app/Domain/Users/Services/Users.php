@@ -20,10 +20,12 @@ use Leantime\Core\UI\Theme as ThemeCore;
 use Leantime\Domain\Auth\Models\Roles;
 use Leantime\Domain\Auth\Services\Auth;
 use Leantime\Domain\Auth\Services\Auth as AuthService;
+use Leantime\Domain\Clients\Permissions\ClientsPermissions;
 use Leantime\Domain\Clients\Repositories\Clients as ClientRepository;
 use Leantime\Domain\Files\Services\Files;
 use Leantime\Domain\Ldap\Services\Ldap as LdapService;
 use Leantime\Domain\Notifications\Models\Notification;
+use Leantime\Domain\Notifications\Services\PushPreferences;
 use Leantime\Domain\Notifications\Services\Webhooks;
 use Leantime\Domain\Projects\Repositories\Projects as ProjectRepository;
 use Leantime\Domain\Projects\Services\Projects as ProjectService;
@@ -422,7 +424,7 @@ class Users extends BaseService
         $this->authorize(UsersPermissions::CREATE, forceGlobal: true);
         $this->assertRoleAssignable($values['role'] ?? '');
 
-        if ($this->callerIsBelowAdmin()) {
+        if ($this->invitesStayInOwnClient()) {
             $values['clientId'] = session('userdata.clientId') ?? '';
         }
 
@@ -759,7 +761,7 @@ class Users extends BaseService
 
         if ($currentUser === null || $currentUser === 0) {
             $currentUser = $sessionUser;
-        } elseif ($currentUser !== $sessionUser && ! Auth::userIsAtLeast(Roles::$admin)) {
+        } elseif ($currentUser !== $sessionUser && ! Roles::seesAllProjects(session('userdata.role'))) {
             $currentUser = $sessionUser;
         }
 
@@ -887,9 +889,8 @@ class Users extends BaseService
     /**
      * Returns the list of users visible to the current session user.
      *
-     * Admins/owners see every user. Anyone else is scoped to the users that
-     * belong to their own client. This encapsulates the role-based data
-     * scoping that previously lived in the controller.
+     * Callers who work across clients (clients.view, admin+ by default) see every
+     * user. Anyone else is scoped to the users that belong to their own client.
      *
      * @return array<int, array<string, mixed>> Array of user rows.
      *
@@ -898,7 +899,7 @@ class Users extends BaseService
     #[RequiresPermission(UsersPermissions::VIEW, global: true)]
     public function getAllVisibleToUser(): array
     {
-        if (Auth::userIsAtLeast(Roles::$admin)) {
+        if (! $this->invitesStayInOwnClient()) {
             return $this->getAll();
         }
 
@@ -1057,7 +1058,8 @@ class Users extends BaseService
      * applying company defaults and the per-project notification levels
      * (including the lazy migration from the legacy muted-projects format),
      * plus the personal webhook endpoint (webhookUrl) and its opt-in
-     * (webhookEnabled, only true while a URL is stored).
+     * (webhookEnabled, only true while a URL is stored) and the mobile push
+     * switch (pushEnabled, on until the user switches it off).
      *
      * @param  int  $userId  The id of the user whose preferences are loaded.
      * @return array<string, mixed> Template-ready notification preference data.
@@ -1097,6 +1099,9 @@ class Users extends BaseService
 
         $webhook = Webhooks::decodeSetting($this->settingsService->getSetting(Webhooks::settingKey($userId)));
 
+        $pushSetting = $this->settingsService->getSetting(PushPreferences::settingKey($userId));
+        $pushEnabled = PushPreferences::isEnabled($userId, [PushPreferences::settingKey($userId) => $pushSetting]);
+
         return [
             'notificationCategories' => Notification::NOTIFICATION_CATEGORIES,
             'enabledEventTypes' => $enabledEventTypes,
@@ -1106,6 +1111,7 @@ class Users extends BaseService
             'userProjects' => $userProjects,
             'webhookUrl' => $webhook['url'],
             'webhookEnabled' => $webhook['enabled'],
+            'pushEnabled' => $pushEnabled,
         ];
     }
 
@@ -1304,11 +1310,14 @@ class Users extends BaseService
     }
 
     /**
-     * Persists the current user's notification preferences: the master
+     * Persists the current user's notification preferences: the email
      * notifications toggle, message frequency, the enabled event-type
      * categories (validated against the known category keys) and the
      * per-project notification levels (validated against the known relevance
      * levels). Cleans up the legacy muted-projects format when present.
+     *
+     * The mobile push switch (pushNotifications, any boolean-ish value) is saved
+     * only when the key is present; a missing key leaves it as it was.
      *
      * The personal webhook is saved separately, with saveOwnWebhookSettings().
      *
@@ -1337,6 +1346,14 @@ class Users extends BaseService
 
         // Storing option messagefrequency
         $this->settingsService->saveSetting('usersettings.'.$userId.'.messageFrequency', (int) ($post['messagesfrequency'] ?? 3600));
+
+        // The push switch is its own channel setting. Unlike the email checkbox, a missing key
+        // leaves it unchanged, so clients that predate the switch never turn it off by omission;
+        // the web form posts a hidden '0' under the checkbox to say "off" explicitly.
+        if (array_key_exists('pushNotifications', $post)) {
+            $pushEnabled = filter_var($post['pushNotifications'], FILTER_VALIDATE_BOOLEAN);
+            $this->settingsService->saveSetting(PushPreferences::settingKey($userId), $pushEnabled ? '1' : '0');
+        }
 
         // Save event-type preferences
         $enabledEventTypes = $post['enabledEventTypes'] ?? [];
@@ -1680,18 +1697,18 @@ class Users extends BaseService
      *   - 'invite_email_failed' the user was created but the invitation email could not be sent
      *
      * @param  array<string, mixed>  $post  Raw request input.
-     * @param  int|string|null  $sessionClientId  The session user's client id (used for managers).
-     * @param  bool  $isManager  Whether the inviting user holds the manager role.
+     * @param  int|string|null  $sessionClientId  The session user's client id (used when the invite stays in it).
+     * @param  bool  $staysInOwnClient  Whether the invite goes into the inviting user's own client, see invitesStayInOwnClient().
      * @return string Status code described above.
      *
      * @throws BindingResolutionException
      *
-     * @internal Not exposed over JSON-RPC: the manager flag and client id are supplied by the
+     * @internal Not exposed over JSON-RPC: the own-client flag and client id are supplied by the
      *           NewUser controller from the session. The role ceiling is enforced here (and in
      *           createUserInviteWithStatus()).
      */
     #[RequiresPermission(UsersPermissions::CREATE, global: true)]
-    public function inviteNewUser(array $post, int|string|null $sessionClientId, bool $isManager): string
+    public function inviteNewUser(array $post, int|string|null $sessionClientId, bool $staysInOwnClient): string
     {
         $values = [
             'firstname' => NameSanitizer::clean($post['firstname'] ?? ''),
@@ -1705,7 +1722,7 @@ class Users extends BaseService
             'jobTitle' => $post['jobTitle'] ?? '',
             'jobLevel' => $post['jobLevel'] ?? '',
             'department' => $post['department'] ?? '',
-            'clientId' => $isManager ? $sessionClientId : ($post['client'] ?? ''),
+            'clientId' => $staysInOwnClient ? $sessionClientId : ($post['client'] ?? ''),
         ];
 
         if ($values['user'] === '') {
@@ -1787,11 +1804,12 @@ class Users extends BaseService
         }
 
         // Role ceiling, checked for the whole batch before anything is written: the imported role
-        // and the existing account it would update (matched the same way upsertUsers() does).
+        // and the existing account it would update (matched the same way upsertUsers() does: whatever
+        // its status, so a deactivated account above the caller can't be demoted either).
         foreach ($users as $user) {
             $this->assertRoleAssignable($user['role'] ?? '');
 
-            $existingUser = $this->userRepo->getUserByEmail((string) $user['user']);
+            $existingUser = $this->userRepo->getUserByEmail((string) $user['user'], '');
             if (is_array($existingUser)) {
                 $this->assertRoleAssignable($existingUser['role'] ?? '');
             }
@@ -1810,6 +1828,18 @@ class Users extends BaseService
     public function getAssignableRoles(): array
     {
         return $this->roleCeiling()->assignableRoles();
+    }
+
+    /**
+     * Whether the current user only works within their own client: they invite users into it and
+     * see its users only. Callers who can see every client (clients.view, admin+ by default) work
+     * across clients.
+     *
+     * @internal Not exposed over JSON-RPC; used by the user screens.
+     */
+    public function invitesStayInOwnClient(): bool
+    {
+        return ! $this->can(ClientsPermissions::VIEW);
     }
 
     /**

@@ -10,9 +10,6 @@ namespace Leantime\Core\Events\Htmx;
  * classes themselves ({@see \Leantime\Core\Events\Contracts\EmitsClientEvent}, e.g. TicketUpdated).
  * There is exactly one home for UI commands so casing/naming never drifts again — plugins
  * reuse these cases rather than minting their own `lt:ui:*` strings.
- *
- * Legacy string equivalents (e.g. HTMX.ShowNotification, closeModal) are dual-emitted during the
- * migration window via {@see HtmxEvents::expand()} so existing listeners keep working.
  */
 enum HtmxUiEvents: string implements HtmxEvent
 {
@@ -29,4 +26,10 @@ enum HtmxUiEvents: string implements HtmxEvent
 
     /** Refresh the main page url in the background. */
     case UrlRefresh = 'lt:ui:url.refresh';
+
+    /**
+     * Re-render every timer control. Sent when a start/stop request changed nothing (a stale
+     * button, a discarded timer), so no TimerStarted/TimerStopped fact exists to refresh them.
+     */
+    case TimerRefresh = 'lt:ui:timer.refresh';
 }

@@ -138,6 +138,20 @@ class UpdateSql30527Test extends TestCase
     /**
      * @return array<int, string> the row-format changes the migration ran
      */
+    /**
+     * The statements update_sql_30527 ran, without those of the later migrations updateDB() runs
+     * in the same pass (30534 adds zp_queue columns, 30535 creates the zp_oauth_* tables).
+     *
+     * @return array<int, string>
+     */
+    private function statementsOf30527(SqliteStandInForInstalledDatabase $connection): array
+    {
+        return array_values(array_filter(
+            $connection->statementsRun,
+            fn (string $statement) => stripos($statement, 'add column') === false && stripos($statement, 'zp_oauth_') === false
+        ));
+    }
+
     private function rowFormatChanges(SqliteStandInForInstalledDatabase $connection): array
     {
         return array_values(array_filter($connection->statementsRun, fn (string $statement) => stripos($statement, 'row_format') !== false));
@@ -195,6 +209,9 @@ class UpdateSql30527Test extends TestCase
         $this->assertTrue($connection->getSchemaBuilder()->hasIndex('zp_queue', 'idx_queue_channel_thedate_msghash'));
         $this->assertSame(['a-hash', 'b-hash'], $connection->table('zp_queue')->orderBy('msghash')->pluck('msghash')->all(), 'Queued messages survive the migration');
         $this->assertTheBatchReadWalksTheChannelIndex($connection);
+        // The same pass runs the later migrations: 30534 is registered, so its columns arrive too.
+        $this->assertTrue($connection->getSchemaBuilder()->hasColumn('zp_queue', 'module'), 'update_sql_30534 ran: module column added');
+        $this->assertTrue($connection->getSchemaBuilder()->hasColumn('zp_queue', 'moduleId'), 'update_sql_30534 ran: moduleId column added');
     }
 
     public function test_rerunning_the_update_keeps_a_single_index_and_the_queued_rows(): void
@@ -281,7 +298,7 @@ class UpdateSql30527Test extends TestCase
         $this->assertStringNotContainsString('zp_queue', $connection->informationSchemaReads[0]['query']);
         $this->assertSame(
             ['alter table "lt_zp_queue" engine = InnoDB, row_format = dynamic', 'create index "idx_queue_channel_thedate_msghash" on "lt_zp_queue" ("channel", "thedate", "msghash")'],
-            $connection->statementsRun,
+            $this->statementsOf30527($connection),
             'The table moves to DYNAMIC first, then the index is built on it'
         );
         $this->assertSame(['a-hash', 'b-hash'], $connection->table('zp_queue')->orderBy('msghash')->pluck('msghash')->all());
@@ -318,7 +335,7 @@ class UpdateSql30527Test extends TestCase
         $this->assertSame([['db-version', '3.5.27']], $this->savedVersionsThrough3527());
         $this->assertSame(
             ['alter table "lt_zp_queue" engine = InnoDB, row_format = dynamic', 'create index "idx_queue_channel_thedate_msghash" on "lt_zp_queue" ("channel", "thedate", "msghash")'],
-            $connection->statementsRun,
+            $this->statementsOf30527($connection),
             'One rebuild moves the table to InnoDB DYNAMIC, then the index is built on it'
         );
         $this->assertSame(['a-hash', 'b-hash'], $connection->table('zp_queue')->orderBy('msghash')->pluck('msghash')->all());

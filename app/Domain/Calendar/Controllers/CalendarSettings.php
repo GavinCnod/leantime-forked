@@ -4,27 +4,18 @@ namespace Leantime\Domain\Calendar\Controllers;
 
 use Leantime\Core\Auth\Permissions\RequiresPermission;
 use Leantime\Core\Controller\Controller;
+use Leantime\Domain\Calendar\Events\CalendarSettingsSectionsFilter;
+use Leantime\Domain\Calendar\Events\ExternalCalendarsFilter;
 use Leantime\Domain\Calendar\Permissions\CalendarPermissions;
 use Leantime\Domain\Calendar\Services\Calendar as CalendarService;
 use Symfony\Component\HttpFoundation\Response;
 
 /**
- * CalendarSettings Controller - Displays calendar settings modal.
+ * CalendarSettings Controller - Displays calendar settings modal and saves the personal
+ * "Show planned days on my calendar" setting (on by default).
  *
- * Plugins can register additional settings sections via the filter:
- * 'leantime.domain.calendar.controllers.calendarsettings.get.calendarSettings.sections'
- *
- * Plugins can mark calendars as plugin-managed (hides edit/delete UI) via the filter:
- * 'leantime.domain.calendar.controllers.calendarsettings.get.calendarSettings.externalCalendars'
- *
- * Section array structure:
- *   - id: string (unique identifier)
- *   - icon: string (FontAwesome class or SVG markup)
- *   - iconType: string ('fontawesome'|'svg', default 'fontawesome')
- *   - title: string (section heading)
- *   - description: string (optional description text)
- *   - content: string (raw HTML content - plugin must sanitize)
- *   - actions: array (optional action buttons with url, label, class, icon, type keys)
+ * Plugins add settings sections via {@see CalendarSettingsSectionsFilter} and add or mark their
+ * calendars via {@see ExternalCalendarsFilter}.
  */
 class CalendarSettings extends Controller
 {
@@ -47,15 +38,27 @@ class CalendarSettings extends Controller
         // Get external calendars for the current user
         $externalCalendars = $this->calendarService->getMyExternalCalendars((int) session('userdata.id'));
 
-        // Plugins can augment calendar data (e.g., add 'managedByPlugin' => true to hide edit/delete)
-        $externalCalendars = self::dispatchFilter('calendarSettings.externalCalendars', $externalCalendars);
-
-        // Plugins can add their settings sections via this filter
-        $pluginSections = self::dispatchFilter('calendarSettings.sections', []);
+        $externalCalendars = ExternalCalendarsFilter::dispatch(calendars: $externalCalendars ?: [], inSettings: true);
+        $pluginSections = CalendarSettingsSectionsFilter::dispatch();
 
         $this->tpl->assign('externalCalendars', $externalCalendars);
         $this->tpl->assign('pluginSections', $pluginSections);
+        $this->tpl->assign('showPlannedDays', $this->calendarService->getShowPlannedDays());
 
         return $this->tpl->displayPartial('calendar.calendarSettings');
+    }
+
+    /**
+     * Saves "Show planned days on my calendar", then shows the settings again.
+     */
+    #[RequiresPermission(CalendarPermissions::VIEW)]
+    public function post(array $params): Response
+    {
+        if (isset($params['savePlannedDays'])) {
+            $this->calendarService->saveShowPlannedDays(! empty($params['showPlannedDays']));
+            $this->tpl->setNotification($this->language->__('notifications.calendar_settings_saved'), 'success');
+        }
+
+        return $this->get($params);
     }
 }

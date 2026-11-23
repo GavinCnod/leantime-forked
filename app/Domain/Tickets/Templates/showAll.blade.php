@@ -227,12 +227,12 @@
         @dispatchEvent('scripts.afterOpen')
 
 
-        @if ($login::userIsAtLeast($roles::$editor))
+        @can('tickets.edit')
             leantime.ticketsController.initDueDateTimePickers();
 
         @else
         leantime.authController.makeInputReadonly(".maincontentinner");
-        @endif
+        @endcan
 
 
 

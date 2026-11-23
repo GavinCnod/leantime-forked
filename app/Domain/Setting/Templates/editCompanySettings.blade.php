@@ -94,6 +94,7 @@
                                                                     <option value="172800" @if ($companySettings['messageFrequency'] == '172800') selected @endif>{!! __('label.48h') !!}</option>
                                                                     <option value="604800" @if ($companySettings['messageFrequency'] == '604800') selected @endif>{!! __('label.1w') !!}</option>
                                                                 </x-global::forms.select> <br/>
+                                                                <small style="color: var(--color-text-muted); font-size: var(--font-size-s);">{!! __('label.messages_frequency_company_description') !!}</small>
                                                             </span>
                                         </div>
                                     </div>
@@ -114,18 +115,9 @@
                                             @endphp
                                             @foreach ($notificationCategories as $categoryKey => $config)
                                                 <div class="form-group">
-                                                    <label style="display:flex; align-items:flex-start; gap:8px; cursor:pointer; padding:4px 0;">
-                                                        <input type="checkbox"
-                                                               name="defaultNotificationEventTypes[]"
-                                                               value="{{ $categoryKey }}"
-                                                               style="margin-top:3px;"
-                                                               @if (in_array($categoryKey, $defaultNotificationTypes)) checked="checked" @endif
-                                                        />
-                                                        <span>
-                                                            <strong>{!! __($categoryLabels[$categoryKey] ?? $categoryKey) !!}</strong><br />
-                                                            <small style="color:#888;">{!! __($config['description'] ?? '') !!}</small>
-                                                        </span>
-                                                    </label>
+                                                    <x-global::forms.checkbox variant="toggle" name="defaultNotificationEventTypes[]" :value="$categoryKey"
+                                                        :checked="in_array($categoryKey, $defaultNotificationTypes)"
+                                                        :description="__($config['description'] ?? '')">{{ __($categoryLabels[$categoryKey] ?? $categoryKey) }}</x-global::forms.checkbox>
                                                 </div>
                                             @endforeach
                                         </div>
@@ -147,8 +139,45 @@
                                             </div>
                                         </div>
                                     </div>
+                                    <br />
+                                    <x-global::elements.section-header icon="fa fa-mobile">{!! __('label.push_relay') !!}</x-global::elements.section-header>
+                                    <div class="row">
+                                        <div class="col-md-8">
+                                            {{-- The relay is only for servers that can't send to phones themselves (self-hosted). --}}
+                                            @if (! $pushDirectConfigured)
+                                                <p>{!! __('label.push_relay_description') !!}</p>
+                                                @if (! $pushRelayAvailable)
+                                                    <p>
+                                                        <i class="fa fa-lock"></i> {{ __('label.push_relay_needs_plugin') }}
+                                                        <a href="{{ BASE_URL }}/plugins/marketplace">{{ __('label.push_relay_find_plugin') }}</a>
+                                                    </p>
+                                                @endif
+                                                <div class="form-group">
+                                                    <x-global::forms.checkbox variant="toggle" name="pushRelayEnabled" value="1"
+                                                        :checked="(bool) $pushRelayEnabled"
+                                                        :disabled="! $pushRelayAvailable"
+                                                        :description="__('label.push_relay_enable_description')">{{ __('label.push_relay_enable') }}</x-global::forms.checkbox>
+                                                </div>
+                                            @endif
+                                            {{-- What phone notifications show: every push, direct or through the relay. Grayed
+                                                 out only where nothing can send to phones (self-hosted without AdvancedAuth). --}}
+                                            <div class="form-group">
+                                                <label for="pushRelayContent">{!! __('label.push_relay_content') !!}</label>
+                                                <x-global::forms.select name="pushRelayContent" id="pushRelayContent" class="form-control" :disabled="! $pushDirectConfigured && ! $pushRelayAvailable">
+                                                    <option value="full" @if ($pushRelayContent === 'full') selected @endif>{!! __('label.push_relay_content_full') !!}</option>
+                                                    <option value="names" @if ($pushRelayContent === 'names') selected @endif>{!! __('label.push_relay_content_names') !!}</option>
+                                                    <option value="minimal" @if ($pushRelayContent === 'minimal') selected @endif>{!! __('label.push_relay_content_minimal') !!}</option>
+                                                </x-global::forms.select>
+                                                <small style="color:#888;">{!! __('label.push_relay_content_description') !!}</small>
+                                            </div>
+                                        </div>
+                                    </div>
                                     <x-global::forms.button tag="input" inputType="submit" contentRole="primary" :labelText="__('buttons.save')" id="saveBtn" />
                                 </form>
+
+                                <br />
+                                {{-- Morning summaries for the workspace; saves on its own. --}}
+                                <x-global::hx endpoint="reminders/workspaceReminders/get" trigger="load" wrapperId="workspaceRemindersMount" />
                             </div>
                             <div class="col-md-4">
 

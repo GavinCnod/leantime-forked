@@ -89,6 +89,25 @@ class Notification
     public string $action = '';
 
     /**
+     * Users the notification is about beyond what the entity itself names, for the "My work"
+     * level. A comment's entity is the comment, so a ticket comment lists the ticket's
+     * assignee, creator and collaborators here. Kept apart from the entity so the payload
+     * channels send stays the same.
+     *
+     * @var array<int>
+     */
+    public array $involvedUserIds = [];
+
+    /**
+     * Push wording, when the sender has something more specific to say than PushText's
+     * defaults ("Marcel moved this to Done"). Null leaves both to PushText; the subject
+     * and message are written for email and read badly on a lock screen.
+     */
+    public ?string $pushTitle = null;
+
+    public ?string $pushBody = null;
+
+    /**
      * Maps a notification module value to its user-facing category key.
      *
      * @param  string  $module  The module value from the notification (e.g. 'tickets', 'comments', 'goalcanvas').

@@ -574,6 +574,9 @@ class Ideas extends BaseService
             $canvasItem['box'] = 'idea';
         }
 
+        // The dialog checks edit/comment rights against the idea's own project, not the session's.
+        $canvasItem['projectId'] = $projectId;
+
         return $canvasItem;
     }
 
@@ -756,6 +759,8 @@ class Ideas extends BaseService
             $milestone['tags'] = '#ccc';
             $milestone['editFrom'] = dtHelper()->userNow()->formatDateForUser();
             $milestone['editTo'] = dtHelper()->userNow()->addDays(7)->formatDateForUser();
+            // In the idea's (authorized) board project, not whichever project the session has open.
+            $milestone['projectId'] = $projectId;
             $milestoneId = $this->ticketService->quickAddMilestone($milestone);
             if ($milestoneId !== false) {
                 $canvasItem['milestoneId'] = $milestoneId;
@@ -895,7 +900,12 @@ class Ideas extends BaseService
             'url' => $actualLink,
             'text' => $this->language->__('email_notifications.new_comment_idea_cta'),
         ];
-        $notification->entity = $values;
+        // The entity is the comment, with the idea it's on, so its push and digest line
+        // name the idea. The idea's own author is the person it's about.
+        $notification->entity = $values + ['module' => 'idea'];
+        $idea = $this->ideasRepository->getSingleCanvasItem($ideaItemId);
+        $ideaAuthorId = (int) (is_array($idea) ? ($idea['author'] ?? 0) : 0);
+        $notification->involvedUserIds = $ideaAuthorId > 0 ? [$ideaAuthorId] : [];
         $notification->module = 'comments';
         $notification->action = 'commented';
         $notification->projectId = $projectId;

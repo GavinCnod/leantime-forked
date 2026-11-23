@@ -46,6 +46,7 @@ class PluginUpdateFlowTest extends TestCase
                 'Content-Type' => 'application/zip',
                 'Content-Disposition' => 'attachment; filename="Notes.zip"',
             ]),
+            'https://marketplace.test/ltmp-api/install-result/*' => Http::response(null, 204),
         ]);
     }
 
@@ -136,6 +137,71 @@ class PluginUpdateFlowTest extends TestCase
         Http::assertSent(fn ($request) => $request->hasHeader('X-License-Key', 'key-123'));
     }
 
+    public function test_a_finished_update_is_reported_to_the_marketplace_with_the_server_details(): void
+    {
+        $this->service([$this->composer('1.5.0'), null])->installMarketplacePlugin($this->notes(), '1.5.0');
+
+        Http::assertSent(fn ($request) => str_contains($request->url(), '/ltmp-api/download/')
+            && $request->hasHeader('X-PHP-Version', PHP_VERSION)
+            && $request->hasHeader('X-OS')
+            && $request->hasHeader('X-OpenSSL-Version'));
+        Http::assertSent(fn ($request) => $request->url() === 'https://marketplace.test/ltmp-api/install-result/leantime_notes'
+            && $request['outcome'] === 'updated'
+            && $request['stage'] === 'done'
+            && $request['version'] === '1.5.0'
+            && $request->hasHeader('X-Instance-Id', 'instance-1')
+            && $request->hasHeader('X-PHP-Version', PHP_VERSION));
+    }
+
+    public function test_an_update_that_does_not_load_is_reported_as_failed_at_the_load_stage(): void
+    {
+        try {
+            $this->service([[], 'broken release (register.php:57)'])->installMarketplacePlugin($this->notes(), '1.5.0');
+        } catch (\RuntimeException) {
+        }
+
+        Http::assertSent(fn ($request) => str_contains($request->url(), '/ltmp-api/install-result/leantime_notes')
+            && $request['outcome'] === 'failed'
+            && $request['stage'] === 'load'
+            && str_contains($request['error'], 'broken release'));
+    }
+
+    public function test_a_download_the_marketplace_refused_is_not_reported_again(): void
+    {
+        Http::swap(new \Illuminate\Http\Client\Factory);
+        Http::fake([
+            'https://marketplace.test/ltmp-api/download/*' => Http::response(['error' => 'We could not find this license key.'], 500),
+            'https://marketplace.test/ltmp-api/install-result/*' => Http::response(null, 204),
+        ]);
+
+        try {
+            $this->service([$this->composer('1.5.0'), null])->installMarketplacePlugin($this->notes(), '1.5.0');
+            $this->fail('A refused download must fail the install');
+        } catch (\Illuminate\Http\Client\RequestException) {
+        }
+
+        Http::assertNotSent(fn ($request) => str_contains($request->url(), '/ltmp-api/install-result/'));
+    }
+
+    public function test_a_download_that_is_not_a_zip_is_reported(): void
+    {
+        Http::swap(new \Illuminate\Http\Client\Factory);
+        Http::fake([
+            'https://marketplace.test/ltmp-api/download/*' => Http::response('<html>maintenance</html>', 200, ['Content-Type' => 'text/html']),
+            'https://marketplace.test/ltmp-api/install-result/*' => Http::response(null, 204),
+        ]);
+
+        try {
+            $this->service([$this->composer('1.5.0'), null])->installMarketplacePlugin($this->notes(), '1.5.0');
+            $this->fail('A download that is not a zip must fail the install');
+        } catch (\Illuminate\Http\Client\RequestException) {
+        }
+
+        Http::assertSent(fn ($request) => str_contains($request->url(), '/ltmp-api/install-result/leantime_notes')
+            && $request['outcome'] === 'failed'
+            && $request['stage'] === 'download');
+    }
+
     public function test_an_update_that_does_not_load_is_rolled_back(): void
     {
         try {
@@ -204,6 +270,31 @@ class PluginUpdateFlowTest extends TestCase
 
         $this->assertSame([], $this->archiveInstalls, 'No files were touched');
         $this->assertSame([], $this->rowUpdates);
+    }
+
+    public function test_an_update_installs_into_the_installed_folder_when_the_download_name_differs_in_case(): void
+    {
+        // A lowercased identifier ("leantime_recurringtasks") comes back as "recurringtasks.zip" -> "Recurringtasks",
+        // but the archive holds RecurringTasks.phar: unpacking into the download's name fails ("unexpected file").
+        rename($this->pluginDir.'Notes', $this->pluginDir.'NoteS');
+        Http::fake([
+            'https://marketplace.test/ltmp-api/download/*' => Http::response('zip-bytes', 200, [
+                'Content-Type' => 'application/zip',
+                'Content-Disposition' => 'attachment; filename="notes"',
+            ]),
+            'https://marketplace.test/ltmp-api/install-result/*' => Http::response(null, 204),
+        ]);
+
+        try {
+            $this->service([$this->composer('1.5.0'), null])->installMarketplacePlugin($this->notes(), '1.5.0', 'NoteS');
+        } finally {
+            rename($this->pluginDir.'NoteS', $this->pluginDir.'Notes');
+        }
+
+        $this->assertCount(1, $this->archiveInstalls);
+        $this->assertSame('NoteS', $this->archiveInstalls[0][1], 'The archive must hold the installed folder\'s phar');
+        $this->assertSame($this->pluginDir.'NoteS', $this->archiveInstalls[0][2]);
+        $this->assertSame([[3, '1.5.0']], $this->rowUpdates);
     }
 
     public function test_a_different_version_than_requested_is_rolled_back(): void

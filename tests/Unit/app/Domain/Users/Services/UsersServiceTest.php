@@ -10,6 +10,7 @@ use Leantime\Core\Language as LanguageCore;
 use Leantime\Core\Support\Avatarcreator;
 use Leantime\Core\UI\Theme as ThemeCore;
 use Leantime\Domain\Auth\Services\Auth as AuthService;
+use Leantime\Domain\Clients\Permissions\ClientsPermissions;
 use Leantime\Domain\Clients\Repositories\Clients as ClientRepository;
 use Leantime\Domain\Files\Services\Files;
 use Leantime\Domain\Projects\Repositories\Projects as ProjectRepository;
@@ -189,7 +190,7 @@ class UsersServiceTest extends TestCase
         $result = $service->inviteNewUser(
             ['user' => 'nope'],
             sessionClientId: null,
-            isManager: false
+            staysInOwnClient: false
         );
 
         $this->assertSame('no_valid_email', $result);
@@ -205,7 +206,7 @@ class UsersServiceTest extends TestCase
         $result = $service->inviteNewUser(
             ['user' => 'taken@example.com'],
             sessionClientId: null,
-            isManager: false
+            staysInOwnClient: false
         );
 
         $this->assertSame('user_exists', $result);
@@ -369,6 +370,41 @@ class UsersServiceTest extends TestCase
         return $this->make(PermissionService::class, [
             'currentUserCan' => fn () => true,
             'authorize' => fn () => null,
+        ]);
+    }
+
+    public function test_callers_without_clients_view_only_see_and_invite_within_their_own_client(): void
+    {
+        session(['userdata.clientId' => 7]);
+        $requestedClientIds = [];
+        $userRepo = $this->make(UserRepository::class, [
+            'getAll' => [['id' => 1], ['id' => 2]],
+            'getAllClientUsers' => function ($clientId) use (&$requestedClientIds) {
+                $requestedClientIds[] = $clientId;
+
+                return [['id' => 2]];
+            },
+        ]);
+
+        $withinClient = $this->makeService($userRepo);
+        $withinClient->setPermissionService($this->permissionsGranting([]));
+        $this->assertTrue($withinClient->invitesStayInOwnClient());
+        $this->assertSame([['id' => 2]], $withinClient->getAllVisibleToUser());
+        $this->assertSame([7], $requestedClientIds);
+
+        $acrossClients = $this->makeService($userRepo);
+        $acrossClients->setPermissionService($this->permissionsGranting([ClientsPermissions::VIEW]));
+        $this->assertFalse($acrossClients->invitesStayInOwnClient());
+        $this->assertSame([['id' => 1], ['id' => 2]], $acrossClients->getAllVisibleToUser());
+    }
+
+    /**
+     * @param  array<int, string>  $grantedKeys
+     */
+    private function permissionsGranting(array $grantedKeys): PermissionService
+    {
+        return $this->make(PermissionService::class, [
+            'currentUserCan' => fn (string $permissionKey) => in_array($permissionKey, $grantedKeys, true),
         ]);
     }
 
@@ -598,6 +634,84 @@ class UsersServiceTest extends TestCase
         $this->assertSame(1, $editOwnCalls, 'The notifications flag is still saved');
         $this->assertSame(60, $saved['usersettings.1.messageFrequency']);
         $this->assertSame(json_encode(['tasks']), $saved['usersettings.1.notificationEventTypes']);
+    }
+
+    // ---------------------------------------------------------------------
+    // Mobile push switch (pushNotifications / pushEnabled). Its own channel
+    // setting, separate from the email checkbox.
+    // ---------------------------------------------------------------------
+
+    /**
+     * @dataProvider pushSwitchValuesProvider
+     */
+    public function test_the_push_switch_is_saved_from_any_boolean_value(mixed $posted, string $stored): void
+    {
+        $saved = [];
+        $settings = $this->settingsStore([], $saved);
+
+        $this->makeService($this->profileRepo(), ['settingsService' => $settings])
+            ->saveOwnNotificationPreferences(1, ['notifications' => '1', 'pushNotifications' => $posted]);
+
+        $this->assertSame($stored, $saved['usersettings.1.pushNotifications']);
+    }
+
+    /**
+     * @return array<string, array{mixed, string}>
+     */
+    public static function pushSwitchValuesProvider(): array
+    {
+        return [
+            'checkbox on' => ['1', '1'],
+            'hidden field under an unchecked box' => ['0', '0'],
+            'json true' => [true, '1'],
+            'json false' => [false, '0'],
+            'word' => ['off', '0'],
+        ];
+    }
+
+    /**
+     * Unlike the email checkbox (missing means off), a client that doesn't know the push switch
+     * must not turn it off just by saving the other preferences.
+     */
+    public function test_a_save_without_the_push_key_leaves_the_switch_as_it_was(): void
+    {
+        $saved = [];
+        $settings = $this->settingsStore(['usersettings.1.pushNotifications' => '0'], $saved);
+
+        $this->makeService($this->profileRepo(), ['settingsService' => $settings])
+            ->saveOwnNotificationPreferences(1, ['notifications' => '1', 'messagesfrequency' => '60']);
+
+        $this->assertArrayNotHasKey('usersettings.1.pushNotifications', $saved);
+        $this->assertSame('0', $settings->getSetting('usersettings.1.pushNotifications'));
+    }
+
+    /**
+     * @dataProvider storedPushSwitchProvider
+     */
+    public function test_push_enabled_reads_on_unless_switched_off(array $stored, bool $expected): void
+    {
+        $projectService = $this->make(ProjectService::class, [
+            'getProjectHierarchyAvailableToUser' => fn () => ['allAvailableProjects' => []],
+        ]);
+
+        $prefs = $this->makeService($this->profileRepo(), [
+            'settingsService' => $this->settingsStore($stored),
+            'projectService' => $projectService,
+        ])->getNotificationPreferences(1);
+
+        $this->assertSame($expected, $prefs['pushEnabled']);
+    }
+
+    /**
+     * @return array<string, array{array<string, string>, bool}>
+     */
+    public static function storedPushSwitchProvider(): array
+    {
+        return [
+            'never set' => [[], true],
+            'on' => [['usersettings.1.pushNotifications' => '1'], true],
+            'off' => [['usersettings.1.pushNotifications' => '0'], false],
+        ];
     }
 
     public function test_a_failed_webhook_disable_is_not_reported_as_saved(): void

@@ -6,6 +6,7 @@ use Carbon\CarbonImmutable;
 use Illuminate\Contracts\Container\BindingResolutionException;
 use Illuminate\Database\ConnectionInterface;
 use Leantime\Core\Auth\PasswordFingerprint;
+use Leantime\Core\Auth\Permissions\PermissionService;
 use Leantime\Core\Configuration\Environment;
 use Leantime\Core\Db\DatabaseHelper;
 use Leantime\Core\Db\Db as DbCore;
@@ -270,10 +271,10 @@ class Users
                 'jobTitle',
                 'jobLevel',
                 'department',
-                'modified',
+                'zp_user.modified',
             ])
             ->leftJoin('zp_clients', 'zp_clients.id', '=', 'zp_user.clientId')
-            ->where('clientId', $clientId)
+            ->where('zp_user.clientId', $clientId)
             ->orderBy('lastname')
             ->get();
 
@@ -341,6 +342,9 @@ class Users
             ->update($updateData) > 0;
 
         $this->keepOwnSessionAfterPasswordChange($id, $updateData);
+
+        // A user's client decides which client-shared projects they can open.
+        PermissionService::projectAccessChanged();
 
         return $updated;
     }
@@ -525,6 +529,9 @@ class Users
             ->update($updates) > 0;
 
         $this->keepOwnSessionAfterPasswordChange($id, $updates);
+
+        // A user's client decides which client-shared projects they can open.
+        PermissionService::projectAccessChanged();
 
         return $updated;
     }

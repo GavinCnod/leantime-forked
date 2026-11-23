@@ -3,6 +3,7 @@
 namespace Leantime\Domain\Install\Services;
 
 use Illuminate\Database\Schema\Blueprint;
+use Illuminate\Database\Schema\Builder as SchemaBuilderContract;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Schema;
 use Leantime\Core\Configuration\AppSettings;
@@ -62,6 +63,7 @@ class SchemaBuilder
         $this->createRolesTable();
         $this->createPermissionsTable();
         $this->createRolePermissionsTable();
+        $this->createOAuthTables();
     }
 
     /**
@@ -651,10 +653,10 @@ class SchemaBuilder
             $table->float('sum_planned_hours')->nullable();
             $table->float('sum_estremaining_hours')->nullable();
             $table->float('sum_logged_hours')->nullable();
-            $table->integer('sum_points')->nullable();
-            $table->integer('sum_points_done')->nullable();
-            $table->integer('sum_points_progress')->nullable();
-            $table->integer('sum_points_open')->nullable();
+            $table->float('sum_points')->nullable();
+            $table->float('sum_points_done')->nullable();
+            $table->float('sum_points_progress')->nullable();
+            $table->float('sum_points_open')->nullable();
             $table->integer('sum_todos_xs')->nullable();
             $table->integer('sum_todos_s')->nullable();
             $table->integer('sum_todos_m')->nullable();
@@ -686,6 +688,72 @@ class SchemaBuilder
             $table->string('key', 175)->primary();
             $table->text('value')->nullable();
         });
+    }
+
+    /**
+     * Create the OAuth tables (Laravel Passport's schema with the zp_ prefix) used by MCP sign-in.
+     * Shared by fresh installs and update_sql_30535, and safe to call again: existing tables are
+     * left alone.
+     *
+     * auth_codes/access_tokens.password_fingerprint tie each code and token to the password the user
+     * had when it was approved/issued (see Core\Auth\OAuth\OAuthTokenStore). clients.first_authorized_at
+     * marks clients a user approved at least once; only the others are purged as unused.
+     *
+     * @param  SchemaBuilderContract|null  $schema  Schema builder of the connection to migrate; the default connection when null.
+     */
+    public function createOAuthTables(?SchemaBuilderContract $schema = null): void
+    {
+        $schema ??= Schema::getFacadeRoot();
+
+        if (! $schema->hasTable('zp_oauth_clients')) {
+            $schema->create('zp_oauth_clients', function (Blueprint $table) {
+                $table->uuid('id')->primary();
+                $table->nullableMorphs('owner');
+                $table->string('name');
+                $table->string('secret')->nullable();
+                $table->string('provider')->nullable();
+                $table->text('redirect_uris');
+                $table->text('grant_types');
+                $table->boolean('revoked');
+                $table->dateTime('first_authorized_at')->nullable();
+                $table->timestamps();
+            });
+        }
+
+        if (! $schema->hasTable('zp_oauth_auth_codes')) {
+            $schema->create('zp_oauth_auth_codes', function (Blueprint $table) {
+                $table->char('id', 80)->primary();
+                $table->unsignedBigInteger('user_id')->index();
+                $table->uuid('client_id');
+                $table->text('scopes')->nullable();
+                $table->boolean('revoked');
+                $table->string('password_fingerprint', 64)->nullable();
+                $table->dateTime('expires_at')->nullable();
+            });
+        }
+
+        if (! $schema->hasTable('zp_oauth_access_tokens')) {
+            $schema->create('zp_oauth_access_tokens', function (Blueprint $table) {
+                $table->char('id', 80)->primary();
+                $table->unsignedBigInteger('user_id')->nullable()->index();
+                $table->uuid('client_id')->index();
+                $table->string('name')->nullable();
+                $table->text('scopes')->nullable();
+                $table->boolean('revoked');
+                $table->string('password_fingerprint', 64)->nullable();
+                $table->timestamps();
+                $table->dateTime('expires_at')->nullable();
+            });
+        }
+
+        if (! $schema->hasTable('zp_oauth_refresh_tokens')) {
+            $schema->create('zp_oauth_refresh_tokens', function (Blueprint $table) {
+                $table->char('id', 80)->primary();
+                $table->char('access_token_id', 80)->index();
+                $table->boolean('revoked');
+                $table->dateTime('expires_at')->nullable();
+            });
+        }
     }
 
     /**
@@ -789,6 +857,12 @@ class SchemaBuilder
             $table->text('message');
             $table->dateTime('thedate');
             $table->integer('projectId');
+            // The entity an email is about, in the inbox's terms (zp_notifications.module /
+            // moduleId), so the digest can tell already-read items from new ones.
+            $table->string('module', 45)->nullable();
+            $table->integer('moduleId')->nullable();
+            // The digest's wording for the row (JSON): see EmailWorker.
+            $table->text('summary')->nullable();
 
             $table->index(['projectId'], 'idx_queue_projectId');
             $table->index(['userId'], 'idx_queue_userId');
@@ -919,11 +993,20 @@ class SchemaBuilder
             $table->text('abilities')->nullable();
             $table->timestamp('last_used_at')->nullable();
             $table->timestamp('expires_at')->nullable();
+            // Push notification registration (see update_sql_30504, which adds the same
+            // columns to upgraded installs). A fresh install never runs that migration, so
+            // without these it can't store a device token and mobile push never arrives.
+            $table->string('push_token', 255)->nullable();
+            $table->string('push_platform', 16)->nullable();
+            $table->string('push_provider', 8)->nullable();
+            $table->timestamp('push_token_updated_at')->nullable();
+            $table->timestamp('push_invalidated_at')->nullable();
             $table->timestamp('created_at')->nullable();
             $table->timestamp('updated_at')->nullable();
 
             $table->unique(['token'], 'personal_access_tokens_token_unique');
             $table->index(['tokenable_type', 'tokenable_id'], 'personal_access_tokens_tokenable_type_tokenable_id_index');
+            $table->index(['tokenable_id', 'push_invalidated_at'], 'idx_access_tokens_tokenable_push');
         });
     }
 

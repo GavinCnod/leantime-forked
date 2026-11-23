@@ -106,6 +106,10 @@ class Install
         30531,
         30532,
         30533,
+        30534,
+        30535,
+        30536,
+        30537,
     ];
 
     /**
@@ -235,6 +239,45 @@ class Install
 
             return false;
         }
+    }
+
+    /**
+     * getFirstUsers - returns the first user rows, enough to tell whether the installer's owner
+     * is still the only account.
+     *
+     * @param  int  $limit  How many rows to read at most.
+     * @return array<int, array<string, mixed>> Rows with id, role, status, lastlogin, pwReset and password (the hash; only checked for being empty).
+     */
+    public function getFirstUsers(int $limit = 2): array
+    {
+        $this->selectDatabase($this->config->dbDatabase);
+
+        return $this->connection->table('zp_user')
+            ->select(['id', 'role', 'status', 'lastlogin', 'pwReset', 'password'])
+            ->orderBy('id')
+            ->limit($limit)
+            ->get()
+            ->map(fn ($row): array => (array) $row)
+            ->all();
+    }
+
+    /**
+     * setInviteToken - stores a new invite token on a user that has not been activated yet.
+     *
+     * @param  int  $userId  The user to update.
+     * @param  string  $token  The token the onboarding link (/auth/userInvite/{token}) carries.
+     * @return bool True when the token was stored.
+     */
+    public function setInviteToken(int $userId, string $token): bool
+    {
+        $this->selectDatabase($this->config->dbDatabase);
+
+        $updatedRows = $this->connection->table('zp_user')
+            ->where('id', $userId)
+            ->whereRaw('LOWER(status) = ?', ['i'])
+            ->update(['pwReset' => $token]);
+
+        return $updatedRows > 0;
     }
 
     /**
@@ -3605,6 +3648,147 @@ class Install
             Log::error('Migration 30533: '.$e->getMessage());
 
             return ['Migration 30533 failed: '.$e->getMessage()];
+        }
+
+        return true;
+    }
+
+    /**
+     * Migration 30534 — zp_queue.module / moduleId, the entity an email is about.
+     *
+     * The digest worker reads them to split a digest into "New" and "Already seen" against the
+     * inbox's read state (see {@see \Leantime\Domain\Queue\Workers\EmailWorker}). Both are
+     * nullable: rows queued before this migration, and emails that are about no entity, stay
+     * "new" as they always were. Fresh installs get the columns from
+     * {@see \Leantime\Domain\Install\Services\SchemaBuilder}.
+     */
+    public function update_sql_30534(): bool|array
+    {
+        try {
+            /** @var \Illuminate\Database\Connection $connection */
+            $connection = $this->connection;
+            $schema = $connection->getSchemaBuilder();
+
+            if (! $schema->hasTable('zp_queue')) {
+                Log::info('Migration 30534 skipped: zp_queue table missing (partial install?)');
+
+                return true;
+            }
+
+            $schema->table('zp_queue', function (Blueprint $table) use ($schema): void {
+                if (! $schema->hasColumn('zp_queue', 'module')) {
+                    $table->string('module', 45)->nullable()->after('projectId');
+                }
+                if (! $schema->hasColumn('zp_queue', 'moduleId')) {
+                    $table->integer('moduleId')->nullable()->after('module');
+                }
+            });
+        } catch (\Exception $e) {
+            Log::error('Migration 30534: '.$e->getMessage());
+
+            return ['Migration 30534 failed: '.$e->getMessage()];
+        }
+
+        return true;
+    }
+
+    /**
+     * Migration 30535 — OAuth tables for MCP sign-in (Claude, ChatGPT, …): zp_oauth_clients,
+     * zp_oauth_auth_codes, zp_oauth_access_tokens, zp_oauth_refresh_tokens. Laravel Passport's schema
+     * with the zp_ prefix; the definitions live in SchemaBuilder so fresh installs get the same tables.
+     *
+     * @return bool|array<int, string> True on success, otherwise the error messages.
+     */
+    public function update_sql_30535(): bool|array
+    {
+        if (! $this->connection instanceof \Illuminate\Database\Connection) {
+            return ['Migration 30535 failed: no schema builder for this database connection'];
+        }
+
+        try {
+            app(\Leantime\Domain\Install\Services\SchemaBuilder::class)->createOAuthTables($this->connection->getSchemaBuilder());
+        } catch (\Exception $e) {
+            Log::error('Migration 30535: '.$e->getMessage());
+
+            return ['Migration 30535 failed: '.$e->getMessage()];
+        }
+
+        return true;
+    }
+
+    /**
+     * Migration 30536 — zp_queue.summary, the email digest's wording for a queued row.
+     *
+     * JSON with the item the email is about ('group'), its name, "who did what" and a comment to
+     * quote, so the digest can show several changes to one task together instead of each row's
+     * email subject and message (see {@see \Leantime\Domain\Queue\Workers\EmailWorker}).
+     * Nullable: rows queued before this migration, and emails no producer summarised, keep their
+     * subject and message. Fresh installs get the column from
+     * {@see \Leantime\Domain\Install\Services\SchemaBuilder}.
+     */
+    public function update_sql_30536(): bool|array
+    {
+        try {
+            /** @var \Illuminate\Database\Connection $connection */
+            $connection = $this->connection;
+            $schema = $connection->getSchemaBuilder();
+
+            if (! $schema->hasTable('zp_queue')) {
+                Log::info('Migration 30536 skipped: zp_queue table missing (partial install?)');
+
+                return true;
+            }
+
+            if (! $schema->hasColumn('zp_queue', 'summary')) {
+                $schema->table('zp_queue', function (Blueprint $table): void {
+                    $table->text('summary')->nullable()->after('moduleId');
+                });
+            }
+        } catch (\Exception $e) {
+            Log::error('Migration 30536: '.$e->getMessage());
+
+            return ['Migration 30536 failed: '.$e->getMessage()];
+        }
+
+        return true;
+    }
+
+    /**
+     * Migration 30537 — zp_stats story-point totals become floats.
+     *
+     * `zp_tickets.storypoints` is a float and the effort picker offers half points ("< 2min"),
+     * so a project's point totals are frequently fractional. The stats columns were declared as
+     * integers: MySQL silently rounds on insert, but PostgreSQL rejects the value outright
+     * (SQLSTATE[22P02] invalid input syntax for type integer: "0.5"), which aborts the whole
+     * nightly `reports:dailyIngestion` run on a PostgreSQL installation.
+     *
+     * Fresh installs get the float columns from {@see \Leantime\Domain\Install\Services\SchemaBuilder}.
+     *
+     * @return bool|array<int, string> True on success, otherwise the error messages.
+     */
+    public function update_sql_30537(): bool|array
+    {
+        try {
+            /** @var \Illuminate\Database\Connection $connection */
+            $connection = $this->connection;
+            $schema = $connection->getSchemaBuilder();
+
+            if (! $schema->hasTable('zp_stats')) {
+                Log::info('Migration 30537 skipped: zp_stats table missing (partial install?)');
+
+                return true;
+            }
+
+            $schema->table('zp_stats', function (Blueprint $table): void {
+                $table->float('sum_points')->nullable()->change();
+                $table->float('sum_points_done')->nullable()->change();
+                $table->float('sum_points_progress')->nullable()->change();
+                $table->float('sum_points_open')->nullable()->change();
+            });
+        } catch (\Exception $e) {
+            Log::error('Migration 30537: '.$e->getMessage());
+
+            return ['Migration 30537 failed: '.$e->getMessage()];
         }
 
         return true;

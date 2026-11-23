@@ -154,6 +154,7 @@ class EditCanvasItem extends Controller
 
             $goalMilestones = $this->goalService->getGoalMilestones($itemId);
             $this->tpl->assign('id', $itemId);
+            $this->tpl->assign('canvasItem', $canvasItem);
             $this->tpl->assign('goalMilestones', $goalMilestones['milestones']);
             $this->tpl->assign('milestoneSummary', $goalMilestones['summary']);
             $this->tpl->assign('milestones', $this->ticketService->getAllMilestones([
@@ -190,8 +191,9 @@ class EditCanvasItem extends Controller
         if (isset($params['comment']) && isset($params['id'])) {
             $itemId = (int) $params['id'];
 
-            // Only allow commenting on a goal item the user can view in their project.
-            if (! $this->goalService->getGoalItem($itemId)) {
+            // Only allow commenting on a goal item the user can view in its project.
+            $commentedGoal = $this->goalService->getGoalItem($itemId);
+            if (! $commentedGoal) {
                 return $this->tpl->displayPartial('errors.error404');
             }
 
@@ -223,7 +225,7 @@ class EditCanvasItem extends Controller
                 $notification->entity = $values;
                 $notification->module = 'goalcanvas';
                 $notification->action = 'commented';
-                $notification->projectId = session('currentProject');
+                $notification->projectId = (int) $commentedGoal['projectId'];
                 $notification->subject = $subject;
                 $notification->authorId = session('userdata.id');
                 $notification->message = $message;
@@ -254,8 +256,8 @@ class EditCanvasItem extends Controller
                         'parent' => $params['parent'] ?? null,
                         'id' => $params['itemId'],
                         'kpi' => $params['kpi'] ?? '',
-                        'startDate' => format(value: $params['startDate'] ?? '', fromFormat: FromFormat::UserDateStartOfDay)->isoDateTime(),
-                        'endDate' => format(value: $params['endDate'] ?? '', fromFormat: FromFormat::UserDateEndOfDay)->isoDateTime(),
+                        'startDate' => format(value: $params['startDate'] ?? '', fromFormat: FromFormat::UserDateStartOfDay)->isoDateTimeUTC(),
+                        'endDate' => format(value: $params['endDate'] ?? '', fromFormat: FromFormat::UserDateEndOfDay)->isoDateTimeUTC(),
                         'setting' => $params['setting'] ?? '',
                         'metricType' => $params['metricType'] ?? '',
                         'assignedTo' => $params['assignedTo'] ?? '',
@@ -318,7 +320,8 @@ class EditCanvasItem extends Controller
                     $notification->entity = $canvasItem;
                     $notification->module = 'goalcanvas';
                     $notification->action = 'updated';
-                    $notification->projectId = session('currentProject');
+                    // The goal's own project: a goal opened from another project must not notify this one.
+                    $notification->projectId = (int) ($this->goalService->getGoalItem((int) $params['itemId'])['projectId'] ?? 0);
                     $notification->subject = $subject;
                     $notification->authorId = session('userdata.id');
                     $notification->message = $message;
@@ -345,20 +348,24 @@ class EditCanvasItem extends Controller
                         'canvasId' => $params['canvasId'],
                         'parent' => $params['parent'] ?? null,
                         'kpi' => $params['kpi'] ?? '',
-                        'startDate' => format(value: $params['startDate'] ?? '', fromFormat: FromFormat::UserDateStartOfDay)->isoDateTime(),
-                        'endDate' => format(value: $params['endDate'] ?? '', fromFormat: FromFormat::UserDateEndOfDay)->isoDateTime(),
+                        'startDate' => format(value: $params['startDate'] ?? '', fromFormat: FromFormat::UserDateStartOfDay)->isoDateTimeUTC(),
+                        'endDate' => format(value: $params['endDate'] ?? '', fromFormat: FromFormat::UserDateEndOfDay)->isoDateTimeUTC(),
                         'setting' => $params['setting'] ?? '',
                         'metricType' => $params['metricType'] ?? '',
                         'assignedTo' => $params['assignedTo'] ?? '',
                     ];
                     // Resolves the target board's real project from canvasId and authorizes CREATE.
                     $id = $this->goalService->createGoalItem($canvasItem);
+
+                    // The board need not be in the session's project: notify the project the new
+                    // item actually landed in.
+                    $savedItem = $this->goalService->getGoalItem((int) $id);
                     $canvasTypes = $this->canvasRepo->getCanvasTypes();
 
                     $this->tpl->setNotification(sprintf($this->language->__('notification.canvas_item_created'), $canvasTypes[$params['box']]['title']), 'success', 'goal_item_created');
 
                     $subject = $this->language->__('email_notifications.canvas_board_item_created');
-                    $actual_link = BASE_URL.'#/goalcanvas/editCanvasItem/'.(int) $params['itemId'];
+                    $actual_link = BASE_URL.'#/goalcanvas/editCanvasItem/'.(int) $id;
                     $message = sprintf(
                         $this->language->__('email_notifications.canvas_item_created_message'),
                         session('userdata.name'),
@@ -371,15 +378,18 @@ class EditCanvasItem extends Controller
                         'text' => $this->language->__('email_notifications.canvas_item_update_cta'),
                     ];
 
-                    $notification->entity = $canvasItem;
+                    // With the new id, so the digest can group the item's later changes and comments with it.
+                    $notification->entity = $canvasItem + ['id' => (int) $id];
                     $notification->module = 'goalcanvas';
                     $notification->action = 'created';
-                    $notification->projectId = session('currentProject');
+                    $notification->projectId = (int) ($savedItem['projectId'] ?? 0);
                     $notification->subject = $subject;
                     $notification->authorId = session('userdata.id');
                     $notification->message = $message;
 
-                    $this->projectService->notifyProjectUsers($notification);
+                    if ($notification->projectId > 0) {
+                        $this->projectService->notifyProjectUsers($notification);
+                    }
 
                     $this->tpl->setNotification($this->language->__('notification.element_created'), 'success');
                 } else {

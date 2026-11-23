@@ -17,6 +17,7 @@ use Leantime\Core\Auth\Permissions\RequiresPermission;
 use Leantime\Core\Configuration\AppSettings;
 use Leantime\Core\Configuration\Environment as EnvironmentCore;
 use Leantime\Core\Events\DispatchesEvents;
+use Leantime\Core\Events\EventDispatcher;
 use Leantime\Core\Plugins\PluginCompatibility;
 use Leantime\Domain\Auth\Models\Roles;
 use Leantime\Domain\Notifications\Services\Notifications;
@@ -91,6 +92,9 @@ class Plugins
     public string $marketplaceUrl;
 
     private int $timeout = 60;
+
+    /** Where the running marketplace install is (prepare, download, unpack, load, record), for its result report. */
+    private string $installStage = 'prepare';
 
     /** Redirect hops followed when downloading a marketplace archive. */
     private const MAX_DOWNLOAD_REDIRECTS = 5;
@@ -748,10 +752,10 @@ class Plugins
      * Parses a marketplace download/install RequestException into a clean,
      * user-facing error message.
      *
-     * The marketplace responds with status-code prefixes (e.g.
-     * "HTTP request returned status code 500:") wrapped around a JSON body. This
-     * strips those prefixes, decodes the JSON and returns the most specific
-     * message available, falling back to a generic installation error.
+     * The marketplace answers with a JSON body ({"error": "..."}). It is read from the response
+     * itself: the exception message carries only the first 120 characters of the body, which cut
+     * the longer marketplace messages (license key not found, user limit, ...) into invalid JSON.
+     * Falls back to a generic installation error.
      *
      * @param  RequestException  $exception  The exception thrown while installing.
      * @return string A clean error message safe to show to the user.
@@ -761,10 +765,11 @@ class Plugins
     public function parseMarketplaceError(RequestException $exception): string
     {
         // Any status: the marketplace also answers 409 for a release that doesn't support this version.
-        $errorJson = (string) preg_replace('/^HTTP request returned status code \d+:\s*/', '', $exception->getMessage());
-        $errors = json_decode(trim($errorJson));
+        $errors = json_decode(trim($exception->response->body()));
 
-        return $errors->error ?? $errors->message ?? 'There was an error installing the plugin';
+        $message = $errors->error ?? $errors->message ?? null;
+
+        return is_string($message) && $message !== '' ? $message : 'There was an error installing the plugin';
     }
 
     /**
@@ -827,6 +832,9 @@ class Plugins
     {
         // Two installs of the same plugin at once would share the kept previous version (and the
         // second could restore the first one's files): one at a time per plugin.
+        // Before the lock: if this lookup fails, no lock is left behind.
+        $wasInstalled = $expectedFolder !== null || $this->findInstalledMarketplacePlugin((string) $plugin->identifier) !== null;
+
         $lock = Cache::lock('plugins.install.'.strtolower((string) $plugin->identifier), 900);
         if (! $lock->get()) {
             throw new \RuntimeException(__('notification.plugin_update_busy'));
@@ -834,9 +842,20 @@ class Plugins
 
         try {
             $this->installMarketplacePluginLocked($plugin, $version, $expectedFolder);
+        } catch (\Throwable $e) {
+            // Refusals before the download (files missing, not newer) are local decisions, and the
+            // marketplace already recorded why it refused a download (wrong key, user limit, ...).
+            // Everything else only happens here, so that is reported.
+            if ($this->installStage !== 'prepare' && ! self::isMarketplaceRefusal($e)) {
+                $this->reportInstallResult($plugin, $version, 'failed', $this->installStage, $e->getMessage());
+            }
+
+            throw $e;
         } finally {
             $lock->release();
         }
+
+        $this->reportInstallResult($plugin, $version, $wasInstalled ? 'updated' : 'installed', 'done');
     }
 
     /**
@@ -844,6 +863,7 @@ class Plugins
      */
     private function installMarketplacePluginLocked(MarketplacePlugin $plugin, string $version, ?string $expectedFolder): void
     {
+        $this->installStage = 'prepare';
 
         $this->clearCache();
 
@@ -873,6 +893,7 @@ class Plugins
             throw new \Exception(__('notification.plugin_cant_download'));
         }
 
+        $this->installStage = 'download';
         $response = $this->downloadMarketplaceArchive(
             "{$this->marketplaceUrl}/ltmp-api/download/{$plugin->identifier}/{$version}",
             [
@@ -880,7 +901,7 @@ class Plugins
                 'X-Instance-Id' => $this->settingsService->getCompanyId(),
                 'X-User-Count' => $this->usersService->getNumberOfUsers(activeOnly: true, includeApi: false),
                 'X-Leantime-Version' => $this->appSettings->appVersion,
-            ]
+            ] + $this->serverDetailsHeaders()
         );
 
         if (! $response->ok()) {
@@ -905,6 +926,13 @@ class Plugins
             throw new \RuntimeException(sprintf(__('notification.plugin_update_wrong_package'), $expectedFolder, $foldername));
         }
 
+        // The download name only matches the folder case-insensitively: a lowercased identifier comes
+        // back as "recurringtasks" -> "Recurringtasks", while the archive holds RecurringTasks.phar.
+        // An update installs into the folder that is there.
+        if ($expectedFolder !== null) {
+            $foldername = $expectedFolder;
+        }
+
         // A private, unpredictable temp path for the download, always removed afterwards.
         $temporaryFile = Str::finish(sys_get_temp_dir(), '/').'leantime-plugin-'.bin2hex(random_bytes(16)).'.zip';
         $pluginDir = "{$this->pluginDirectory}{$foldername}";
@@ -912,6 +940,7 @@ class Plugins
         $previousCopy = $isUpdate ? $this->previousVersionPath($foldername) : null;
         $installedName = $isUpdate ? $this->installedNameFor($foldername) : null;
 
+        $this->installStage = 'unpack';
         try {
             if (! file_put_contents($temporaryFile, $response->body())) {
                 throw new \Exception(__('notification.plugin_cant_download'));
@@ -930,7 +959,10 @@ class Plugins
         // An update must load before it counts; otherwise the previous version comes back. The
         // fresh process also reads the new composer.json, which this process can't: it still
         // holds the previous phar.
+        $this->installStage = 'load';
         $composer = $isUpdate ? $this->verifyUpdateOrRollBack($foldername, (string) $previousCopy, $version, $installedName) : null;
+
+        $this->installStage = 'record';
 
         try {
             // A new install has no previous phar in this process, so it can read composer.json itself.
@@ -955,6 +987,69 @@ class Plugins
 
         $this->forgetAvailableUpdate($foldername);
         $this->clearCache();
+    }
+
+    /**
+     * A download the marketplace itself refused: its JSON `{"error": ...}` answer. Not a response
+     * that only looked wrong here (a 200 that isn't a zip, an error from a redirect host).
+     */
+    private static function isMarketplaceRefusal(\Throwable $exception): bool
+    {
+        return $exception instanceof RequestException
+            && ! $exception->response->successful()
+            && is_string($exception->response->json('error'));
+    }
+
+    /**
+     * Tells the marketplace how an install or update ended (POST /ltmp-api/install-result/{plugin}).
+     * The marketplace only sees the download; whatever goes wrong after it (signature check, unzip,
+     * the plugin not loading) only shows up here. Never throws and never slows an install down by
+     * more than a few seconds: a report that can't be sent is dropped.
+     *
+     * @param  string  $outcome  installed, updated or failed
+     * @param  string  $stage  Where it ended: prepare, download, unpack, load, record or done.
+     */
+    private function reportInstallResult(MarketplacePlugin $plugin, string $version, string $outcome, string $stage, string $error = ''): void
+    {
+        try {
+            Http::timeout(3)
+                ->withHeaders([
+                    'X-Instance-Id' => $this->settingsService->getCompanyId(),
+                    'X-Leantime-Version' => $this->appSettings->appVersion,
+                    'X-User-Count' => $this->usersService->getNumberOfUsers(activeOnly: true, includeApi: false),
+                ] + $this->serverDetailsHeaders())
+                ->asForm()
+                ->post("{$this->marketplaceUrl}/ltmp-api/install-result/{$plugin->identifier}", [
+                    'version' => $version,
+                    'outcome' => $outcome,
+                    'stage' => $stage,
+                    'error' => Str::limit($error, 1000, ''),
+                ])
+                ->throw();
+        } catch (\Throwable $e) {
+            Log::info('Could not report the plugin install result to the marketplace: '.$e->getMessage());
+        }
+    }
+
+    /**
+     * PHP, OpenSSL and OS versions of this server, sent with marketplace downloads and install
+     * results: when a package installs on one server but not another, these are the difference.
+     *
+     * @return array<string, string>
+     */
+    private function serverDetailsHeaders(): array
+    {
+        $osName = PHP_OS_FAMILY;
+        $osRelease = @file_get_contents('/etc/os-release');
+        if (is_string($osRelease) && preg_match('/^PRETTY_NAME="?([^"\n]+)"?$/m', $osRelease, $match) === 1) {
+            $osName = $match[1];
+        }
+
+        return [
+            'X-PHP-Version' => PHP_VERSION,
+            'X-OpenSSL-Version' => defined('OPENSSL_VERSION_TEXT') ? OPENSSL_VERSION_TEXT : 'none',
+            'X-OS' => Str::limit($osName, 100, ''),
+        ];
     }
 
     /**
@@ -1231,7 +1326,9 @@ class Plugins
 
     /**
      * The newest marketplace version of a plugin that supports this Leantime version and is newer
-     * than the installed one, or null when there is none.
+     * than the installed one, or null when there is none. A release core knows is broken on this
+     * version ({@see PluginCompatibility::BROKEN_RELEASES}) is never offered, whatever its
+     * marketplace range says.
      *
      * @param  array<int, array<string, mixed>>|null  $releases  The plugin's releases, when already
      *                                                           fetched in a batch; null asks the marketplace.
@@ -1254,7 +1351,11 @@ class Plugins
 
         $latest = collect($releases)
             ->filter(fn ($release) => is_array($release) && ! empty($release['version_number']))
-            ->filter(fn ($release) => $this->compatibility->isCompatible($this->releaseRange($release)))
+            ->filter(fn ($release) => $this->compatibility->isCompatible($this->compatibility->capBrokenRelease(
+                $this->releaseRange($release),
+                (string) $plugin->name,
+                (string) $release['version_number'],
+            )))
             ->map(fn ($release) => ltrim((string) $release['version_number'], 'v'))
             ->sort(fn ($a, $b) => version_compare($b, $a))
             ->first();
@@ -1921,6 +2022,8 @@ class Plugins
     public function clearCache()
     {
         Cache::store('installation')->forget('domainEvents');
+        Cache::store('installation')->forget(EventDispatcher::domainCacheKey('domainEvents'));
+        Cache::store('installation')->forget(EventDispatcher::domainCacheKey('domainRoutes'));
         Cache::store('installation')->forget('commands');
         Cache::store('installation')->forget('plugins.enabledPlugins');
         Cache::store('installation')->forget($this->enabledPluginsCacheKey());

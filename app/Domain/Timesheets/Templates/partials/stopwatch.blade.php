@@ -1,7 +1,10 @@
-@if ($login::userIsAtLeast(\Leantime\Domain\Auth\Models\Roles::$editor, true))
+{{-- Starting a timer needs timesheets.create; its status refresh (stopwatch/get-status) needs timesheets.view. --}}
+@can('timesheets.create')
+@can('timesheets.view')
     @php
         // Re-render on every timer change; while a timer runs, also refresh the running time once a minute.
-        $timerRefreshTrigger = $onTheClock !== false ? 'timerUpdate from:body, every 60s' : 'timerUpdate from:body';
+        $timerEvents = \Leantime\Domain\Timesheets\Events\TimerStarted::CLIENT_EVENT.' from:body, '.\Leantime\Domain\Timesheets\Events\TimerStopped::CLIENT_EVENT.' from:body, '.\Leantime\Core\Events\Htmx\HtmxUiEvents::TimerRefresh->value.' from:body';
+        $timerRefreshTrigger = $onTheClock !== false ? $timerEvents.', every 60s' : $timerEvents;
     @endphp
 
     @if ($onTheClock !== false)
@@ -31,4 +34,5 @@
         {{-- No timer running: an empty swap target that re-renders when a timer starts. --}}
         <li class="timerHeadMenu" id="timerHeadMenu" hx-get="{{ BASE_URL }}/timesheets/stopwatch/get-status" hx-trigger="{{ $timerRefreshTrigger }}" hx-swap="outerHTML"></li>
     @endif
-@endif
+@endcan
+@endcan

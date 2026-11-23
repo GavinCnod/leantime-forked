@@ -127,7 +127,6 @@
     --kanban-card-hover: var(--col-title-bg);
 
     --accordion-header-bg: var(--secondary-action-bg);
-    --accordion-header-radius: 5px;
 
     --interactive-icon-color: #aaa;
 
@@ -135,6 +134,7 @@
     --dark-red-text-color:#fff;
 
     --red: #F76C5E;
+    --color-text-danger: var(--red);
     --red-text-color: #000;
 
     --green: #32965D;

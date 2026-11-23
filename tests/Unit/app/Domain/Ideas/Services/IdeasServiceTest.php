@@ -122,6 +122,12 @@ class IdeasServiceTest extends TestCase
         $this->assertSame('prototype', $this->makeService(ideasRepo: $repo)->getIdeaItem(7)['box']);
     }
 
+    public function test_get_idea_item_carries_the_boards_project(): void
+    {
+        // The dialog checks edit/comment rights against this, not the session project.
+        $this->assertSame(9, $this->makeService(ideasRepo: $this->ideaRepoInProject9())->getIdeaItem(5)['projectId']);
+    }
+
     public function test_ensure_board_exists_returns_zero_when_boards_present(): void
     {
         $addCalls = 0;
@@ -257,6 +263,56 @@ class IdeasServiceTest extends TestCase
         $this->expectException(AuthorizationException::class);
 
         $service->updateIdeaItem($input, 9, self::SESSION_USER);
+    }
+
+    public function test_update_idea_item_creates_a_new_milestone_in_the_ideas_project(): void
+    {
+        // Session on project 4; the idea's board lives in project 9. The quick-added milestone
+        // must land in 9, where the dialog checked tickets.create.
+        session(['currentProject' => 4]);
+        $quickAdded = null;
+        $tickets = $this->make(TicketService::class, [
+            'quickAddMilestone' => function (array $milestone) use (&$quickAdded) {
+                $quickAdded = $milestone;
+
+                return 77;
+            },
+        ]);
+        $service = new IdeaService(
+            $this->ideaRepoInProject9(['editCanvasItem' => fn () => null]),
+            $this->make(CommentRepository::class),
+            $this->make(ProjectService::class, ['notifyProjectUsers' => fn () => null]),
+            $tickets,
+            $this->make(LanguageCore::class),
+            $this->allModulesOn(),
+        );
+        $service->setPermissionService($this->allowingPermissions());
+
+        $service->updateIdeaItem(['itemId' => 5, 'box' => 'idea', 'description' => 'x', 'status' => 'idea', 'data' => '', 'tags' => '', 'canvasId' => 3, 'milestoneId' => '', 'newMilestone' => 'Launch'], 4, self::SESSION_USER);
+
+        $this->assertSame(9, $quickAdded['projectId'] ?? null);
+    }
+
+    public function test_a_comment_on_someone_elses_idea_names_the_ideas_author_as_involved(): void
+    {
+        // The notification's entity is the comment; push and "My work" need the idea's author.
+        $sent = null;
+        $service = $this->makeService(
+            ideasRepo: $this->ideaRepoInProject9([
+                'getSingleCanvasItem' => fn () => ['id' => 5, 'canvasId' => 3, 'box' => 'idea', 'author' => 8],
+            ]),
+            commentsRepo: $this->make(CommentRepository::class, ['addComment' => fn () => '41']),
+            language: $this->make(LanguageCore::class, ['__' => fn ($key) => '%s '.$key]),
+            projects: $this->make(ProjectService::class, [
+                'notifyProjectUsers' => function ($notification) use (&$sent) {
+                    $sent = $notification;
+                },
+            ]),
+        );
+
+        $service->addIdeaComment('Love it', 5, 0, 9, self::SESSION_USER);
+
+        $this->assertSame([8], $sent?->involvedUserIds);
     }
 
     public function test_create_idea_item_is_denied_without_create(): void

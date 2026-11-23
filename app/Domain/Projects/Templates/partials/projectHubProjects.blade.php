@@ -1,6 +1,6 @@
 <div id="myProjectsHub"
      hx-get="{{BASE_URL}}/projects/projectHubProjects/get"
-     hx-trigger="HTMX.updateProjectList from:body"
+     hx-trigger="{{ \Leantime\Domain\Projects\Events\ProjectFavoriteAdded::CLIENT_EVENT }} from:body, {{ \Leantime\Domain\Projects\Events\ProjectFavoriteRemoved::CLIENT_EVENT }} from:body"
      hx-target="#myProjectsHub"
      hx-swap="outerHTML">
 
@@ -35,10 +35,10 @@
         <div class='center'>
             <div style='width:70%; color:var(--main-action-color)' class='svgContainer'>
                 {{ __('notifications.not_assigned_to_any_project') }}
-                @if($login::userIsAtLeast($roles::$manager))
+                @can('projects.create')
                     <br />
                     <x-global::forms.button tag="a" link="{{ BASE_URL }}/projects/newProject" contentRole="primary">{{ __('link.new_project') }}</x-global::forms.button>
-                @endif
+                @endcan
             </div>
         </div>
     @endif

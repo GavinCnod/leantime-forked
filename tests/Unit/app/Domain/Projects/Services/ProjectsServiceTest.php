@@ -5,6 +5,8 @@ namespace Unit\app\Domain\Projects\Services;
 use Carbon\CarbonImmutable;
 use GuzzleHttp\Client;
 use GuzzleHttp\Psr7\Response;
+use Leantime\Core\Auth\Permissions\DefaultRolePermissions;
+use Leantime\Core\Auth\Permissions\PermissionService;
 use Leantime\Core\Configuration\Environment as EnvironmentCore;
 use Leantime\Core\Exceptions\AuthorizationException;
 use Leantime\Core\Language as LanguageCore;
@@ -17,15 +19,18 @@ use Leantime\Domain\Notifications\Models\Notification;
 use Leantime\Domain\Notifications\Services\Messengers;
 use Leantime\Domain\Notifications\Services\Notifications as NotificationService;
 use Leantime\Domain\Notifications\Services\Push;
+use Leantime\Domain\Notifications\Services\PushPreferences;
 use Leantime\Domain\Notifications\Services\WebhookQueue;
 use Leantime\Domain\Notifications\Services\Webhooks;
 use Leantime\Domain\Notifications\Services\WebhookTransport;
+use Leantime\Domain\Projects\Permissions\ProjectsPermissions;
 use Leantime\Domain\Projects\Repositories\Projects as ProjectRepository;
 use Leantime\Domain\Projects\Services\Projects as ProjectService;
 use Leantime\Domain\Queue\Repositories\Queue as QueueRepository;
 use Leantime\Domain\Queue\Workers\Workers;
 use Leantime\Domain\Setting\Repositories\Setting as SettingRepository;
 use Leantime\Domain\Tickets\Repositories\Tickets as TicketRepository;
+use Leantime\Domain\Users\Permissions\UsersPermissions;
 use Leantime\Domain\Users\Repositories\Users as UserRepository;
 use Unit\TestCase;
 
@@ -76,12 +81,13 @@ class ProjectsServiceTest extends TestCase
         ?Messengers $messengers = null,
         ?NotificationService $notificationService = null,
         ?Webhooks $webhooks = null,
+        ?PermissionService $permissions = null,
     ): ProjectService {
         $language ??= $this->make(LanguageCore::class, [
             '__' => fn ($key) => $key,
         ]);
 
-        return new ProjectService(
+        $service = new ProjectService(
             $projectRepo ?? $this->make(ProjectRepository::class),
             $ticketRepo ?? $this->make(TicketRepository::class),
             $settingsRepo ?? $this->make(SettingRepository::class),
@@ -97,6 +103,37 @@ class ProjectsServiceTest extends TestCase
             $httpClient ?? $this->make(Client::class),
             $webhooks ?? $this->make(Webhooks::class),
         );
+        $service->setPermissionService($permissions ?? $this->permissionsGranting(null));
+
+        return $service;
+    }
+
+    /**
+     * A permission engine answering for the session role. With $grantedKeys null it uses the
+     * built-in defaults of that role (so manager and above hold projects.edit), otherwise exactly
+     * the given keys, like a custom role would.
+     *
+     * @param  array<int, string>|null  $grantedKeys
+     */
+    private function permissionsGranting(?array $grantedKeys): PermissionService
+    {
+        $decide = function (string $permissionKey) use ($grantedKeys): bool {
+            $keys = $grantedKeys ?? DefaultRolePermissions::grantsFor(
+                (string) session('userdata.role'),
+                (new ProjectsPermissions)->permissions()
+            );
+
+            return in_array($permissionKey, $keys, true);
+        };
+
+        return $this->make(PermissionService::class, [
+            'currentUserCan' => $decide,
+            'authorize' => function (string $permissionKey) use ($decide): void {
+                if (! $decide($permissionKey)) {
+                    throw new AuthorizationException('denied');
+                }
+            },
+        ]);
     }
 
     // ---------------------------------------------------------------------
@@ -124,20 +161,27 @@ class ProjectsServiceTest extends TestCase
 
     private ?QueueRepository $fakeQueueRepo = null;
 
+    /** @var array<int, array<int>> Stored creator/assignee of tasks and milestones, by id. */
+    private array $storedTicketPeople = [];
+
+    /** @var array<int, array<int>> Stored author/goal assignee of board items, by id. */
+    private array $storedBoardPeople = [];
+
     /**
      * Wires notifyProjectUsers for restricted project 5 with team members 1 (author), 2, 3, 4, 5;
-     * user 6 is not on the team but is @mentioned. Returns what each channel saw during the call.
+     * user 6 is not on the team but is @mentioned. The to-do is assigned to 2 and was created by
+     * 5, so those two are the ones it involves. Returns what each channel saw during the call.
      *
      * @param  array<string, string>  $settings  Setting key => stored value (preferences + webhooks).
      * @param  array<int>  $usersWithProjectAccess  Who ProjectRepository::isUserAssignedToProject() lets into project 5.
      * @param  array<int, array<string, mixed>|false>  $userOverrides  zp_user column overrides by user id; false = user deleted.
      * @param  Webhooks|null  $webhooks  Replaces the real Webhooks service (built over a recording transport) when given.
      * @param  array<int>  $collaborators  Collaborators on the to-do the notification is about.
-     * @return array{emailRecipients: array|null, messengerCalls: int, pushRecipients: array|null, inAppNotifications: array|null}
+     * @return array{emailRecipients: array|null, emailEntity: array|null, messengerCalls: int, pushRecipients: array|null, inAppNotifications: array|null, order: array<int, string>}
      */
-    private function runNotifyProjectUsers(array $settings, array $usersWithProjectAccess = [1, 2, 3, 4, 5], array $userOverrides = [], ?Webhooks $webhooks = null, array $collaborators = []): array
+    private function runNotifyProjectUsers(array $settings, array $usersWithProjectAccess = [1, 2, 3, 4, 5], array $userOverrides = [], ?Webhooks $webhooks = null, array $collaborators = [], ?\Closure $adjustNotification = null): array
     {
-        $seen = ['emailRecipients' => null, 'messengerCalls' => 0, 'pushRecipients' => null, 'inAppNotifications' => null];
+        $seen = ['emailRecipients' => null, 'emailEntity' => null, 'messengerCalls' => 0, 'pushRecipients' => null, 'inAppNotifications' => null, 'order' => []];
         $this->queueTable = [];
         $this->webhookPosts = [];
 
@@ -154,6 +198,9 @@ class ProjectsServiceTest extends TestCase
             'getUsersAssignedToProject' => fn () => $team,
             'getProject' => fn ($projectId) => $projectId == 5 ? ['id' => 5, 'name' => 'Acme', 'psettings' => 'restricted', 'clientId' => 3] : false,
             'isUserAssignedToProject' => fn ($userId, $projectId) => $projectId == 5 && in_array((int) $userId, $usersWithProjectAccess, true),
+            // The stored people of a task/milestone or a board item, by id (none unless a test says so).
+            'getTicketPeopleIds' => fn (int $id) => $this->storedTicketPeople[$id] ?? [],
+            'getBoardItemPeopleIds' => fn (int $id) => $this->storedBoardPeople[$id] ?? [],
         ]);
         $userRepo = $this->make(UserRepository::class, [
             'getUser' => fn ($userId) => $users[(int) $userId] ?? false,
@@ -164,8 +211,10 @@ class ProjectsServiceTest extends TestCase
 
         // Email rows and the webhook rows share the zp_queue table; the email queue is resolved from the container.
         $this->fakeQueueRepo = $this->make(QueueRepository::class, [
-            'queueMessageToUsers' => function ($recipients) use (&$seen) {
+            'queueMessageToUsers' => function ($recipients, $message = '', $subject = '', $projectId = 0, $module = null, $moduleId = null) use (&$seen) {
                 $seen['emailRecipients'] = array_values($recipients);
+                $seen['emailEntity'] = ['module' => $module, 'moduleId' => $moduleId];
+                $seen['order'][] = 'email';
             },
             'addMessageToQueue' => function (Workers $channel, string $subject, string $message, int $userId, int $projectId = 0) {
                 $msghash = md5(count($this->queueTable).$subject.$message);
@@ -197,6 +246,7 @@ class ProjectsServiceTest extends TestCase
             'processMentions' => fn () => null,
             'addNotifications' => function ($notifications) use (&$seen) {
                 $seen['inAppNotifications'] = $notifications;
+                $seen['order'][] = 'inbox';
             },
         ]);
         app()->instance(NotificationService::class, $notificationService);
@@ -228,7 +278,10 @@ class ProjectsServiceTest extends TestCase
         $notification->subject = 'To-Do updated';
         $notification->message = 'Ada updated "Ship it"';
         $notification->url = ['url' => 'https://leantime.example.com/tickets/showTicket/42', 'text' => 'Open'];
-        $notification->entity = ['id' => 42, 'headline' => 'Ship it', 'description' => '<a data-tagged-user-id="6">@Six</a> please review', 'collaborators' => $collaborators];
+        $notification->entity = ['id' => 42, 'headline' => 'Ship it', 'description' => '<a data-tagged-user-id="6">@Six</a> please review', 'editorId' => 2, 'userId' => 5, 'collaborators' => $collaborators];
+        if ($adjustNotification) {
+            $adjustNotification($notification);
+        }
 
         $this->makeService(
             projectRepo: $projectRepo,
@@ -302,6 +355,22 @@ class ProjectsServiceTest extends TestCase
             'Every queued recipient is delivered in one run'
         );
         $this->assertSame([], $this->queueTable, 'The run removes the handled rows');
+    }
+
+    /**
+     * The digest tells an already-read email from a new one by matching the queued row to the
+     * inbox row of the same event, so both must name the entity the same way.
+     */
+    public function test_notify_project_users_queues_the_email_with_the_same_entity_the_inbox_records(): void
+    {
+        $seen = $this->runNotifyProjectUsers([]);
+
+        $this->assertSame(['module' => 'tickets', 'moduleId' => 42], $seen['emailEntity']);
+        $this->assertNotEmpty($seen['inAppNotifications']);
+        foreach ($seen['inAppNotifications'] as $row) {
+            $this->assertSame(['tickets', 42], [$row['module'], $row['moduleId']]);
+        }
+        $this->assertSame(['inbox', 'email'], $seen['order'], 'the unread inbox row exists before the queued email, so a digest run in between can never take the email for an already-read one');
     }
 
     /**
@@ -406,12 +475,263 @@ class ProjectsServiceTest extends TestCase
             },
         ]);
 
-        $seen = $this->runNotifyProjectUsers([], webhooks: $webhooks);
+        $seen = $this->runNotifyProjectUsers([], usersWithProjectAccess: [1, 2, 3, 4, 5, 6], webhooks: $webhooks);
 
         $this->assertSame([2, 3, 4, 5, 6], $seen['emailRecipients']);
-        $this->assertSame([2, 3, 4, 5, 6], $seen['pushRecipients']);
+        $this->assertSame([2, 5, 6], $seen['pushRecipients']);
         $this->assertSame(1, $seen['messengerCalls']);
         $this->assertNotNull($seen['inAppNotifications'], 'In-app notifications are still created');
+    }
+
+    // ---------------------------------------------------------------------
+    // notifyProjectUsers() → push. Push has its own switch (PushPreferences):
+    // "Receive email notifications" no longer decides who gets a push.
+    // ---------------------------------------------------------------------
+
+    /**
+     * Switching email off used to silence push as well. Now each channel follows its own switch.
+     */
+    public function test_notify_project_users_pushes_to_users_who_switched_email_off(): void
+    {
+        $seen = $this->runNotifyProjectUsers([], usersWithProjectAccess: [1, 2, 3, 4, 5, 6], userOverrides: [2 => ['notifications' => 0]]);
+
+        $this->assertSame([3, 4, 5, 6], $seen['emailRecipients'], 'No email for a user who switched email off');
+        $this->assertSame([2, 5, 6], $seen['pushRecipients'], 'Push still goes to them');
+    }
+
+    public function test_notify_project_users_never_pushes_to_users_who_switched_push_off(): void
+    {
+        $seen = $this->runNotifyProjectUsers([
+            PushPreferences::settingKey(2) => '0',
+            PushPreferences::settingKey(3) => '1',
+        ], usersWithProjectAccess: [1, 2, 3, 4, 5, 6]);
+
+        $this->assertSame([2, 3, 4, 5, 6], $seen['emailRecipients'], 'The push switch never touches email');
+        $this->assertSame([5, 6], $seen['pushRecipients']);
+    }
+
+    /**
+     * A mention left in an item must not push the text and link to someone who can no longer
+     * see the project. Collaborators go through the same check. Email keeps its own policy.
+     *
+     * @return iterable<string, array{array<int>, array<int, array<string, mixed>|false>, array<int>}>
+     */
+    public static function bypassWithoutAccess(): iterable
+    {
+        yield 'mentioned user removed from the project' => [[1, 2, 3, 4, 5], [], []];
+        yield 'mentioned user deactivated' => [[1, 2, 3, 4, 5, 6], [6 => ['status' => 'i']], []];
+        yield 'mentioned user deleted' => [[1, 2, 3, 4, 5, 6], [6 => false], []];
+    }
+
+    /**
+     * @dataProvider bypassWithoutAccess
+     */
+    public function test_a_mention_or_collaborator_without_project_access_gets_no_push(array $usersWithProjectAccess, array $userOverrides, array $collaborators): void
+    {
+        $seen = $this->runNotifyProjectUsers([], $usersWithProjectAccess, $userOverrides, collaborators: $collaborators);
+
+        $this->assertNotContains(6, $seen['pushRecipients'], 'Mentioned user without access');
+        $this->assertContains(2, $seen['pushRecipients'], 'Everyone else is unaffected');
+    }
+
+    /**
+     * A mention gets past the relevance and category filters, not past the push switch.
+     */
+    public function test_notify_project_users_push_switch_is_final_even_for_a_mention(): void
+    {
+        $seen = $this->runNotifyProjectUsers([
+            PushPreferences::settingKey(6) => '0',
+            'usersettings.3.projectNotificationLevels' => json_encode([5 => 'muted']),
+            'usersettings.4.notificationEventTypes' => json_encode(['comments']),
+        ]);
+
+        $this->assertSame([2, 5, 6], $seen['emailRecipients'], 'Email keeps the mention bypass');
+        $this->assertSame([2, 5], $seen['pushRecipients'], 'Muted and category filters apply to push too; the mentioned user switched push off');
+    }
+
+    /**
+     * "All activity" fills the inbox and the email digest; push only carries what involves you.
+     */
+    public function test_push_goes_only_to_the_people_the_notification_involves(): void
+    {
+        $seen = $this->runNotifyProjectUsers([], usersWithProjectAccess: [1, 2, 3, 4, 5, 6], collaborators: [3]);
+
+        $this->assertSame([2, 3, 4, 5, 6], $seen['emailRecipients'], 'Email keeps All activity');
+        $this->assertSame([2, 3, 5, 6], $seen['pushRecipients'], 'Assignee 2, collaborator 3, creator 5 and mentioned 6; not 4');
+    }
+
+    public function test_project_activity_that_involves_nobody_pushes_to_nobody(): void
+    {
+        // A project status update: the entity is the comment, and nobody on the team is named.
+        $seen = $this->runNotifyProjectUsers([], adjustNotification: function (Notification $notification) {
+            $notification->module = 'comments';
+            $notification->action = 'commented';
+            $notification->entity = ['id' => 9, 'text' => 'On track', 'userId' => 1, 'moduleId' => 5, 'module' => 'project'];
+        });
+
+        $this->assertSame([2, 3, 4, 5], $seen['emailRecipients']);
+        $this->assertSame([], $seen['pushRecipients']);
+    }
+
+    public function test_a_comment_on_your_task_pushes_to_the_task_people(): void
+    {
+        $seen = $this->runNotifyProjectUsers([], adjustNotification: function (Notification $notification) {
+            $notification->module = 'comments';
+            $notification->action = 'commented';
+            $notification->entity = ['id' => 9, 'text' => 'Looks good', 'userId' => 1, 'moduleId' => 42, 'module' => 'ticket'];
+            $notification->involvedUserIds = [3, 4];
+        });
+
+        $this->assertSame([3, 4], $seen['pushRecipients']);
+    }
+
+    /**
+     * Producers send what they have (form fields, the editor as a board item's "author", a
+     * comment instead of its item), so involvement reads the stored item's people.
+     *
+     * @return array<string, array{0: \Closure, 1: array<int>}>
+     */
+    public static function storedPeopleCases(): array
+    {
+        $set = fn (string $module, string $action, array $entity) => function (Notification $notification) use ($module, $action, $entity) {
+            $notification->module = $module;
+            $notification->action = $action;
+            $notification->entity = $entity;
+        };
+
+        return [
+            // Task 42 was created by 4 and is assigned to 2; the form sends neither.
+            'task form save' => [$set('tickets', 'updated', ['id' => 42, 'headline' => 'Ship it']), [2, 4]],
+            // Milestone 50 was created by 3; the dialog's fields don't say so.
+            'milestone dialog save' => [$set('tickets', 'updated', ['id' => 50, 'headline' => 'Beta']), [3]],
+            // Board item 77 was written by 3; the edit carries the editor (1) as author.
+            'board item edit' => [$set('leancanvas', 'updated', ['id' => 77, 'itemId' => 77, 'author' => 1]), [3]],
+            'board item comment' => [$set('leancanvas', 'commented', ['text' => 'Nice', 'userId' => 1, 'moduleId' => 77]), [3]],
+            'comment on a board item through the comments service' => [$set('comments', 'commented', ['id' => 9, 'text' => 'Nice', 'userId' => 1, 'module' => 'leancanvasitem', 'moduleId' => 77]), [3]],
+            // Goal 78 was written by 3 and is assigned to 4.
+            'goal edit' => [$set('goalcanvas', 'updated', ['id' => 78, 'itemId' => 78, 'author' => 1, 'assignedTo' => 4]), [3, 4]],
+            'goal comment' => [$set('goalcanvas', 'commented', ['text' => 'On track', 'userId' => 1, 'moduleId' => 78]), [3, 4]],
+            // A new goal has no id in the payload yet; its assignee is in it.
+            'goal created for someone else' => [$set('goalcanvas', 'created', ['box' => 'goal', 'author' => 1, 'assignedTo' => 4]), [4]],
+            // Docs article 79 was written by 3.
+            'comment on a docs article' => [$set('comments', 'commented', ['id' => 9, 'text' => 'Typo', 'userId' => 1, 'module' => 'article', 'moduleId' => 79]), [3]],
+            'comment on a milestone' => [$set('comments', 'commented', ['id' => 9, 'text' => 'Moved', 'userId' => 1, 'module' => 'milestone', 'moduleId' => 50]), [3]],
+        ];
+    }
+
+    /**
+     * @dataProvider storedPeopleCases
+     *
+     * @param  array<int>  $expectedPush
+     */
+    public function test_push_reaches_the_stored_people_of_the_item_whatever_the_producer_sent(\Closure $adjust, array $expectedPush): void
+    {
+        $this->storedTicketPeople = [42 => [4, 2], 50 => [3]];
+        $this->storedBoardPeople = [77 => [3], 78 => [3, 4], 79 => [3]];
+
+        $seen = $this->runNotifyProjectUsers([], adjustNotification: $adjust);
+
+        $this->assertSame($expectedPush, $seen['pushRecipients']);
+        $this->assertSame([2, 3, 4, 5], $seen['emailRecipients'], 'Email keeps All activity');
+    }
+
+    /**
+     * Boards and ideas notify under their own module names. A mention there gets past the
+     * involved-only push filter like a mention on a task.
+     *
+     * @return array<string, array{0: \Closure}>
+     */
+    public static function boardMentionCases(): array
+    {
+        $set = fn (string $module, string $action, array $entity) => function (Notification $notification) use ($module, $action, $entity) {
+            $notification->module = $module;
+            $notification->action = $action;
+            $notification->entity = $entity;
+        };
+        $mention = '<a data-tagged-user-id="4">@Four</a> can you look?';
+
+        return [
+            'board item edit' => [$set('leancanvas', 'updated', ['id' => 77, 'itemId' => 77, 'author' => 1, 'description' => $mention])],
+            'board item comment' => [$set('leancanvas', 'commented', ['text' => $mention, 'userId' => 1, 'moduleId' => 77])],
+            'goal comment' => [$set('goalcanvas', 'commented', ['text' => $mention, 'userId' => 1, 'moduleId' => 77])],
+            'idea update' => [$set('ideas', 'updated', ['id' => 77, 'itemId' => 77, 'author' => 1, 'data' => $mention])],
+        ];
+    }
+
+    /**
+     * @dataProvider boardMentionCases
+     */
+    public function test_a_mention_on_a_board_or_idea_reaches_push(\Closure $adjust): void
+    {
+        $this->storedBoardPeople = [77 => [3]];
+
+        $seen = $this->runNotifyProjectUsers([], adjustNotification: $adjust);
+
+        $this->assertSame([3, 4], $seen['pushRecipients'], 'Author 3, and 4 who was mentioned');
+    }
+
+    public function test_a_mention_on_a_board_gets_past_a_muted_project(): void
+    {
+        $this->storedBoardPeople = [77 => [3]];
+
+        $seen = $this->runNotifyProjectUsers([
+            'usersettings.4.projectNotificationLevels' => json_encode([5 => 'muted']),
+        ], adjustNotification: function (Notification $notification) {
+            $notification->module = 'goalcanvas';
+            $notification->action = 'commented';
+            $notification->entity = ['text' => '<a data-tagged-user-id="4">@Four</a> ok?', 'userId' => 1, 'moduleId' => 77];
+        });
+
+        $this->assertSame([2, 3, 5, 4], $seen['emailRecipients']);
+        $this->assertSame([3, 4], $seen['pushRecipients']);
+    }
+
+    public function test_notify_project_users_never_pushes_to_the_author(): void
+    {
+        $seen = $this->runNotifyProjectUsers([PushPreferences::settingKey(1) => '1']);
+
+        $this->assertNotContains(1, $seen['pushRecipients']);
+    }
+
+    /**
+     * A comment's entity is the comment, so "My work" can only see the task's people through
+     * involvedUserIds. Without them a comment on your task reached nobody on "My work".
+     */
+    public function test_my_work_reaches_the_people_a_comment_names_as_involved(): void
+    {
+        $myWork = [];
+        foreach ([2, 3, 4, 5] as $userId) {
+            $myWork["usersettings.{$userId}.projectNotificationLevels"] = json_encode([5 => 'my_work']);
+        }
+        $asTaskComment = function (array $involved) {
+            return function (Notification $notification) use ($involved) {
+                $notification->module = 'comments';
+                $notification->action = 'commented';
+                $notification->entity = ['id' => 9, 'text' => 'Looks good', 'userId' => 1, 'moduleId' => 42, 'module' => 'ticket'];
+                $notification->involvedUserIds = $involved;
+            };
+        };
+
+        $seen = $this->runNotifyProjectUsers($myWork, adjustNotification: $asTaskComment([]));
+        $this->assertSame([], $seen['emailRecipients'], 'Without the task people, nobody on My work is involved');
+
+        $seen = $this->runNotifyProjectUsers($myWork, adjustNotification: $asTaskComment([3, 5]));
+        $this->assertSame([3, 5], $seen['emailRecipients']);
+        $this->assertSame([3, 5], $seen['pushRecipients']);
+    }
+
+    public function test_involvement_never_gets_past_a_muted_project(): void
+    {
+        $seen = $this->runNotifyProjectUsers([
+            'usersettings.3.projectNotificationLevels' => json_encode([5 => 'my_work']),
+            'usersettings.4.projectNotificationLevels' => json_encode([5 => 'muted']),
+        ], adjustNotification: function (Notification $notification) {
+            $notification->module = 'comments';
+            $notification->entity = ['id' => 9, 'text' => 'Looks good', 'userId' => 1, 'moduleId' => 42, 'module' => 'ticket'];
+            $notification->involvedUserIds = [3, 4];
+        });
+
+        $this->assertSame([2, 3, 5], $seen['emailRecipients']);
     }
 
     public function test_get_project_hub_data_builds_unique_client_map_and_returns_all_projects_when_no_filter(): void
@@ -669,6 +989,59 @@ class ProjectsServiceTest extends TestCase
         $this->makeService(projectRepo: $projectRepo)->getClientManagerProjects(1, 8);
 
         $this->assertSame(3, $requestedClient, 'A non-admin must only list their own client\'s projects');
+    }
+
+    /**
+     * Regression for #4039: "Show Closed Projects" on Company → All Projects had no effect because
+     * getAll() ignored its flag and always asked the repository for every project.
+     */
+    public function test_get_all_leaves_out_closed_projects_unless_asked(): void
+    {
+        session(['userdata' => ['id' => 1, 'role' => 'admin']]);
+
+        $requestedStatuses = [];
+        $projectRepo = $this->make(ProjectRepository::class, [
+            'getUserProjects' => function (...$args) use (&$requestedStatuses) {
+                $requestedStatuses[] = $args[1] ?? 'all';
+
+                return [];
+            },
+        ]);
+        $service = $this->makeService(projectRepo: $projectRepo);
+
+        $service->getAll();
+        $service->getAll(false);
+        $service->getAll(true);
+
+        $this->assertSame(['open', 'open', 'all'], $requestedStatuses);
+    }
+
+    /**
+     * Regression for #4039 (client-manager branch of All Projects): closed projects are dropped when
+     * the toggle is off and kept when it is on, from both the client list and the user's own list.
+     */
+    public function test_get_client_manager_projects_hides_closed_projects_when_asked(): void
+    {
+        session(['userdata' => ['id' => 1, 'role' => 'manager', 'clientId' => 3]]);
+
+        $projectRepo = $this->make(ProjectRepository::class, [
+            'getClientProjects' => fn () => [
+                ['id' => 10, 'name' => 'Open client project', 'state' => 0],
+                ['id' => 11, 'name' => 'Closed client project', 'state' => -1],
+            ],
+            'getUserProjects' => fn () => [
+                ['id' => 10, 'name' => 'Open client project', 'state' => 0],
+                ['id' => 20, 'name' => 'Own open project', 'state' => null],
+                ['id' => 21, 'name' => 'Own closed project', 'state' => -1],
+            ],
+        ]);
+        $service = $this->makeService(projectRepo: $projectRepo);
+
+        $withoutClosed = $service->getClientManagerProjects(1, 3, showClosedProjects: false);
+        $this->assertSame([10, 20], array_keys($withoutClosed));
+
+        $withClosed = $service->getClientManagerProjects(1, 3, showClosedProjects: true);
+        $this->assertSame([10, 11, 20, 21], array_keys($withClosed));
     }
 
     public function test_get_user_project_relation_pins_non_admins_to_themselves(): void
@@ -990,6 +1363,176 @@ class ProjectsServiceTest extends TestCase
         $this->assertSame('', $card['status']);
     }
 
+    /**
+     * A service wired for getProjectsCardData(): projects in $existingIds exist, each has one
+     * status comment "status-<id>", and the caller may view exactly $viewableIds.
+     *
+     * @param  array<int, int>  $existingIds
+     * @param  array<int, int>|null  $viewableIds  Null = every project is viewable.
+     * @param  array<int, array<int, int>>  $existenceQueries  Receives the ids passed to each existence lookup.
+     */
+    private function makeCardBatchService(array $existingIds, ?array $viewableIds = null, array &$existenceQueries = []): ProjectService
+    {
+        $ticketRepo = $this->make(TicketRepository::class, [
+            'getAverageTodoSize' => fn () => 0,
+            'getFirstTicket' => fn () => null,
+        ]);
+        $projectRepo = $this->make(ProjectRepository::class, [
+            'getUsersAssignedToProject' => fn () => [],
+            'getExistingProjectIds' => function (array $ids) use ($existingIds, &$existenceQueries) {
+                $existenceQueries[] = $ids;
+
+                return array_values(array_intersect($existingIds, $ids));
+            },
+        ]);
+        $commentRepo = $this->make(CommentRepository::class, [
+            'getComments' => fn ($module, $id) => [
+                ['id' => 1000 + (int) $id, 'status' => 'status-'.$id],
+            ],
+        ]);
+        $permissions = $this->make(PermissionService::class, [
+            'currentUserCan' => fn (string $key, ?int $projectId = null) => $key === ProjectsPermissions::VIEW
+                && $projectId !== null
+                && ($viewableIds === null || in_array($projectId, $viewableIds, true)),
+        ]);
+
+        return $this->makeService(
+            projectRepo: $projectRepo,
+            ticketRepo: $ticketRepo,
+            commentRepo: $commentRepo,
+            permissions: $permissions,
+        );
+    }
+
+    public function test_get_projects_card_data_returns_same_shape_as_single_card(): void
+    {
+        $service = $this->makeCardBatchService([3, 7]);
+
+        $batch = $service->getProjectsCardData([3, 7]);
+
+        $this->assertSame([0, 1], array_keys($batch), 'result must be a JSON list');
+        $this->assertSame($service->getProjectCardData(3), $batch[0]);
+        $this->assertSame($service->getProjectCardData(7), $batch[1]);
+        $this->assertSame(['id', 'progress', 'team', 'lastUpdate', 'status'], array_keys($batch[0]));
+        $this->assertSame('status-7', $batch[1]['status']);
+    }
+
+    public function test_get_projects_card_data_keeps_requested_order(): void
+    {
+        $batch = $this->makeCardBatchService([1, 2, 3])->getProjectsCardData([3, 1, 2]);
+
+        $this->assertSame([3, 1, 2], array_column($batch, 'id'));
+    }
+
+    public function test_get_projects_card_data_casts_dedupes_and_drops_invalid_ids(): void
+    {
+        $queries = [];
+        $batch = $this->makeCardBatchService([4, 5], null, $queries)
+            ->getProjectsCardData(['5', 4, 5, '4', 0, -2, 'abc', null, [9], true]);
+
+        $this->assertSame([5, 4], array_column($batch, 'id'));
+        $this->assertSame([[5, 4]], $queries, 'only the normalized distinct ids are looked up');
+    }
+
+    public function test_get_projects_card_data_caps_the_number_of_ids(): void
+    {
+        $limit = ProjectService::PROJECT_CARD_BATCH_LIMIT;
+        $all = range(1, $limit + 25);
+
+        $queries = [];
+        $batch = $this->makeCardBatchService($all, null, $queries)->getProjectsCardData($all);
+
+        $this->assertCount($limit, $batch);
+        $this->assertSame(range(1, $limit), array_column($batch, 'id'));
+        $this->assertCount($limit, $queries[0]);
+    }
+
+    public function test_get_projects_card_data_omits_denied_and_missing_projects(): void
+    {
+        // 8 exists but is not viewable; 99 is viewable-by-role but does not exist.
+        $batch = $this->makeCardBatchService([2, 8, 6], [2, 6, 99])->getProjectsCardData([8, 2, 99, 6]);
+
+        $this->assertSame([2, 6], array_column($batch, 'id'));
+    }
+
+    public function test_get_projects_card_data_returns_empty_list_without_valid_ids(): void
+    {
+        $queries = [];
+        $service = $this->makeCardBatchService([1], null, $queries);
+
+        $this->assertSame([], $service->getProjectsCardData([]));
+        $this->assertSame([], $service->getProjectsCardData([0, -1, 'x']));
+        $this->assertSame([], $queries, 'no query when nothing valid was asked for');
+    }
+
+    public function test_get_projects_card_data_is_entity_scoped_and_rpc_exposed(): void
+    {
+        $method = new \ReflectionMethod(ProjectService::class, 'getProjectsCardData');
+        $attrs = $method->getAttributes(\Leantime\Core\Auth\Permissions\RequiresPermission::class);
+
+        $this->assertCount(1, $attrs);
+        $gate = $attrs[0]->newInstance();
+        $this->assertSame(ProjectsPermissions::VIEW, $gate->permission);
+        $this->assertTrue($gate->entityScoped, 'per-project authorization happens in the method body');
+        $this->assertMatchesRegularExpression('/^\s*\*\s*@api\b/m', (string) $method->getDocComment());
+    }
+
+    /**
+     * duplicateProject() copies the To-Dos first, then re-links each copy to the copies of its
+     * milestone and parent. It used to patch the ORIGINAL ticket, which moved the source
+     * project's To-Dos onto the new project's milestones and left the copies unlinked.
+     */
+    public function test_duplicate_project_links_the_copies_and_leaves_the_originals_alone(): void
+    {
+        session(['userdata.role' => 'admin']);
+
+        $sourceTickets = [
+            (object) ['id' => 10, 'type' => 'milestone', 'milestoneid' => '', 'dependingTicketId' => ''],
+            (object) ['id' => 11, 'type' => 'task', 'milestoneid' => 10, 'dependingTicketId' => ''],
+            (object) ['id' => 12, 'type' => 'subtask', 'milestoneid' => '', 'dependingTicketId' => 11],
+            (object) ['id' => 13, 'type' => 'task', 'milestoneid' => 99, 'dependingTicketId' => ''],
+        ];
+        foreach ($sourceTickets as $ticket) {
+            foreach (['headline', 'description', 'editorId', 'status', 'storypoints', 'hourRemaining', 'planHours', 'priority', 'acceptanceCriteria', 'tags', 'editFrom', 'editTo', 'dateToFinish'] as $field) {
+                $ticket->$field = '';
+            }
+        }
+
+        $nextCopyId = 100;
+        $patches = [];
+        $ticketRepo = $this->make(TicketRepository::class, [
+            'getAllByProjectId' => fn () => $sourceTickets,
+            'addTicket' => function () use (&$nextCopyId) {
+                return $nextCopyId++;
+            },
+            'patchTicket' => function ($id, array $values) use (&$patches) {
+                $patches[$id] = $values;
+
+                return true;
+            },
+        ]);
+        $projectRepo = $this->make(ProjectRepository::class, [
+            'getProject' => fn ($id) => ['id' => $id, 'details' => '', 'state' => 0, 'hourBudget' => 0, 'dollarBudget' => 0, 'psettings' => 'restricted'],
+            'addProject' => fn () => 50,
+            'getModuleOverrides' => fn () => [],
+            'updateModuleOverrides' => fn () => true,
+        ]);
+        $settingsRepo = $this->make(SettingRepository::class, ['getSetting' => fn () => false]);
+
+        // No boards to copy; only the To-Do links are under test.
+        foreach ([\Leantime\Domain\Ideas\Repositories\Ideas::class, \Leantime\Domain\Goalcanvas\Repositories\Goalcanvas::class, \Leantime\Domain\Wiki\Repositories\Wiki::class, \Leantime\Domain\Blueprints\Repositories\Blueprints::class] as $canvasRepository) {
+            app()->instance($canvasRepository, $this->make($canvasRepository, ['getAllCanvas' => fn () => []]));
+        }
+
+        $service = $this->makeService(projectRepo: $projectRepo, ticketRepo: $ticketRepo, settingsRepo: $settingsRepo);
+
+        $this->assertSame(50, $service->duplicateProject(5, 3, 'Copy', '', false));
+
+        // Copies: 10 → 100, 11 → 101, 12 → 102, 13 → 103.
+        $this->assertSame([101 => ['milestoneid' => 100], 102 => ['dependingTicketId' => 101]], $patches);
+        $this->assertEmpty(array_intersect(array_keys($patches), [10, 11, 12, 13]), 'source To-Dos must not be modified');
+    }
+
     // ---------------------------------------------------------------------
     // Authorized JSON-RPC entry points for project sort/status/patch.
     // The /api/projects controller (which had a route-level gate) was retired,
@@ -1017,6 +1560,44 @@ class ProjectsServiceTest extends TestCase
         ]);
 
         $this->assertFalse($this->makeService(projectRepo: $projectRepo)->userCanManageProject(99));
+    }
+
+    public function test_user_can_manage_project_follows_the_grant_not_the_role_rank(): void
+    {
+        $projectRepo = $this->make(ProjectRepository::class, [
+            'isUserAssignedToProject' => fn () => true,
+        ]);
+
+        // An editor-ranked role that was given projects.edit manages its projects...
+        session(['userdata.role' => 'editor']);
+        $grantedEditor = $this->makeService(projectRepo: $projectRepo, permissions: $this->permissionsGranting([ProjectsPermissions::EDIT]));
+        $this->assertTrue($grantedEditor->userCanManageProject(99));
+
+        // ...and a manager whose projects.edit was taken away does not.
+        session(['userdata.role' => 'manager']);
+        $revokedManager = $this->makeService(projectRepo: $projectRepo, permissions: $this->permissionsGranting([]));
+        $this->assertFalse($revokedManager->userCanManageProject(99));
+    }
+
+    public function test_delete_project_follows_the_grant_not_the_role_rank(): void
+    {
+        $deletedIds = [];
+        $projectRepo = $this->make(ProjectRepository::class, [
+            'deleteProject' => function ($id) use (&$deletedIds) {
+                $deletedIds[] = $id;
+            },
+            'deleteAllUserRelations' => null,
+        ]);
+
+        session(['userdata.role' => 'manager']);
+        $revokedManager = $this->makeService(projectRepo: $projectRepo, permissions: $this->permissionsGranting([]));
+        $this->assertFalse($revokedManager->deleteProject(5));
+
+        session(['userdata.role' => 'editor']);
+        $grantedEditor = $this->makeService(projectRepo: $projectRepo, permissions: $this->permissionsGranting([ProjectsPermissions::DELETE]));
+        $this->assertTrue($grantedEditor->deleteProject(5));
+
+        $this->assertSame([5], $deletedIds);
     }
 
     public function test_patch_project_status_and_sorting_rejects_non_manager(): void
@@ -1327,6 +1908,53 @@ class ProjectsServiceTest extends TestCase
         $this->assertSame(1, $capturedUserId, 'a non-admin must not be able to read another user\'s project assignments');
     }
 
+    public function test_user_managers_read_the_edited_users_project_assignments(): void
+    {
+        // The user editor runs as a role that may not see every project but manages users.
+        session(['userdata.id' => 1, 'userdata.role' => 'editor']);
+
+        $capturedUserId = null;
+        $projectRepo = $this->make(ProjectRepository::class, [
+            'getUserProjectRelation' => function ($userId) use (&$capturedUserId) {
+                $capturedUserId = $userId;
+
+                return [];
+            },
+        ]);
+
+        foreach ([UsersPermissions::VIEW, UsersPermissions::EDIT] as $userManagementGrant) {
+            $capturedUserId = null;
+            $this->makeService(projectRepo: $projectRepo, permissions: $this->permissionsGranting([$userManagementGrant]))
+                ->getProjectIdAssignedToUser(99);
+
+            $this->assertSame(99, $capturedUserId, "with {$userManagementGrant}, saving the user editor must not replace the edited user's memberships with the caller's");
+        }
+    }
+
+    public function test_user_managers_cannot_read_full_projects_through_another_account(): void
+    {
+        session(['userdata.id' => 1, 'userdata.role' => 'editor']);
+
+        $capturedUserIds = [];
+        $projectRepo = $this->make(ProjectRepository::class, [
+            'getUserProjects' => function (...$arguments) use (&$capturedUserIds) {
+                $capturedUserIds[] = $arguments['userId'] ?? $arguments[0];
+
+                return [];
+            },
+        ]);
+        $service = $this->makeService(
+            projectRepo: $projectRepo,
+            permissions: $this->permissionsGranting([UsersPermissions::VIEW, UsersPermissions::EDIT])
+        );
+
+        // Project records and budgets stay scoped to the caller's own access.
+        $service->getProjectsUserHasAccessTo(99);
+        $service->getProjectsAssignedToUser(99);
+
+        $this->assertSame([1, 1], $capturedUserIds);
+    }
+
     // ---- Project hierarchy safety (#3540: cyclic parents hung every page via the project selector) ----
 
     public function test_find_my_children_builds_nested_hierarchy(): void
@@ -1539,11 +2167,178 @@ class ProjectsServiceTest extends TestCase
     }
 
     /**
+     * Switches the test user to $timezone with US date formats.
+     */
+    private function useUserTimezone(string $timezone): void
+    {
+        session([
+            'usersettings.timezone' => $timezone,
+            'usersettings.date_format' => 'm/d/Y',
+            'usersettings.time_format' => 'h:i A',
+        ]);
+
+        CarbonImmutable::mixin(new CarbonMacros($timezone, 'en-US', 'm/d/Y', 'h:i A'));
+    }
+
+    /**
+     * Creates a project with the given user-entered dates and returns the start/end
+     * values the service handed to the repository.
+     *
+     * @return array{start: mixed, end: mixed}
+     */
+    private function createProjectWithDates(string $start, string $end): array
+    {
+        $stored = [];
+        $projectRepo = $this->makeEmpty(ProjectRepository::class, [
+            'addProject' => function (array $values) use (&$stored) {
+                $stored = $values;
+
+                return 12;
+            },
+        ]);
+
+        $this->makeService($projectRepo)->createProject([
+            'name' => 'Launch',
+            'clientId' => 0,
+            'start' => $start,
+            'end' => $end,
+        ]);
+
+        return ['start' => $stored['start'] ?? null, 'end' => $stored['end'] ?? null];
+    }
+
+    /**
+     * New project dates are entered in the user's timezone and must be stored in UTC, because
+     * everything reads zp_projects.start/end back as UTC. They used to be stored as the user's
+     * local time, so a user behind UTC saw the start date a day early.
+     */
+    public function test_create_project_stores_dates_in_utc_for_a_user_behind_utc(): void
+    {
+        $this->useUserTimezone('America/New_York');
+
+        $stored = $this->createProjectWithDates('11/02/2026', '03/31/2027');
+
+        // Start / end of day in New York (EST, UTC-5), expressed in UTC.
+        $this->assertSame('2026-11-02 05:00:00', $stored['start']);
+        $this->assertSame('2027-04-01 03:59:59', $stored['end']);
+        $this->assertSame('11/02/2026', format($stored['start'])->date());
+        $this->assertSame('03/31/2027', format($stored['end'])->date());
+    }
+
+    /**
+     * Mirror case: ahead of UTC the local end of day used to be read back as the next day.
+     */
+    public function test_create_project_keeps_its_calendar_dates_for_a_user_ahead_of_utc(): void
+    {
+        $this->useUserTimezone('Asia/Tokyo');
+
+        $stored = $this->createProjectWithDates('11/02/2026', '03/31/2027');
+
+        $this->assertSame('2026-11-01 15:00:00', $stored['start']);
+        $this->assertSame('11/02/2026', format($stored['start'])->date());
+        $this->assertSame('03/31/2027', format($stored['end'])->date());
+    }
+
+    /**
      * A UserRepository stub whose getUser() resolves to a real row, for the
      * addUserToProject() tests that need the existence guard to pass.
      */
     private function validUserRepo(): UserRepository
     {
         return $this->makeEmpty(UserRepository::class, ['getUser' => fn () => ['id' => 7]]);
+    }
+
+    /**
+     * Runs $act with a listener on ProjectMemberAdded and returns the user ids it was told
+     * about. The dispatcher's registry is restored afterwards.
+     *
+     * @return array<int, int>
+     */
+    private function membersAddedDuring(\Closure $act): array
+    {
+        $reflection = new \ReflectionClass(\Leantime\Core\Events\EventDispatcher::class);
+        $snapshot = [];
+        foreach (['eventRegistry', 'available_hooks', 'patternMatchCache', 'compiledPatternCache', 'eventRegistryVersion'] as $prop) {
+            $snapshot[$prop] = $reflection->getProperty($prop)->getValue();
+        }
+
+        $added = [];
+        try {
+            \Leantime\Core\Events\EventDispatcher::add_event_listener(
+                \Leantime\Domain\Projects\Events\ProjectMemberAdded::class,
+                function (...$args) use (&$added) {
+                    foreach ($args as $arg) {
+                        if ($arg instanceof \Leantime\Domain\Projects\Events\ProjectMemberAdded) {
+                            $added[] = $arg->userId;
+                        }
+                    }
+                }
+            );
+            $act();
+        } finally {
+            foreach ($snapshot as $prop => $value) {
+                $reflection->getProperty($prop)->setValue(null, $value);
+            }
+        }
+
+        return $added;
+    }
+
+    /**
+     * The repository only saves team members that come with a project role; nobody else may
+     * be told "added you to <project>".
+     */
+    public function test_a_new_project_tells_only_the_members_it_actually_saved(): void
+    {
+        $projectRepo = $this->makeEmpty(ProjectRepository::class, ['addProject' => fn () => 12]);
+        $service = $this->makeService($projectRepo);
+
+        $added = $this->membersAddedDuring(fn () => $service->createProject([
+            'name' => 'Launch',
+            'clientId' => 0,
+            'type' => 'project',
+            'start' => null,
+            'end' => null,
+            'assignedUsers' => [['id' => 2, 'projectRole' => 'editor'], ['id' => 3], ['id' => 4, 'projectRole' => '']],
+        ]));
+
+        $this->assertSame([2, 4], $added);
+    }
+
+    /**
+     * A rename is told with the project's new name: the notification carries the project as
+     * saved, not as it was before the edit.
+     */
+    public function test_a_project_edit_notifies_with_the_saved_values(): void
+    {
+        session(['currentProject' => 9]);
+        $captured = null;
+        $service = $this->construct(ProjectService::class, [
+            $this->make(ProjectRepository::class),
+            $this->make(TicketRepository::class),
+            $this->make(SettingRepository::class),
+            $this->make(LanguageCore::class, ['__' => fn ($key) => '%s %s']),
+            $this->make(Messengers::class),
+            $this->make(NotificationService::class),
+            $this->make(FileService::class),
+            $this->make(Avatarcreator::class),
+            $this->make(QueueRepository::class),
+            $this->make(UserRepository::class),
+            $this->make(CommentRepository::class),
+            $this->make(ClientRepository::class),
+            $this->make(Client::class),
+            $this->make(Webhooks::class),
+        ], [
+            'editProject' => fn () => true,
+            'notifyProjectUsers' => function (Notification $notification) use (&$captured) {
+                $captured = $notification;
+            },
+        ]);
+
+        $service->editProjectAndNotify(['name' => 'Pricing launch'], 9, ['id' => 9, 'name' => 'Draft launch', 'clientId' => 3], 'https://x', 1, 'Gloria');
+
+        $this->assertSame('Pricing launch', $captured->entity['name']);
+        $this->assertSame(9, $captured->entity['id']);
+        $this->assertSame(3, $captured->entity['clientId'], 'fields the edit left alone stay');
     }
 }

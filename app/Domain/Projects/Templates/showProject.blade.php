@@ -142,7 +142,7 @@
 
                                     @endif
                                 @endforeach
-                                @if ($login::userIsAtLeast($roles::$manager))
+                                @can('users.create')
                                     <div class="col-md-4">
 
                                         <x-global::elements.card compact class="userBox">
@@ -150,7 +150,7 @@
                                             <div class="clearall"></div>
                                         </x-global::elements.card>
                                     </div>
-                                @endif
+                                @endcan
                             </div>
                              <div class="row">
                                  <div class="col-md-12">
@@ -351,8 +351,8 @@
                                             </x-global::forms.select>
                                         </div>
                                         <div class="col-md-2">
-                                            <x-global::forms.label for="">{!! __('label.showInKanban') !!}</x-global::forms.label>
-                                            <input type="checkbox" name="labelKanbanCol-{{ $key }}" id="labelKanbanCol-{{ $key }}" {{ $ticketStatus['kanbanCol'] ? 'checked="checked"' : '' }}/>
+                                            <x-global::forms.label for="labelKanbanCol-{{ $key }}">{!! __('label.showInKanban') !!}</x-global::forms.label>
+                                            <x-global::forms.checkbox variant="toggle" name="labelKanbanCol-{{ $key }}" id="labelKanbanCol-{{ $key }}" value="on" :checked="(bool) $ticketStatus['kanbanCol']" />
                                         </div>
                                         <div class="remove">
                                             <br />
@@ -428,8 +428,8 @@
             </x-global::forms.select>
         </div>
         <div class="col-md-2">
-            <x-global::forms.label for="">{!! __('label.showInKanban') !!}</x-global::forms.label>
-            <input type="checkbox" name="labelKanbanCol-XXNEWKEYXX" id="labelKanbanCol-XXNEWKEYXX"/>
+            <x-global::forms.label for="labelKanbanCol-XXNEWKEYXX">{!! __('label.showInKanban') !!}</x-global::forms.label>
+            <x-global::forms.checkbox variant="toggle" name="labelKanbanCol-XXNEWKEYXX" id="labelKanbanCol-XXNEWKEYXX" value="on" />
         </div>
         <div class="remove">
             <br />

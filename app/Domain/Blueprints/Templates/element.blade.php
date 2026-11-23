@@ -1,9 +1,7 @@
-<h4 class="widgettitle title-primary">
-    @if(isset($canvasTypes[$elementName]['icon']))
-        <i class="fas {{ $canvasTypes[$elementName]['icon'] }}"></i>
-    @endif
-    {{ $canvasTypes[$elementName]['title'] }}
-</h4>
+<x-global::elements.board-column-header :icon="isset($canvasTypes[$elementName]['icon']) ? 'fas '.$canvasTypes[$elementName]['icon'] : null">
+    {{-- Box titles are translations that carry entities ("Products &amp; Service"): decode, then escape. --}}
+    {{ html_entity_decode($canvasTypes[$elementName]['title'], ENT_QUOTES | ENT_HTML5) }}
+</x-global::elements.board-column-header>
 <div class="contentInner even status_{{ $elementName }}"
      {!! isset($canvasTypes[$elementName]['color']) ? 'style="background: ' . $canvasTypes[$elementName]['color'] . ';"' : '' !!}>
 
@@ -23,17 +21,21 @@
             <x-global::elements.card compact class="ticketBox" id="item_{{ $row['id'] }}">
                 <div class="row">
                     <div class="col-md-12">
-                        @if($login::userIsAtLeast($roles::$editor))
+                        @canany(['blueprints.edit', 'blueprints.delete'])
                             <x-global::actions.dropdown style="float:right;">
                                 <li class="nav-header">{!! __('subtitles.edit') !!}</li>
-                                <li><a href="#/blueprints/{{ $canvasSlug }}/editCanvasItem/{{ $row['id'] }}"
-                                       data="item_{{ $row['id'] }}"> {!! __('links.edit_canvas_item') !!}</a></li>
-                                <li><a href="#/blueprints/{{ $canvasSlug }}/delCanvasItem/{{ $row['id'] }}"
-                                       class="delete"
-                                       data="item_{{ $row['id'] }}"> {!! __('links.delete_canvas_item') !!}</a></li>
+                                @can('blueprints.edit')
+                                    <li><a href="#/blueprints/{{ $canvasSlug }}/editCanvasItem/{{ $row['id'] }}"
+                                           data="item_{{ $row['id'] }}"> {!! __('links.edit_canvas_item') !!}</a></li>
+                                @endcan
+                                @can('blueprints.delete')
+                                    <li><a href="#/blueprints/{{ $canvasSlug }}/delCanvasItem/{{ $row['id'] }}"
+                                           class="delete" data-lt-permitted
+                                           data="item_{{ $row['id'] }}"> {!! __('links.delete_canvas_item') !!}</a></li>
+                                @endcan
 
                             </x-global::actions.dropdown>
-                        @endif
+                        @endcanany
 
                         <h4><a href="#/blueprints/{{ $canvasSlug }}/editCanvasItem/{{ $row['id'] }}"
                                data="item_{{ $row['id'] }}">{{ $row['description'] }}</a></h4>
@@ -73,9 +75,9 @@
         @endif
     @endforeach
     <br />
-    @if($login::userIsAtLeast($roles::$editor))
+    @can('blueprints.create')
         <a href="#/blueprints/{{ $canvasSlug }}/editCanvasItem?type={{ $elementName }}"
            class="" id="{{ $elementName }}"
            style="padding-bottom: 10px;">{!! __('links.add_new_canvas_item') !!}</a>
-    @endif
+    @endcan
 </div>

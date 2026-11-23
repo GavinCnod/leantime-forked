@@ -3,6 +3,7 @@
 namespace Leantime\Domain\Menu\Composers;
 
 use Illuminate\Contracts\Container\BindingResolutionException;
+use Leantime\Core\Auth\Permissions\PermissionService;
 use Leantime\Core\Controller\Composer;
 use Leantime\Core\Controller\Frontcontroller as FrontcontrollerCore;
 use Leantime\Core\UI\Theme;
@@ -33,6 +34,23 @@ class HeadMenu extends Composer
 
     private MenuRepo $menuRepo;
 
+    private PermissionService $permissionService;
+
+    /**
+     * Company pages in the order the Company link prefers them, each with the permission it needs.
+     *
+     * @var array<string, string>
+     */
+    private const COMPANY_PAGES = [
+        'company.settings.view' => '/setting/editCompanySettings/',
+        'projects.edit' => '/projects/showAll/',
+        'timesheets.manage' => '/timesheets/showAll/',
+        'users.view' => '/users/showAll/',
+        'clients.view' => '/clients/showAll/',
+        'plugins.manage' => '/plugins/myapps/',
+        'connector.manage' => '/connector/show/',
+    ];
+
     public function init(
         NotificationService $notificationService,
         TimesheetService $timesheets,
@@ -40,7 +58,8 @@ class HeadMenu extends Composer
         AuthService $authService,
         Helper $helperService,
         MenuRepo $menuRepo,
-        Theme $themeCore
+        Theme $themeCore,
+        PermissionService $permissionService
     ): void {
         $this->notificationService = $notificationService;
         $this->timesheets = $timesheets;
@@ -49,6 +68,7 @@ class HeadMenu extends Composer
         $this->helperService = $helperService;
         $this->menuRepo = $menuRepo;
         $this->themeCore = $themeCore;
+        $this->permissionService = $permissionService;
     }
 
     /**
@@ -60,10 +80,11 @@ class HeadMenu extends Composer
         // instead of making two separate DB queries
         $notifications = [];
         if (session()->exists('userdata')) {
-            $notifications = $this->notificationService->getAllNotifications(session('userdata.id'));
+            // Newest first, with today's morning summary pinned on top.
+            $notifications = $this->notificationService->getBellNotifications((int) session('userdata.id'));
         }
 
-        $nCount = is_array($notifications) ? count(array_filter($notifications, fn ($n) => ($n['read'] ?? 1) == 0)) : 0;
+        $nCount = count(array_filter($notifications, fn ($n) => ($n['read'] ?? 1) == 0));
         $totalNotificationCount =
         $totalMentionCount =
         $totalNewMentions =
@@ -115,6 +136,21 @@ class HeadMenu extends Composer
             'module' => FrontcontrollerCore::getModuleName(),
             'user' => $user,
             'modal' => $modal,
+            'companyLink' => $this->companyLink(),
         ];
+    }
+
+    /**
+     * The first company page the current user may open, or null when there is none (no Company link).
+     */
+    private function companyLink(): ?string
+    {
+        foreach (self::COMPANY_PAGES as $permission => $path) {
+            if ($this->permissionService->currentUserCan($permission)) {
+                return $path;
+            }
+        }
+
+        return null;
     }
 }

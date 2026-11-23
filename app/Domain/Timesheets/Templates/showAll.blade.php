@@ -81,9 +81,9 @@
 
         leantime.timesheetsController.initTimesheetsTable();
 
-        @if ($login::userIsAtLeast($roles::$manager))
+        @can('timesheets.edit')
             leantime.timesheetsController.initEditTimeModal();
-        @endif
+        @endcan
 
         leantime.dateController.initDateRangePicker(".dateFrom", ".dateTo", 1)
     });
@@ -188,23 +188,14 @@
                         <option value="0" @if ($invEmpl == '0') selected="selected" @endif>{!! __('label.invoiced_not') !!}</option>
                     </x-global::forms.select>
                 </div>
-                <span class="checkbox">
-                    <input form="form" type="checkbox" value="on" name="invComp" id="invComp" onclick="this.form.submit();"
-                        @if ($invComp == '1')
-                            checked="checked"
-                        @endif
-                    />
-                    <x-global::forms.label for="invEmpl">{!! __('label.invoiced_comp') !!}</x-global::forms.label>
-                </span>
-
-                <span class="checkbox">
-                    <input form="form" type="checkbox" value="on" name="paid" id="paid" onclick="this.form.submit();"
-                        @if ($paid == '1')
-                            checked="checked"
-                        @endif
-                    />
-                    <label for="paid">{!! __('label.paid') !!}</label>
-                </span>
+                <div>
+                    <x-global::forms.checkbox variant="toggle" form="form" value="on" name="invComp" id="invComp" onclick="this.form.submit();"
+                                              :checked="$invComp == '1'">{!! __('label.invoiced_comp') !!}</x-global::forms.checkbox>
+                </div>
+                <div>
+                    <x-global::forms.checkbox variant="toggle" form="form" value="on" name="paid" id="paid" onclick="this.form.submit();"
+                                              :checked="$paid == '1'">{!! __('label.paid') !!}</x-global::forms.checkbox>
+                </div>
                 <div class="tw-mb-2">
                     <input form="form" type="hidden" name='filterSubmit' value="1"/>
                     <x-global::forms.button form="form" tag="input" inputType="submit" contentRole="primary" :labelText="__('buttons.search')" class="reload" />
@@ -269,11 +260,11 @@
                     @php $sum = $sum + $row['hours']; @endphp
                     <tr>
                         <td data-order="{{ $row['id'] }}">
-                                @if ($login::userIsAtLeast($roles::$manager))
+                                @can('timesheets.edit')
                                 <a href="{{ BASE_URL }}/timesheets/editTime/{{ $row['id'] }}" class="editTimeModal">#{{ $row['id'] . ' - ' . __('label.edit') }} </a>
                                 @else
                                 #{{ $row['id'] }}
-                                @endif
+                                @endcan
                         </td>
                         <td data-order="{{ $row['workDate'] }}">
                                 {{ format($row['workDate'])->date() }}
@@ -298,10 +289,10 @@
                             @if ($row['invoicedEmpl'] == '1')
                                 {{ format($row['invoicedEmplDate'])->date() }}
                             @else
-                                @if ($login::userIsAtLeast($roles::$manager))
+                                @can('timesheets.manage')
                                     <input type="checkbox" name="invoicedEmpl[]" class="invoicedEmpl"
                                 value="{{ $row['id'] }}" />
-                                @endif
+                                @endcan
                             @endif
                         </td>
                         <td data-order="@if ($row['invoicedComp'] == '1'){{ format($row['invoicedCompDate'])->date() }}@endif">
@@ -309,9 +300,9 @@
                             @if ($row['invoicedComp'] == '1')
                                 {{ format($row['invoicedCompDate'])->date() }}
                             @else
-                                @if ($login::userIsAtLeast($roles::$manager))
+                                @can('timesheets.manage')
                                 <input type="checkbox" name="invoicedComp[]" class="invoicedComp" value="{{ $row['id'] }}" />
-                                @endif
+                                @endcan
                             @endif
                         </td>
                         <td data-order="@if ($row['paid'] == '1'){{ format($row['paidDate'])->date() }}@endif">
@@ -319,9 +310,9 @@
                             @if ($row['paid'] == '1')
                                 {{ format($row['paidDate'])->date() }}
                             @else
-                                @if ($login::userIsAtLeast($roles::$manager))
+                                @can('timesheets.manage')
                                     <input type="checkbox" name="paid[]" class="paid" value="{{ $row['id'] }}" />
-                                @endif
+                                @endcan
                             @endif
                         </td>
                     </tr>
@@ -333,23 +324,23 @@
                         <td colspan="10"><strong>{{ $sum }}</strong> <small class="tw-opacity-60 tw-whitespace-nowrap">({{ \Leantime\Core\Support\Format::hoursMinutes($sum, __('text.hours_minutes_short')) }})</small></td>
 
                         <td>
-                            @if ($login::userIsAtLeast($roles::$manager))
+                            @can('timesheets.manage')
                             <x-global::forms.button tag="input" inputType="submit" contentRole="primary" :labelText="__('buttons.save')" name="saveInvoice" />
-                            @endif
+                            @endcan
                         </td>
                         <td>
-                            @if ($login::userIsAtLeast($roles::$manager))
+                            @can('timesheets.manage')
                             <input type="checkbox" id="checkAllEmpl" style="vertical-align: baseline;"/> {!! __('label.select_all') !!}</td>
-                            @endif
+                            @endcan
                         <td>
-                            @if ($login::userIsAtLeast($roles::$manager))
+                            @can('timesheets.manage')
                             <input type="checkbox"  id="checkAllComp" style="vertical-align: baseline;"/> {!! __('label.select_all') !!}
-                            @endif
+                            @endcan
                         </td>
                         <td>
-                            @if ($login::userIsAtLeast($roles::$manager))
+                            @can('timesheets.manage')
                                 <input type="checkbox"  id="checkAllPaid" style="vertical-align: baseline;"/> {!! __('label.select_all') !!}
-                            @endif
+                            @endcan
                         </td>
                     </tr>
                 </tfoot>
