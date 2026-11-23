@@ -1,7 +1,7 @@
 # Leantime 中文操作指南(本团队 fork)
 
 > [!NOTE]
-> **面向对象**:团队成员。fork 策略是沿 `dev-self-hosted` 分支走,不追上游版本更新。
+> **面向对象**:团队成员。fork 以 `dev-self-hosted` 为工作分支,自 2026-10-11 起通过 merge 跟进上游,当前版本 **3.17.0**(2026-11-23 升级)。
 
 > [!NOTE]
 > **配套文档**:[团队费用记账规矩](docs/cost-tracking-rules.md)(谁记、何时记、归到哪)、[中文术语表](docs/leantime-zh-glossary.md)(中英对照)。
@@ -10,7 +10,7 @@
 >
 > **界面出现英文不用慌**:少数位置是模板里写死的文案,中文界面下也是英文,不是系统坏了。正文里凡遇到这种位置,都写成 `中文(English)` 双写。清单见[第 9 节](#9-界面显示英文的位置不是-bug)。
 
-**最后更新**:2026年9月21日 11:00(v1.1 增补项目与任务生命周期)
+**最后更新**:2026年11月23日(v1.2 同步 3.17.0 升级与上游配置文件名)
 
 ## 1. 部署(管理员/维护者)
 
@@ -18,7 +18,7 @@
 
 - 生产部署:`deploy/docker-compose.prod.yml` + `deploy/Dockerfile.prod` + `deploy/entrypoint.sh`
 - 反向代理 / TLS:`deploy/Caddyfile`
-- 配置:`config/.env`(基准见 `config/.env.sample` 和 `deploy/.env.prod.example`)
+- 配置:`config/.env`(基准见 `config/sample.env` 和 `deploy/.env.prod.example`)
   - 数据库连接、`LEAN_*` 系列变量
 - 部署手册:`deploy/railway.md`(Railway)、`deploy/tencent-lighthouse.md`(腾讯云轻量)
 - CostTracking 插件:已通过 `deploy/plugin_ensure.php` 随镜像内置，**不需要团队成员 `git apply` 打补丁**。若界面上没看到"成本"tab，先清 `storage/framework/views/*` 缓存(见[第 8 节](#8-常见问题))。
