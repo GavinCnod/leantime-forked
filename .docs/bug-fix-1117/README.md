@@ -110,6 +110,10 @@ fork 当前 DB 版本 **3.5.33**，而合并目标（上游 3.15.x）已经占�
 
 后续（合并上游新版本时）：
 
-- [ ] 上游 float 迁移随版本进来后，删除 `Reports::addReport()` 的 `pointTotal()` 取整（PR ① 合并后即可）。
-- [ ] 合并带 `30534/30535` 的上游版本时，确认这两个迁移正常执行（`db-version` 不得先被 fork 推高）。
-- [ ] 把本轮两个 PG 兼容点登记进下一次 `.docs/upgrade-*` 的冲突预测。
+- [x] 上游 float 迁移随版本进来后，删除 `Reports::addReport()` 的 `pointTotal()` 取整（PR ① 合并后即可）。
+      **已完成于 3.17.0 升级**：迁移在 3.17 中编号为 **30537**（PR ① 原计划 30536，上游合入时顺延），
+      升级分支已删除 `pointTotal()` 与 `ReportsPointTotalsTest`。
+- [x] 合并带 `30534/30535` 的上游版本时，确认这两个迁移正常执行（`db-version` 不得先被 fork 推高）。
+      3.17.0 升级在 MySQL/PostgreSQL 上均验证 3.5.33 → 3.5.37。
+- [x] 把本轮两个 PG 兼容点登记进下一次 `.docs/upgrade-*` 的冲突预测。
+      已登记于 `.docs/upgrade-3.17/README.md`。

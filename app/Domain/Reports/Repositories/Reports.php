@@ -185,10 +185,10 @@ class Reports
             'sum_planned_hours' => $report->sum_planned_hours,
             'sum_estremaining_hours' => $report->sum_estremaining_hours,
             'sum_logged_hours' => $report->sum_logged_hours,
-            'sum_points' => $this->pointTotal($report->sum_points),
-            'sum_points_done' => $this->pointTotal($report->sum_points_done),
-            'sum_points_progress' => $this->pointTotal($report->sum_points_progress),
-            'sum_points_open' => $this->pointTotal($report->sum_points_open),
+            'sum_points' => $report->sum_points,
+            'sum_points_done' => $report->sum_points_done,
+            'sum_points_progress' => $report->sum_points_progress,
+            'sum_points_open' => $report->sum_points_open,
             'sum_todos_xs' => $report->sum_todos_xs,
             'sum_todos_s' => $report->sum_todos_s,
             'sum_todos_m' => $report->sum_todos_m,
@@ -204,20 +204,6 @@ class Reports
             'daily_avg_hours_remaining_todo' => $report->daily_avg_hours_remaining_todo,
             'sum_teammembers' => $report->sum_teammembers,
         ]);
-    }
-
-    /**
-     * Rounds a story-point total to what `zp_stats` can store.
-     *
-     * The stats columns are integers while `zp_tickets.storypoints` is a float, and the effort
-     * picker offers half points ("< 2min"). MySQL rounds such values silently; PostgreSQL
-     * rejects them (SQLSTATE[22P02] invalid input syntax for type integer: "0.5"), which aborted
-     * the whole nightly ingestion. Round here to match the column until the upstream float
-     * schema lands; NULL stays NULL so empty projects keep their existing representation.
-     */
-    private function pointTotal(mixed $value): ?int
-    {
-        return $value === null ? null : (int) round((float) $value);
     }
 
     /**
