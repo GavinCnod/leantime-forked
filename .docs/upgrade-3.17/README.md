@@ -98,6 +98,7 @@ git merge --no-ff master -m "chore(upgrade): merge upstream v3.17.0 (e4763f16c) 
 | `composer validate` | 通过（仅 `inspector-apm/neuron-ai` 精确版本警告） |
 | `composer audit` | **仅 1 条 low**：`firebase/php-jwt <7.0.0`（被 Socialite 约束，与 3.12 基线一致） |
 | 依赖更新 | Laravel 12.73.0；phpseclib 3.0.59；jmespath 2.10.0；symfony 7.4.23；litesaml 4.7.2；PHPCS 3.13.6；PHPCSUtils 1.2.3 |
+| Railway 构建修复 | 首次重锁使用 `--ignore-platform-reqs`，拉入 `symfony/clock` / `string` / `translation` v8.1（要求 PHP >= 8.4.1），与 `composer.json` 的 `config.platform.php=8.2.0` 冲突，Railway 的 `composer install` 失败。已按平台约束重锁回 7.4（`symfony/clock v7.4.21`、`symfony/string v7.4.22`、`symfony/translation v7.4.23`），并用 `composer install --no-dev --dry-run` 验证通过 |
 | `npm ci` | 1393 packages |
 | `npx mix --production` | 成功（36.97s） |
 | `node generateBlocklist.mjs` | 成功（构建产物不提交，按流程再生） |
@@ -184,7 +185,7 @@ git merge --no-ff master -m "chore(upgrade): merge upstream v3.17.0 (e4763f16c) 
 
 ## 15. 最终状态
 
-- `upgrade/3.17.0`：合并 + 止血收编 + 依赖重锁 + zh-CN + 部署模板 + 文档
-- `dev-self-hosted`：待快进合入
-- tag：`fork-3.17.0`
+- `upgrade/3.17.0` @ `2d88ba812`：合并 + 止血收编 + 依赖重锁（含 Railway 平台修复）+ zh-CN + 部署模板 + 文档；已推送 origin
+- `dev-self-hosted` @ `2d88ba812`：已快进合入并推送 origin
+- tag：`fork-3.17.0`（已移动到 `2d88ba812`）
 - 生产数据库：未迁移（3.5.33）
